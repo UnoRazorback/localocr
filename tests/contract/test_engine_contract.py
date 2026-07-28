@@ -28,10 +28,12 @@ def test_contract_fixture_generator_matches_committed_contract(tmp_path, contrac
     second = generate_contract_fixtures(tmp_path)
     committed = {
         name: json.loads((contract_fixture_dir / f"{name}.json").read_text())
-        for name in ("inspect_mixed", "ocr_existing_text")
+        for name in ("inspect_mixed", "ocr_existing_text", "ocr_image_only")
     }
 
     assert first == second
     assert first == committed
     assert first["inspect_mixed"]["ocr_needed_pages"] == [2]
     assert first["ocr_existing_text"]["pages"][0]["method"] == "existing_text"
+    assert first["ocr_image_only"]["pages"][0]["method"] == "vision_ocr"
+    assert first["ocr_image_only"]["pages"][0]["lines"][0]["confidence"] > 0

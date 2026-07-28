@@ -15,6 +15,7 @@ DEFAULT_PYTHON_DIR = ROOT / "tests" / "contract" / "expected"
 DEFAULT_SWIFT_DIR = ROOT / ".build" / "engine-contracts" / "swift"
 DEFAULT_REPORT = ROOT / ".build" / "engine-contract-comparison.json"
 PRINTED_TEXT_SIMILARITY_THRESHOLD = 0.95
+OCR_FIXTURES = ("ocr_existing_text", "ocr_image_only")
 
 
 class ContractMismatch(AssertionError):
@@ -71,57 +72,69 @@ def _expect_same_keys(label: str, python_value: dict, swift_value: dict) -> None
     )
 
 
-def _expect_same_structure(
-    label: str,
-    python_value: Any,
-    swift_value: Any,
-) -> None:
-    if isinstance(python_value, dict):
-        if not isinstance(swift_value, dict):
-            raise ContractMismatch(
-                f"{label} structure mismatch: Python object, "
-                f"Swift {type(swift_value).__name__}"
-            )
-        _expect_same_keys(label, python_value, swift_value)
-        for key in python_value:
-            _expect_same_structure(
-                f"{label}.{key}",
-                python_value[key],
-                swift_value[key],
-            )
-        return
-    if isinstance(python_value, list):
-        if not isinstance(swift_value, list):
-            raise ContractMismatch(
-                f"{label} structure mismatch: Python array, "
-                f"Swift {type(swift_value).__name__}"
-            )
-        _expect_equal(f"{label} array length", len(python_value), len(swift_value))
-        for index, (python_item, swift_item) in enumerate(
-            zip(python_value, swift_value)
-        ):
-            _expect_same_structure(
-                f"{label}[{index}]",
-                python_item,
-                swift_item,
-            )
-        return
-
-    python_is_number = (
-        isinstance(python_value, (int, float))
-        and not isinstance(python_value, bool)
-    )
-    swift_is_number = (
-        isinstance(swift_value, (int, float))
-        and not isinstance(swift_value, bool)
-    )
-    if python_is_number and swift_is_number:
-        return
-    if type(python_value) is not type(swift_value):
+def _expect_integer(label: str, value: Any) -> None:
+    if type(value) is not int:
         raise ContractMismatch(
-            f"{label} structure mismatch: Python {type(python_value).__name__}, "
-            f"Swift {type(swift_value).__name__}"
+            f"{label} structure mismatch: expected integer, "
+            f"got {type(value).__name__}"
         )
+
+
+def _expect_integer_list(label: str, value: Any) -> None:
+    if not isinstance(value, list):
+        raise ContractMismatch(f"{label} structure mismatch: expected array")
+    for index, item in enumerate(value):
+        _expect_integer(f"{label}[{index}]", item)
+
+
+def _expect_number(label: str, value: Any) -> None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ContractMismatch(
+            f"{label} structure mismatch: expected number, "
+            f"got {type(value).__name__}"
+        )
+
+
+def _validate_inspection_contract(label: str, value: dict[str, Any]) -> None:
+    for field in ("source_path", "source_sha256"):
+        if not isinstance(value.get(field), str):
+            raise ContractMismatch(
+                f"{label}.{field} structure mismatch: expected string"
+            )
+    for field in ("pages", "characters"):
+        _expect_integer(f"{label}.{field}", value.get(field))
+    for field in ("searchable_pages", "ocr_needed_pages"):
+        _expect_integer_list(f"{label}.{field}", value.get(field))
+    if type(value.get("fully_searchable")) is not bool:
+        raise ContractMismatch(
+            f"{label}.fully_searchable structure mismatch: expected boolean"
+        )
+    page_details = value.get("page_details")
+    if not isinstance(page_details, list):
+        raise ContractMismatch(
+            f"{label}.page_details structure mismatch: expected array"
+        )
+    for index, detail in enumerate(page_details):
+        if not isinstance(detail, dict):
+            raise ContractMismatch(
+                f"{label}.page_details[{index}] structure mismatch: "
+                "expected object"
+            )
+        _expect_same_keys(
+            f"{label}.page_details[{index}]",
+            {"page": None, "characters": None, "searchable": None},
+            detail,
+        )
+        _expect_integer(f"{label}.page_details[{index}].page", detail["page"])
+        _expect_integer(
+            f"{label}.page_details[{index}].characters",
+            detail["characters"],
+        )
+        if type(detail["searchable"]) is not bool:
+            raise ContractMismatch(
+                f"{label}.page_details[{index}].searchable structure "
+                "mismatch: expected boolean"
+            )
 
 
 def _mean_confidence(page: dict[str, Any]) -> float | None:
@@ -134,6 +147,7 @@ def _mean_confidence(page: dict[str, Any]) -> float | None:
 
 
 def _check_line_structure(
+    fixture: str,
     page_number: int,
     python_lines: list[dict[str, Any]],
     swift_lines: list[dict[str, Any]],
@@ -146,66 +160,157 @@ def _check_line_structure(
     for line_index, (python_line, swift_line) in enumerate(
         zip(python_lines, swift_lines), start=1
     ):
+        for implementation, line in (
+            ("Python", python_line),
+            ("Swift", swift_line),
+        ):
+            label = (
+                f"{fixture} {implementation} page {page_number} "
+                f"line {line_index}"
+            )
+            if not isinstance(line, dict):
+                raise ContractMismatch(
+                    f"{label} structure mismatch: expected object"
+                )
+            _expect_same_keys(
+                label,
+                {
+                    "text": None,
+                    "confidence": None,
+                    "bounding_box": None,
+                },
+                line,
+            )
+            if not isinstance(line["text"], str):
+                raise ContractMismatch(
+                    f"{label}.text structure mismatch: expected string"
+                )
+            _expect_number(f"{label}.confidence", line["confidence"])
+            bounding_box = line["bounding_box"]
+            if not isinstance(bounding_box, dict):
+                raise ContractMismatch(
+                    f"{label}.bounding_box structure mismatch: expected object"
+                )
+            _expect_same_keys(
+                f"{label}.bounding_box",
+                {"x": None, "y": None, "width": None, "height": None},
+                bounding_box,
+            )
+            for coordinate in ("x", "y", "width", "height"):
+                _expect_number(
+                    f"{label}.bounding_box.{coordinate}",
+                    bounding_box[coordinate],
+                )
+
+
+def _validate_ocr_contract(label: str, value: dict[str, Any]) -> None:
+    for field in ("source_path", "source_sha256"):
+        if not isinstance(value.get(field), str):
+            raise ContractMismatch(
+                f"{label}.{field} structure mismatch: expected string"
+            )
+    for field in ("failed_pages", "empty_ocr_pages"):
+        _expect_integer_list(f"{label}.{field}", value.get(field))
+    pages = value.get("pages")
+    if not isinstance(pages, list):
+        raise ContractMismatch(f"{label}.pages structure mismatch: expected array")
+    for index, page in enumerate(pages):
+        if not isinstance(page, dict):
+            raise ContractMismatch(
+                f"{label}.pages[{index}] structure mismatch: expected object"
+            )
         _expect_same_keys(
-            f"page {page_number} line {line_index}",
-            python_line,
-            swift_line,
+            f"{label}.pages[{index}]",
+            {
+                "page": None,
+                "text": None,
+                "method": None,
+                "lines": None,
+                "orientation": None,
+            },
+            page,
         )
-        _expect_same_keys(
-            f"page {page_number} line {line_index} bounding_box",
-            python_line["bounding_box"],
-            swift_line["bounding_box"],
+        _expect_integer(f"{label}.pages[{index}].page", page["page"])
+        _expect_integer(
+            f"{label}.pages[{index}].orientation",
+            page["orientation"],
+        )
+        for field in ("text", "method"):
+            if not isinstance(page[field], str):
+                raise ContractMismatch(
+                    f"{label}.pages[{index}].{field} structure mismatch: "
+                    "expected string"
+                )
+        if not isinstance(page["lines"], list):
+            raise ContractMismatch(
+                f"{label}.pages[{index}].lines structure mismatch: "
+                "expected array"
+            )
+    rotated_pages = value.get("rotated_ocr_pages")
+    if not isinstance(rotated_pages, dict):
+        raise ContractMismatch(
+            f"{label}.rotated_ocr_pages structure mismatch: expected object"
+        )
+    for page, orientation in rotated_pages.items():
+        if not isinstance(page, str) or not page.isdigit():
+            raise ContractMismatch(
+                f"{label}.rotated_ocr_pages key structure mismatch: "
+                "expected integer string"
+            )
+        _expect_integer(
+            f"{label}.rotated_ocr_pages[{page}]",
+            orientation,
         )
 
 
-def compare_engine_contracts(
-    python_directory: Path,
-    swift_directory: Path,
-) -> dict[str, Any]:
-    """Compare contract directories or raise ContractMismatch."""
-    python_inspection = _load_contract(python_directory, "inspect_mixed")
-    swift_inspection = _load_contract(swift_directory, "inspect_mixed")
-    _expect_equal("inspect_mixed", python_inspection, swift_inspection)
-
-    python_ocr = _load_contract(python_directory, "ocr_existing_text")
-    swift_ocr = _load_contract(swift_directory, "ocr_existing_text")
-    _expect_same_keys("ocr_existing_text", python_ocr, swift_ocr)
+def _compare_ocr_fixture(
+    fixture: str,
+    python_ocr: dict[str, Any],
+    swift_ocr: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    _expect_same_keys(fixture, python_ocr, swift_ocr)
+    _validate_ocr_contract(f"{fixture} Python", python_ocr)
+    _validate_ocr_contract(f"{fixture} Swift", swift_ocr)
     for field in (
         "source_path",
         "source_sha256",
         "failed_pages",
         "empty_ocr_pages",
     ):
-        _expect_equal(field, python_ocr[field], swift_ocr[field])
+        _expect_equal(
+            f"{fixture}.{field}",
+            python_ocr[field],
+            swift_ocr[field],
+        )
 
     python_pages = python_ocr["pages"]
     swift_pages = swift_ocr["pages"]
-    _expect_same_structure("ocr_existing_text.pages", python_pages, swift_pages)
-    for label, rotated_pages in (
-        ("Python rotated_ocr_pages", python_ocr["rotated_ocr_pages"]),
-        ("Swift rotated_ocr_pages", swift_ocr["rotated_ocr_pages"]),
-    ):
-        if not isinstance(rotated_pages, dict) or not all(
-            isinstance(page, str)
-            and isinstance(orientation, int)
-            and not isinstance(orientation, bool)
-            for page, orientation in rotated_pages.items()
-        ):
-            raise ContractMismatch(
-                f"{label} structure mismatch: expected string-to-integer object"
-            )
+    _expect_equal(
+        f"{fixture} page count",
+        len(python_pages),
+        len(swift_pages),
+    )
 
     recognition = []
     for python_page, swift_page in zip(python_pages, swift_pages):
         page_number = python_page["page"]
-        _expect_same_keys(f"page {page_number}", python_page, swift_page)
-        _expect_equal(f"page {page_number} number", page_number, swift_page["page"])
+        _expect_same_keys(
+            f"{fixture} page {page_number}",
+            python_page,
+            swift_page,
+        )
         _expect_equal(
-            f"page {page_number} method",
+            f"{fixture} page {page_number} number",
+            page_number,
+            swift_page["page"],
+        )
+        _expect_equal(
+            f"{fixture} page {page_number} method",
             python_page["method"],
             swift_page["method"],
         )
         _check_line_structure(
+            fixture,
             page_number,
             python_page["lines"],
             swift_page["lines"],
@@ -217,11 +322,13 @@ def compare_engine_contracts(
         )
         if similarity < PRINTED_TEXT_SIMILARITY_THRESHOLD:
             raise ContractMismatch(
-                f"page {page_number} printed-text similarity {similarity:.4f} "
-                f"is below {PRINTED_TEXT_SIMILARITY_THRESHOLD:.2f}"
+                f"{fixture} page {page_number} printed-text similarity "
+                f"{similarity:.4f} is below "
+                f"{PRINTED_TEXT_SIMILARITY_THRESHOLD:.2f}"
             )
         recognition.append(
             {
+                "fixture": fixture,
                 "page": page_number,
                 "method": python_page["method"],
                 "text_similarity": similarity,
@@ -232,15 +339,41 @@ def compare_engine_contracts(
             }
         )
 
-    orientation_differences = {
+    return recognition, {
         "python_rotated_ocr_pages": python_ocr["rotated_ocr_pages"],
         "swift_rotated_ocr_pages": swift_ocr["rotated_ocr_pages"],
     }
+
+
+def compare_engine_contracts(
+    python_directory: Path,
+    swift_directory: Path,
+) -> dict[str, Any]:
+    """Compare contract directories or raise ContractMismatch."""
+    python_inspection = _load_contract(python_directory, "inspect_mixed")
+    swift_inspection = _load_contract(swift_directory, "inspect_mixed")
+    _validate_inspection_contract("inspect_mixed Python", python_inspection)
+    _validate_inspection_contract("inspect_mixed Swift", swift_inspection)
+    _expect_equal("inspect_mixed", python_inspection, swift_inspection)
+
+    recognition = []
+    orientations_by_fixture = {}
+    for fixture in OCR_FIXTURES:
+        fixture_recognition, fixture_orientations = _compare_ocr_fixture(
+            fixture,
+            _load_contract(python_directory, fixture),
+            _load_contract(swift_directory, fixture),
+        )
+        recognition.extend(fixture_recognition)
+        orientations_by_fixture[fixture] = fixture_orientations
     return {
         "structural_contract_match": True,
         "printed_text_similarity_threshold": PRINTED_TEXT_SIMILARITY_THRESHOLD,
         "recognition": recognition,
-        "orientation_differences": orientation_differences,
+        "orientation_differences": orientations_by_fixture[
+            "ocr_existing_text"
+        ],
+        "orientation_differences_by_fixture": orientations_by_fixture,
     }
 
 
@@ -271,7 +404,7 @@ def main() -> int:
     print("Structural contract: PASS")
     for result in report["recognition"]:
         print(
-            f"Page {result['page']}: text similarity "
+            f"{result['fixture']} page {result['page']}: text similarity "
             f"{result['text_similarity']:.4f} "
             f"(required >= {PRINTED_TEXT_SIMILARITY_THRESHOLD:.2f}); "
             f"confidence Python={_format_optional_confidence(result['python_confidence'])}, "

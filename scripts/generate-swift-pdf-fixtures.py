@@ -38,11 +38,13 @@ def rasterized_text_page(
     page_rect: fitz.Rect = PAGE_RECT,
     origin: tuple[float, float] = (72, 144),
     font_size: int = 20,
+    dpi: int = 144,
 ) -> fitz.Pixmap:
     source = fitz.open()
     page = source.new_page(width=page_rect.width, height=page_rect.height)
     page.insert_text(origin, text, fontsize=font_size, fontname="helv")
-    pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+    scale = dpi / 72
+    pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
     source.close()
     return pixmap
 
@@ -53,11 +55,18 @@ def add_image_page(
     page_rect: fitz.Rect = PAGE_RECT,
     origin: tuple[float, float] = (72, 144),
     font_size: int = 20,
+    dpi: int = 144,
 ) -> None:
     page = document.new_page(width=page_rect.width, height=page_rect.height)
     page.insert_image(
         page_rect,
-        pixmap=rasterized_text_page(text, page_rect, origin, font_size),
+        pixmap=rasterized_text_page(
+            text,
+            page_rect,
+            origin,
+            font_size,
+            dpi,
+        ),
     )
 
 
@@ -86,7 +95,14 @@ def generate() -> None:
     mixed.close()
 
     image_only = fitz.open()
-    add_image_page(image_only, "Synthetic image-only page one.")
+    add_image_page(
+        image_only,
+        IMAGE_TEXT,
+        CONTRACT_PAGE_RECT,
+        origin=(20, CONTRACT_PAGE_RECT.height / 2),
+        font_size=14,
+        dpi=250,
+    )
     add_image_page(image_only, "Synthetic image-only page two.")
     save(image_only, "image-only.pdf")
     image_only.close()

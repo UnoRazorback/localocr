@@ -33,18 +33,30 @@ public struct RecognitionSettings: Sendable, Codable, Hashable {
     public var forceOCR: Bool                  // default false
     public var recognitionLanguages: [String] // default []
     public var usesLanguageCorrection: Bool    // default true
+    public init(
+        dpi: Int = 250,
+        forceOCR: Bool = false,
+        recognitionLanguages: [String] = [],
+        usesLanguageCorrection: Bool = true
+    )
 }
 
 public struct OCRRequest: Sendable, Equatable {
     public let sourceURL: URL
     public let pageSelection: String?
     public let settings: RecognitionSettings
+    public init(
+        sourceURL: URL,
+        pageSelection: String?,
+        settings: RecognitionSettings
+    )
 }
 
 public struct PageInspection: Sendable, Codable, Equatable {
     public let page: Int
     public let characters: Int
     public let searchable: Bool
+    public init(page: Int, characters: Int, searchable: Bool)
 }
 
 public struct PDFInspection: Sendable, Codable, Equatable {
@@ -54,6 +66,14 @@ public struct PDFInspection: Sendable, Codable, Equatable {
     public let characters: Int
     public let fullySearchable: Bool
     public let pageDetails: [PageInspection]
+    public init(
+        pages: Int,
+        searchablePages: [Int],
+        ocrNeededPages: [Int],
+        characters: Int,
+        fullySearchable: Bool,
+        pageDetails: [PageInspection]
+    )
 }
 
 public enum PageMethod: String, Sendable, Codable, Equatable {
@@ -65,6 +85,7 @@ public struct TextLine: Sendable, Codable, Equatable {
     public let text: String
     public let confidence: Float
     public let boundingBox: CGRect
+    public init(text: String, confidence: Float, boundingBox: CGRect)
 }
 
 public struct PageResult: Sendable, Codable, Equatable {
@@ -73,6 +94,13 @@ public struct PageResult: Sendable, Codable, Equatable {
     public let method: PageMethod
     public let lines: [TextLine]
     public let orientation: CGImagePropertyOrientation
+    public init(
+        page: Int,
+        text: String,
+        method: PageMethod,
+        lines: [TextLine],
+        orientation: CGImagePropertyOrientation
+    )
 }
 
 public struct OCRResult: Sendable, Codable, Equatable {
@@ -81,6 +109,13 @@ public struct OCRResult: Sendable, Codable, Equatable {
     public let failedPages: [Int]
     public let emptyOCRPages: [Int]
     public let rotatedOCRPages: [Int: CGImagePropertyOrientation]
+    public init(
+        sourceSHA256: String,
+        pages: [PageResult],
+        failedPages: [Int],
+        emptyOCRPages: [Int],
+        rotatedOCRPages: [Int: CGImagePropertyOrientation]
+    )
 }
 
 public enum OCRProgress: Sendable, Equatable {
@@ -165,6 +200,10 @@ public struct PDFDocumentSource: PDFDocumentReading {
 public struct RecognitionCandidate: Sendable, Equatable {
     public let orientation: CGImagePropertyOrientation
     public let lines: [TextLine]
+    public init(
+        orientation: CGImagePropertyOrientation,
+        lines: [TextLine]
+    )
     public var text: String { get }
 }
 
@@ -207,6 +246,12 @@ public struct OCRCacheKey: Sendable, Codable, Hashable {
     public let page: Int
     public let settings: RecognitionSettings
     public let compatibilityVersion: String
+    public init(
+        sourceSHA256: String,
+        page: Int,
+        settings: RecognitionSettings,
+        compatibilityVersion: String
+    )
 }
 
 public actor OCRCache {
@@ -237,6 +282,11 @@ public struct SearchablePDFResult: Sendable, Equatable {
     public let outputURL: URL
     public let failedPages: [Int]
     public let isComplete: Bool
+    public init(
+        outputURL: URL,
+        failedPages: [Int],
+        isComplete: Bool
+    )
 }
 
 public protocol SearchablePDFWriting: Sendable {

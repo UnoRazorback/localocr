@@ -16,7 +16,11 @@ def _load_comparator():
     return module
 
 
-def _write_contracts(root: Path, ocr_contract: dict) -> tuple[Path, Path]:
+def _write_contracts(
+    root: Path,
+    ocr_contract: dict,
+    vision_contract: dict | None = None,
+) -> tuple[Path, Path]:
     python_dir = root / "python"
     swift_dir = root / "swift"
     python_dir.mkdir()
@@ -34,6 +38,9 @@ def _write_contracts(root: Path, ocr_contract: dict) -> tuple[Path, Path]:
     for directory in (python_dir, swift_dir):
         (directory / "inspect_mixed.json").write_text(json.dumps(inspection))
         (directory / "ocr_existing_text.json").write_text(json.dumps(ocr_contract))
+        (directory / "ocr_image_only.json").write_text(
+            json.dumps(vision_contract or _vision_ocr_contract())
+        )
     return python_dir, swift_dir
 
 
@@ -47,6 +54,36 @@ def _ocr_contract() -> dict:
                 "text": "Synthetic printed contract total is 57508601 dollars.",
                 "method": "existing_text",
                 "lines": [],
+                "orientation": 1,
+            }
+        ],
+        "failed_pages": [],
+        "empty_ocr_pages": [],
+        "rotated_ocr_pages": {},
+    }
+
+
+def _vision_ocr_contract() -> dict:
+    return {
+        "source_path": "<fixture>",
+        "source_sha256": "<sha256>",
+        "pages": [
+            {
+                "page": 1,
+                "text": "Retainage withheld this period totals $144,904.17 exactly",
+                "method": "vision_ocr",
+                "lines": [
+                    {
+                        "text": "Retainage withheld this period totals $144,904.17 exactly",
+                        "confidence": 0.97,
+                        "bounding_box": {
+                            "x": 0.03,
+                            "y": 0.4,
+                            "width": 0.75,
+                            "height": 0.1,
+                        },
+                    }
+                ],
                 "orientation": 1,
             }
         ],
@@ -92,6 +129,25 @@ def test_compare_reports_orientation_differences_without_rejecting_contract(tmp_
     }
 
 
+def test_compare_exercises_vision_and_reports_real_confidence(tmp_path):
+    comparator = _load_comparator()
+    python_dir, swift_dir = _write_contracts(tmp_path, _ocr_contract())
+
+    report = comparator.compare_engine_contracts(python_dir, swift_dir)
+
+    vision_result = next(
+        result
+        for result in report["recognition"]
+        if result["fixture"] == "ocr_image_only"
+    )
+    assert vision_result["method"] == "vision_ocr"
+    assert vision_result["text_similarity"] >= 0.95
+    assert vision_result["python_confidence"] == pytest.approx(0.97)
+    assert vision_result["swift_confidence"] == pytest.approx(0.97)
+    assert vision_result["python_orientation"] == 1
+    assert vision_result["swift_orientation"] == 1
+
+
 def test_compare_rejects_page_method_mismatch(tmp_path):
     comparator = _load_comparator()
     contract = _ocr_contract()
@@ -113,6 +169,30 @@ def test_compare_rejects_wrong_field_type_even_when_keys_match(tmp_path):
     (swift_dir / "ocr_existing_text.json").write_text(json.dumps(swift_contract))
 
     with pytest.raises(comparator.ContractMismatch, match="structure"):
+        comparator.compare_engine_contracts(python_dir, swift_dir)
+
+
+def test_compare_rejects_float_page_identifier(tmp_path):
+    comparator = _load_comparator()
+    contract = _ocr_contract()
+    python_dir, swift_dir = _write_contracts(tmp_path, contract)
+    swift_contract = dict(contract)
+    swift_contract["pages"] = [dict(contract["pages"][0], page=1.0)]
+    (swift_dir / "ocr_existing_text.json").write_text(json.dumps(swift_contract))
+
+    with pytest.raises(comparator.ContractMismatch, match="page.*integer"):
+        comparator.compare_engine_contracts(python_dir, swift_dir)
+
+
+def test_compare_rejects_float_failed_page_identifier(tmp_path):
+    comparator = _load_comparator()
+    contract = _ocr_contract()
+    contract["failed_pages"] = [2]
+    python_dir, swift_dir = _write_contracts(tmp_path, contract)
+    swift_contract = dict(contract, failed_pages=[2.0])
+    (swift_dir / "ocr_existing_text.json").write_text(json.dumps(swift_contract))
+
+    with pytest.raises(comparator.ContractMismatch, match="failed_pages.*integer"):
         comparator.compare_engine_contracts(python_dir, swift_dir)
 
 

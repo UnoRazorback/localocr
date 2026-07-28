@@ -10,6 +10,9 @@ from ocr_service import core, pdf_utils
 
 
 ROOT = Path(__file__).parents[1]
+SHARED_IMAGE_ONLY_FIXTURE = (
+    ROOT / "tests" / "LocalOCRCoreTests" / "Fixtures" / "image-only.pdf"
+)
 ORIENTATION_RAW_VALUES = {"up": 1, "up_mirrored": 2, "down": 3, "down_mirrored": 4, "left_mirrored": 5, "right": 6, "right_mirrored": 7, "left": 8}
 
 
@@ -85,7 +88,7 @@ def _write_json(path: Path, result: dict) -> None:
 
 
 def generate_contract_fixtures(output_dir: Path) -> dict:
-    """Generate deterministic inspection and native-text OCR fixtures."""
+    """Generate deterministic inspection, native-text, and Vision OCR fixtures."""
     output_dir.mkdir(parents=True, exist_ok=True)
     mixed_pdf, native_text_pdf = _fixture_builders()
 
@@ -96,6 +99,14 @@ def generate_contract_fixtures(output_dir: Path) -> dict:
         fixtures = {
             "inspect_mixed": _inspection_contract(pdf_utils.inspect_pdf(mixed_path)),
             "ocr_existing_text": _ocr_result_contract(core.ocr_pdf_pages(native_path, None, dpi=250, include_lines=True)),
+            "ocr_image_only": _ocr_result_contract(
+                core.ocr_pdf_pages(
+                    SHARED_IMAGE_ONLY_FIXTURE,
+                    "1",
+                    dpi=250,
+                    include_lines=True,
+                )
+            ),
         }
 
     for name, result in fixtures.items():

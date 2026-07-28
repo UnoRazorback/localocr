@@ -73,8 +73,7 @@ public struct PDFDocumentSource: PDFDocumentReading {
 
         context.setFillColor(CGColor(gray: 1, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        context.translateBy(x: 0, y: CGFloat(height))
-        context.scaleBy(x: scale, y: -scale)
+        context.scaleBy(x: scale, y: scale)
         context.translateBy(x: -mediaBox.minX, y: -mediaBox.minY)
         page.draw(with: .mediaBox, to: context)
 
