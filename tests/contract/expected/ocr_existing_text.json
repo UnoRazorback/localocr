@@ -11,5 +11,6 @@
     }
   ],
   "rotated_ocr_pages": {},
+  "source_path": "<fixture>",
   "source_sha256": "<sha256>"
 }

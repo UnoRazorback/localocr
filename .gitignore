@@ -3,3 +3,19 @@ __pycache__/
 *.pyc
 *.egg-info/
 .worktrees/
+
+# SwiftPM builds and test artifacts
+.build/
+.swiftpm/
+*.xcresult
+*.profraw
+*.profdata
+
+# Generated cross-engine comparison output
+tests/contract/generated/
+engine-contract-comparison.json
+
+# Repository-local OCR caches (committed fixtures remain tracked)
+.localocr-cache/
+.ocr-cache/
+ocr-cache/

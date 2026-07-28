@@ -71,6 +71,7 @@ def _ocr_result_contract(result: dict) -> dict:
         )
 
     return {
+        "source_path": result["source_path"],
         "source_sha256": result["source_sha256"],
         "pages": pages,
         "failed_pages": result["failed_pages"],

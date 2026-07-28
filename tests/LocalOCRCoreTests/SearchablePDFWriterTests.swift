@@ -350,6 +350,65 @@ import Testing
         #expect(selectionBounds.width > selectionBounds.height * 5)
     }
 
+    @Test func makesDownAndLeftOrientedOCRSearchableAtTransformedCoordinates() async throws {
+        let sourceURL = try fixtureURL()
+        for fixture in [
+            (
+                orientation: CGImagePropertyOrientation.down,
+                text: "DOWN ORIENTATION OCR",
+                expectsVertical: false
+            ),
+            (
+                orientation: CGImagePropertyOrientation.left,
+                text: "LEFT ORIENTATION OCR",
+                expectsVertical: true
+            ),
+        ] {
+            let location = try temporaryPDFLocation()
+            defer { try? FileManager.default.removeItem(at: location.directoryURL) }
+
+            _ = try await SearchablePDFWriter().write(
+                sourceURL: sourceURL,
+                destinationURL: location.outputURL,
+                pageResults: [
+                    PageResult(
+                        page: 2,
+                        text: fixture.text,
+                        method: .visionOCR,
+                        lines: [
+                            TextLine(
+                                text: fixture.text,
+                                confidence: 0.99,
+                                boundingBox: CGRect(
+                                    x: 0.1,
+                                    y: 0.2,
+                                    width: 0.3,
+                                    height: 0.1
+                                )
+                            )
+                        ],
+                        orientation: fixture.orientation
+                    )
+                ]
+            )
+
+            let output = try #require(PDFDocument(url: location.outputURL))
+            let page = try #require(output.page(at: 1))
+            let selection = try #require(
+                output.findString(fixture.text, withOptions: []).first
+            )
+            let bounds = selection.bounds(for: page)
+            #expect(bounds.minX >= 100)
+            #expect(bounds.minY >= 450)
+            if fixture.expectsVertical {
+                #expect(bounds.height > bounds.width * 5)
+            } else {
+                #expect(bounds.width > bounds.height * 5)
+                #expect(bounds.minX >= 350)
+            }
+        }
+    }
+
     @Test func rejectsMissingOCRTextEvenWhenVisionPageHasUnrelatedNativeText() async throws {
         let sourceURL = try fixtureURL()
         let location = try temporaryPDFLocation()

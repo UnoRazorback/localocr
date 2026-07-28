@@ -6,7 +6,7 @@ import Testing
 
 @Suite struct OrientationSelectorTests {
     @Test func retriesWhenUprightScoreIsWeak() async throws {
-        let fake = FakeRecognizer(results: [
+        let recognizer = ScriptedTextRecognizer(results: [
             .up: candidate(.up, text: "1", confidence: 0.1),
             .right: candidate(.right, text: "LOCAL OCR TEST 123", confidence: 0.9),
         ])
@@ -14,31 +14,90 @@ import Testing
         let result = try await OrientationSelector().best(
             image: onePixelImage,
             settings: .init(),
-            recognizer: fake
+            recognizer: recognizer
         )
 
         #expect(result.orientation == .right)
-        #expect(await fake.orientations == [.up, .right, .down, .left])
+        #expect(await recognizer.requestedOrientations == [.up, .right, .down, .left])
     }
 
     @Test func acceptsStrongUprightCandidateWithoutRetries() async throws {
-        let fake = FakeRecognizer(results: [
+        let recognizer = ScriptedTextRecognizer(results: [
             .up: candidate(.up, text: "LOCAL OCR TEST 123", confidence: 0.9),
         ])
 
         let result = try await OrientationSelector().best(
             image: onePixelImage,
             settings: .init(),
-            recognizer: fake
+            recognizer: recognizer
         )
 
         #expect(result.orientation == .up)
-        #expect(await fake.orientations == [.up])
+        #expect(await recognizer.requestedOrientations == [.up])
+    }
+
+    @Test func exactUprightAcceptanceThresholdAvoidsRetries() async throws {
+        let recognizer = ScriptedTextRecognizer(results: [
+            .up: candidate(.up, text: "abcdefghijkl", confidence: 0.55),
+        ])
+
+        let result = try await OrientationSelector().best(
+            image: onePixelImage,
+            settings: .init(),
+            recognizer: recognizer
+        )
+
+        #expect(result.orientation == .up)
+        #expect(await recognizer.requestedOrientations == [.up])
+    }
+
+    @Test func oneCharacterBelowUprightThresholdRetries() async throws {
+        let recognizer = ScriptedTextRecognizer(results: [
+            .up: candidate(.up, text: "abcdefghijk", confidence: 0.99),
+        ])
+
+        _ = try await OrientationSelector().best(
+            image: onePixelImage,
+            settings: .init(),
+            recognizer: recognizer
+        )
+
+        #expect(await recognizer.requestedOrientations == [.up, .right, .down, .left])
+    }
+
+    @Test func confidenceBelowUprightThresholdRetries() async throws {
+        let recognizer = ScriptedTextRecognizer(results: [
+            .up: candidate(.up, text: "abcdefghijkl", confidence: 0.549),
+        ])
+
+        _ = try await OrientationSelector().best(
+            image: onePixelImage,
+            settings: .init(),
+            recognizer: recognizer
+        )
+
+        #expect(await recognizer.requestedOrientations == [.up, .right, .down, .left])
+    }
+
+    @Test func scoreTieKeepsTheFirstUprightCandidate() async throws {
+        let recognizer = ScriptedTextRecognizer(results: [
+            .up: candidate(.up, text: "a", confidence: 0.5),
+            .right: candidate(.right, text: "b", confidence: 0.5),
+        ])
+
+        let result = try await OrientationSelector().best(
+            image: onePixelImage,
+            settings: .init(),
+            recognizer: recognizer
+        )
+
+        #expect(result.orientation == .up)
+        #expect(await recognizer.requestedOrientations == [.up, .right, .down, .left])
     }
 
     @Test func selectsNonUprightOrientationForSidewaysSyntheticText() async throws {
         let image = try fixtureImage(named: "sideways-text")
-        let fake = FakeRecognizer(results: [
+        let recognizer = ScriptedTextRecognizer(results: [
             .up: candidate(.up, text: "1", confidence: 0.1),
             .right: candidate(.right, text: "LOCAL OCR TEST 123", confidence: 0.9),
         ])
@@ -46,7 +105,7 @@ import Testing
         let result = try await OrientationSelector().best(
             image: image,
             settings: .init(recognitionLanguages: ["en-US"]),
-            recognizer: fake
+            recognizer: recognizer
         )
 
         #expect(result.orientation != .up)
@@ -54,9 +113,9 @@ import Testing
     }
 }
 
-private actor FakeRecognizer: TextRecognizing {
+private actor ScriptedTextRecognizer: TextRecognizing {
     private let results: [CGImagePropertyOrientation: RecognitionCandidate]
-    private(set) var orientations: [CGImagePropertyOrientation] = []
+    private(set) var requestedOrientations: [CGImagePropertyOrientation] = []
 
     init(results: [CGImagePropertyOrientation: RecognitionCandidate]) {
         self.results = results
@@ -67,7 +126,7 @@ private actor FakeRecognizer: TextRecognizing {
         orientation: CGImagePropertyOrientation,
         settings: RecognitionSettings
     ) async throws -> RecognitionCandidate {
-        orientations.append(orientation)
+        requestedOrientations.append(orientation)
         return results[orientation] ?? candidate(orientation, text: "", confidence: 0)
     }
 }

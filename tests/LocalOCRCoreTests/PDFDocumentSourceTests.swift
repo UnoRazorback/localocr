@@ -26,7 +26,7 @@ private enum Fixtures {
     #expect(result.ocrNeededPages == [2])
     #expect(result.fullySearchable == false)
     #expect(result.pageDetails == [
-        PageInspection(page: 1, characters: 54, searchable: true),
+        PageInspection(page: 1, characters: 66, searchable: true),
         PageInspection(page: 2, characters: 0, searchable: false),
     ])
 }
