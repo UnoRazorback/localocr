@@ -1,0 +1,27 @@
+{
+  "empty_ocr_pages": [],
+  "failed_pages": [],
+  "pages": [
+    {
+      "lines": [
+        {
+          "bounding_box": {
+            "height": 0.0837643667199146,
+            "width": 0.5897079145610905,
+            "x": 0.03477052109803848,
+            "y": 0.4708333333508403
+          },
+          "confidence": 1.0,
+          "text": "Retainage withheld this period totals $144,904.17 exactly"
+        }
+      ],
+      "method": "vision_ocr",
+      "orientation": 1,
+      "page": 1,
+      "text": "Retainage withheld this period totals $144,904.17 exactly"
+    }
+  ],
+  "rotated_ocr_pages": {},
+  "source_path": "<fixture>",
+  "source_sha256": "<sha256>"
+}

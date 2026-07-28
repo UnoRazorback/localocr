@@ -1,0 +1,25 @@
+{
+  "characters": 66,
+  "fully_searchable": false,
+  "ocr_needed_pages": [
+    2
+  ],
+  "page_details": [
+    {
+      "characters": 66,
+      "page": 1,
+      "searchable": true
+    },
+    {
+      "characters": 0,
+      "page": 2,
+      "searchable": false
+    }
+  ],
+  "pages": 2,
+  "searchable_pages": [
+    1
+  ],
+  "source_path": "<fixture>",
+  "source_sha256": "<sha256>"
+}

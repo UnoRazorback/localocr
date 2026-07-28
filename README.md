@@ -24,7 +24,7 @@ Python 3.12 without touching system Python:
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 export UV_SYSTEM_CERTS=1   # needed on this network; TLS intercept otherwise fails cert validation
-cd "/Users/scottray/Claude Code/ocr-mcp"
+cd "/path/to/ocr-mcp"
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python --only-binary :all: -e .
 ```
@@ -72,7 +72,7 @@ accurate text.
 ## Registering with Claude Code / Cowork
 
 ```bash
-claude mcp add ocr-service -s user -- "/Users/scottray/Claude Code/ocr-mcp/.venv/bin/python" -m ocr_service.server
+claude mcp add ocr-service -s user -- "/path/to/ocr-mcp/.venv/bin/python" -m ocr_service.server
 ```
 
 `-s user` registers it for all your projects (use `-s local` to scope it to
@@ -83,7 +83,7 @@ Cowork config):
 {
   "mcpServers": {
     "ocr-service": {
-      "command": "/Users/scottray/Claude Code/ocr-mcp/.venv/bin/python",
+      "command": "/path/to/ocr-mcp/.venv/bin/python",
       "args": ["-m", "ocr_service.server"]
     }
   }
@@ -93,6 +93,17 @@ Cowork config):
 This was **not** run automatically — registering a server edits Claude
 Code's persistent config, so it's left for you to run (or ask me to run)
 explicitly.
+
+## Native Swift migration
+
+The Python/PyObjC engine remains the behavioral reference while the native
+Swift package reaches CLI and MCP parity. `LocalOCRCore` now implements and
+cross-checks the shared inspection, recognition, cache, partial-failure, and
+searchable-PDF semantics without changing the existing Python tools.
+
+- [Approved LocalOCR open-core product design](docs/superpowers/specs/2026-07-27-localocr-open-core-product-design.md)
+- [Native Swift engine implementation plan](docs/superpowers/plans/2026-07-28-localocr-swift-engine.md)
+- [Stable LocalOCRCore engine API](docs/engine-api.md)
 
 ## CLI (no MCP client needed)
 
