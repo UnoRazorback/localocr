@@ -53,6 +53,36 @@ import Testing
         #expect(cacheFiles(in: rootURL).isEmpty)
     }
 
+    @Test func configuredCompatibilityVersionIgnoresStaleKeyVersion() async throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let staleKey = makeKey(compatibilityVersion: "v1")
+        let v1Cache = OCRCache(rootURL: rootURL, compatibilityVersion: "v1")
+        let v2Cache = OCRCache(rootURL: rootURL, compatibilityVersion: "v2")
+        try await v1Cache.store(makeCandidate(text: "v1"), for: staleKey)
+
+        #expect(try await v2Cache.value(for: staleKey) == nil)
+
+        try await v2Cache.store(makeCandidate(text: "v2"), for: staleKey)
+        #expect(try await v1Cache.value(for: staleKey) == makeCandidate(text: "v1"))
+        #expect(try await v2Cache.value(for: staleKey) == makeCandidate(text: "v2"))
+    }
+
+    @Test func propagatesOperationalReadErrorsWithoutDeletingTheEntry() async throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let cache = OCRCache(rootURL: rootURL, compatibilityVersion: "v1")
+        let key = makeKey()
+        try await cache.store(makeCandidate(text: "protected"), for: key)
+        let cacheFile = try #require(cacheFiles(in: rootURL).first)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: cacheFile.path)
+
+        await #expect(throws: (any Error).self) {
+            try await cache.value(for: key)
+        }
+        #expect(FileManager.default.fileExists(atPath: cacheFile.path))
+    }
+
     @Test func concurrentWritesToSameKeyLeaveAReadableCandidate() async throws {
         let rootURL = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: rootURL) }
@@ -111,12 +141,12 @@ private func makeTemporaryDirectory() throws -> URL {
     return directory
 }
 
-private func makeKey(page: Int = 1) -> OCRCacheKey {
+private func makeKey(page: Int = 1, compatibilityVersion: String = "v1") -> OCRCacheKey {
     OCRCacheKey(
         sourceSHA256: "0123456789abcdef",
         page: page,
         settings: RecognitionSettings(dpi: 250, recognitionLanguages: ["en-US"]),
-        compatibilityVersion: "v1"
+        compatibilityVersion: compatibilityVersion
     )
 }
 

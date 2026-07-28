@@ -38,8 +38,9 @@ public actor OCRCache {
             return nil
         }
 
+        let data = try Data(contentsOf: fileURL)
         do {
-            let cachedValue = try JSONDecoder().decode(CachedRecognitionCandidate.self, from: Data(contentsOf: fileURL))
+            let cachedValue = try JSONDecoder().decode(CachedRecognitionCandidate.self, from: data)
             return try cachedValue.recognitionCandidate
         } catch {
             try? fileManager.removeItem(at: fileURL)
@@ -80,7 +81,13 @@ public actor OCRCache {
     }
 
     private func fileURL(for key: OCRCacheKey) throws -> URL {
-        let keyData = try JSONEncoder.sortedKeyEncoder.encode(key)
+        let effectiveKey = OCRCacheKey(
+            sourceSHA256: key.sourceSHA256,
+            page: key.page,
+            settings: key.settings,
+            compatibilityVersion: compatibilityVersion
+        )
+        let keyData = try JSONEncoder.sortedKeyEncoder.encode(effectiveKey)
         let digest = SHA256.hash(data: keyData).hexString
         return rootURL
             .appendingPathComponent(String(digest.prefix(2)), isDirectory: true)
