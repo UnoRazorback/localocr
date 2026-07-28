@@ -21,14 +21,17 @@ def _load_generator():
     return module.generate_contract_fixtures
 
 
-def test_contract_fixture_generator_is_deterministic(contract_fixture_dir):
+def test_contract_fixture_generator_matches_committed_contract(tmp_path, contract_fixture_dir):
     generate_contract_fixtures = _load_generator()
 
-    first = generate_contract_fixtures(contract_fixture_dir)
-    second = generate_contract_fixtures(contract_fixture_dir)
+    first = generate_contract_fixtures(tmp_path)
+    second = generate_contract_fixtures(tmp_path)
+    committed = {
+        name: json.loads((contract_fixture_dir / f"{name}.json").read_text())
+        for name in ("inspect_mixed", "ocr_existing_text")
+    }
 
     assert first == second
+    assert first == committed
     assert first["inspect_mixed"]["ocr_needed_pages"] == [2]
     assert first["ocr_existing_text"]["pages"][0]["method"] == "existing_text"
-    assert json.loads((contract_fixture_dir / "inspect_mixed.json").read_text()) == first["inspect_mixed"]
-    assert json.loads((contract_fixture_dir / "ocr_existing_text.json").read_text()) == first["ocr_existing_text"]

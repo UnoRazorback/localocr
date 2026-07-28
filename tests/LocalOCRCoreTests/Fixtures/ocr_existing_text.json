@@ -5,11 +5,11 @@
     {
       "lines": [],
       "method": "existing_text",
+      "orientation": 1,
       "page": 1,
       "text": "Original Contract Sum is $57,508,601.00 per the schedule of values"
     }
   ],
-  "rotated_ocr_pages": [],
-  "source_path": "<fixture>",
+  "rotated_ocr_pages": {},
   "source_sha256": "<sha256>"
 }

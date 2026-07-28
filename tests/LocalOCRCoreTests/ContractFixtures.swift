@@ -88,9 +88,13 @@ import Testing
     #expect(LocalOCRError.recognitionFailed(page: 2, message: "Vision failed") == .recognitionFailed(page: 2, message: "Vision failed"))
 }
 
-@Test func packagedPythonContractFixturesAreReadable() throws {
-    let fixtureURL = try #require(Bundle.module.url(forResource: "inspect_mixed", withExtension: "json", subdirectory: "Fixtures"))
-    let fixture = try JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any]
+@Test func packagedPythonContractFixturesDecodeIntoPublicModels() throws {
+    let inspectionURL = try #require(Bundle.module.url(forResource: "inspect_mixed", withExtension: "json", subdirectory: "Fixtures"))
+    let inspection = try JSONDecoder().decode(PDFInspection.self, from: Data(contentsOf: inspectionURL))
+    let ocrURL = try #require(Bundle.module.url(forResource: "ocr_existing_text", withExtension: "json", subdirectory: "Fixtures"))
+    let ocr = try JSONDecoder().decode(OCRResult.self, from: Data(contentsOf: ocrURL))
 
-    #expect(fixture?["ocr_needed_pages"] as? [Int] == [2])
+    #expect(inspection.ocrNeededPages == [2])
+    #expect(ocr.pages[0].method == .existingText)
+    #expect(ocr.pages[0].orientation == .up)
 }

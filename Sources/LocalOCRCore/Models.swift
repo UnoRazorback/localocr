@@ -67,6 +67,15 @@ public struct PDFInspection: Sendable, Codable, Equatable {
         self.fullySearchable = fullySearchable
         self.pageDetails = pageDetails
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case pages
+        case searchablePages = "searchable_pages"
+        case ocrNeededPages = "ocr_needed_pages"
+        case characters
+        case fullySearchable = "fully_searchable"
+        case pageDetails = "page_details"
+    }
 }
 
 public enum PageMethod: String, Sendable, Codable, Equatable {
@@ -88,7 +97,7 @@ public struct TextLine: Sendable, Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case text
         case confidence
-        case boundingBox
+        case boundingBox = "bounding_box"
     }
 
     public init(from decoder: any Decoder) throws {
@@ -180,11 +189,11 @@ public struct OCRResult: Sendable, Codable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sourceSHA256
+        case sourceSHA256 = "source_sha256"
         case pages
-        case failedPages
-        case emptyOCRPages
-        case rotatedOCRPages
+        case failedPages = "failed_pages"
+        case emptyOCRPages = "empty_ocr_pages"
+        case rotatedOCRPages = "rotated_ocr_pages"
     }
 
     public init(from decoder: any Decoder) throws {
