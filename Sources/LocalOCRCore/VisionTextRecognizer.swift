@@ -24,6 +24,14 @@ public protocol TextRecognizing: Sendable {
     ) async throws -> RecognitionCandidate
 }
 
+struct VisionRecognitionError: Error, LocalizedError, Sendable, Equatable {
+    let message: String
+
+    var errorDescription: String? {
+        message
+    }
+}
+
 public struct VisionTextRecognizer: TextRecognizing {
     public init() {}
 
@@ -76,7 +84,7 @@ public struct VisionTextRecognizer: TextRecognizing {
         return request
     }
 
-    static func recognitionError(_ error: any Error) -> LocalOCRError {
-        .recognitionFailed(page: 0, message: error.localizedDescription)
+    static func recognitionError(_ error: any Error) -> VisionRecognitionError {
+        VisionRecognitionError(message: error.localizedDescription)
     }
 }

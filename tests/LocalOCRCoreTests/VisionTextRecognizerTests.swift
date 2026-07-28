@@ -18,10 +18,13 @@ import Testing
         #expect(request.recognitionLanguages == ["en-US"])
     }
 
-    @Test func mapsVisionFailureToRecognitionFailed() {
-        let error = VisionTextRecognizer.recognitionError(VisionFixtureError())
+    @Test func keepsVisionFailurePageNeutralForProcessorAttribution() {
+        let error: any Error = VisionTextRecognizer.recognitionError(
+            VisionFixtureError()
+        )
 
-        #expect(error == .recognitionFailed(page: 0, message: "Vision fixture failed"))
+        #expect(error.localizedDescription == "Vision fixture failed")
+        #expect(!(error is LocalOCRError))
     }
 
     @Test func recognizesUprightSyntheticTextWithRequestedSettings() async throws {

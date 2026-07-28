@@ -1,10 +1,63 @@
 import CoreGraphics
+import Darwin
 import Foundation
 import ImageIO
-import LocalOCRCore
+@testable import LocalOCRCore
 import Testing
 
 @Suite(.serialized) struct OCRProcessorTests {
+    @Test func missingSourceThrowsStructuredFileNotFound() async {
+        let missingURL = URL.temporaryDirectory
+            .appendingPathComponent(
+                "OCRProcessorTests-missing-\(UUID().uuidString).pdf"
+            )
+        let processor = OCRProcessor(
+            pdfSource: FakePDFSource(inspection: inspection(pageCount: 1)),
+            recognizer: FakeTextRecognizer(),
+            cache: nil
+        )
+
+        await #expect(throws: LocalOCRError.fileNotFound) {
+            try await processor.process(request(sourceURL: missingURL)) { _ in }
+        }
+    }
+
+    @Test func unreadableSourceThrowsStructuredPermissionDenied() async throws {
+        let sourceURL = try temporarySourceFile()
+        #expect(chmod(sourceURL.path, 0) == 0)
+        defer {
+            _ = chmod(sourceURL.path, S_IRUSR | S_IWUSR)
+            try? FileManager.default.removeItem(at: sourceURL)
+        }
+        let processor = OCRProcessor(
+            pdfSource: FakePDFSource(inspection: inspection(pageCount: 1)),
+            recognizer: FakeTextRecognizer(),
+            cache: nil
+        )
+
+        await #expect(throws: LocalOCRError.permissionDenied) {
+            try await processor.process(request(sourceURL: sourceURL)) { _ in }
+        }
+    }
+
+    @Test func unsupportedFormatIsRejectedBeforeUnreadableSourceIsHashed() async throws {
+        let sourceURL = try temporarySourceFile(pathExtension: "txt")
+        #expect(chmod(sourceURL.path, 0) == 0)
+        defer {
+            _ = chmod(sourceURL.path, S_IRUSR | S_IWUSR)
+            try? FileManager.default.removeItem(at: sourceURL)
+        }
+        let processor = OCRProcessor(
+            pdfSource: FakePDFSource(inspection: inspection(pageCount: 1)),
+            recognizer: FakeTextRecognizer(),
+            cache: nil
+        )
+
+        await #expect(throws: LocalOCRError.unsupportedFormat("txt")) {
+            try await processor.process(request(sourceURL: sourceURL)) { _ in }
+        }
+    }
+
     @Test func nativeTextPagesReturnExistingTextWithoutRecognition() async throws {
         let sourceURL = try temporarySourceFile()
         defer { try? FileManager.default.removeItem(at: sourceURL) }
@@ -218,6 +271,50 @@ import Testing
         #expect(await recognizer.recognizedPages == [1])
     }
 
+    @Test func adapterThrownLocalCancellationIsNeverRecordedAsPageFailure() async throws {
+        let sourceURL = try temporarySourceFile()
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let recognizer = FakeTextRecognizer(responses: [
+            responseKey(page: 1, orientation: .up): .failure(.cancelled),
+        ])
+        let processor = OCRProcessor(
+            pdfSource: FakePDFSource(inspection: inspection(pageCount: 1)),
+            recognizer: recognizer,
+            cache: nil
+        )
+
+        await #expect(throws: LocalOCRError.cancelled) {
+            try await processor.process(request(sourceURL: sourceURL)) { _ in }
+        }
+    }
+
+    @Test func recognitionFailureIsAttributedToActualOneIndexedPage() async throws {
+        let sourceURL = try temporarySourceFile()
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let recognizer = FakeTextRecognizer(responses: [
+            responseKey(page: 2, orientation: .up):
+                .failure(.recognitionFailed),
+        ])
+        let processor = OCRProcessor(
+            pdfSource: FakePDFSource(inspection: inspection(pageCount: 2)),
+            recognizer: recognizer,
+            cache: nil
+        )
+
+        await #expect(
+            throws: LocalOCRError.recognitionFailed(
+                page: 2,
+                message: "Recognition fixture failed"
+            )
+        ) {
+            try await processor.recognize(
+                sourceURL,
+                pageIndex: 1,
+                settings: .init()
+            )
+        }
+    }
+
     @Test func rasterizationKeepsAtMostOneImageAlive() async throws {
         let sourceURL = try temporarySourceFile()
         defer { try? FileManager.default.removeItem(at: sourceURL) }
@@ -294,6 +391,8 @@ private func responseKey(
 
 private enum FakeRecognitionError: Error, Sendable {
     case fixture
+    case cancelled
+    case recognitionFailed
 }
 
 private actor FakeTextRecognizer: TextRecognizing {
@@ -325,7 +424,17 @@ private actor FakeTextRecognizer: TextRecognizing {
         let key = responseKey(page: image.width, orientation: orientation)
         calls.append(key)
         let response = responses[key] ?? .success(candidate(orientation, lines: []))
-        let value = try response.get()
+        let value: RecognitionCandidate
+        do {
+            value = try response.get()
+        } catch FakeRecognitionError.cancelled {
+            throw LocalOCRError.cancelled
+        } catch FakeRecognitionError.recognitionFailed {
+            throw LocalOCRError.recognitionFailed(
+                page: 0,
+                message: "Recognition fixture failed"
+            )
+        }
         if cancelAfterRecognizedPage == key.page {
             withUnsafeCurrentTask { $0?.cancel() }
         }
@@ -472,9 +581,12 @@ private func trackedImage(width: Int, lifetime: ImageLifetimeTracker) -> CGImage
     )!
 }
 
-private func temporarySourceFile() throws -> URL {
+private func temporarySourceFile(
+    pathExtension: String = "pdf"
+) throws -> URL {
     let url = FileManager.default.temporaryDirectory
-        .appendingPathComponent("OCRProcessorTests-\(UUID().uuidString).pdf")
+        .appendingPathComponent("OCRProcessorTests-\(UUID().uuidString)")
+        .appendingPathExtension(pathExtension)
     try Data("OCR processor fixture".utf8).write(to: url)
     return url
 }

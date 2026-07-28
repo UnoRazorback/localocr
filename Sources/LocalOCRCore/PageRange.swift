@@ -2,15 +2,17 @@ import Foundation
 
 public enum PageRange {
     public static func parse(_ selection: String?, totalPages: Int) throws -> [Int] {
-        guard let selection else {
+        guard let selection,
+              !selection.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
             return Array(0..<totalPages)
         }
 
         var pages = Set<Int>()
         for rawToken in selection.split(separator: ",", omittingEmptySubsequences: false) {
             let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !token.isEmpty else {
-                throw LocalOCRError.invalidPageSelection(selection)
+            if token.isEmpty {
+                continue
             }
 
             let bounds = token.split(separator: "-", omittingEmptySubsequences: false)

@@ -1,5 +1,6 @@
 import Foundation
 import LocalOCRCore
+import PDFKit
 import Testing
 
 @Suite(.serialized) struct EngineIntegrationTests {
@@ -30,6 +31,55 @@ import Testing
                 == "Retainage withheld this period totals $144,904.17 exactly"
         )
         #expect(try #require(page.lines.first).confidence > 0)
+    }
+
+    @Test func recognizesRotatedImageOnlyPageWithoutClipping() async throws {
+        let sourceURL = try #require(
+            Bundle.module.url(
+                forResource: "image-only",
+                withExtension: "pdf",
+                subdirectory: "Fixtures"
+            )
+        )
+        let directoryURL = URL.temporaryDirectory
+            .appendingPathComponent(
+                "EngineIntegrationTests-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: false
+        )
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let rotatedURL = directoryURL.appendingPathComponent("rotated.pdf")
+        let sourceDocument = try #require(PDFDocument(url: sourceURL))
+        let sourcePage = try #require(
+            sourceDocument.page(at: 0)?.copy() as? PDFPage
+        )
+        sourcePage.rotation = 90
+        let rotatedDocument = PDFDocument()
+        rotatedDocument.insert(sourcePage, at: 0)
+        #expect(rotatedDocument.write(to: rotatedURL))
+
+        let result = try await OCRProcessor(
+            pdfSource: PDFDocumentSource(),
+            recognizer: VisionTextRecognizer(),
+            cache: nil
+        ).process(
+            OCRRequest(
+                sourceURL: rotatedURL,
+                pageSelection: "1",
+                settings: RecognitionSettings()
+            )
+        ) { _ in }
+
+        #expect(result.failedPages.isEmpty)
+        let page = try #require(result.pages.first)
+        #expect(page.method == .visionOCR)
+        #expect(
+            page.text
+                == "Retainage withheld this period totals $144,904.17 exactly"
+        )
     }
 
     @Test func exportsSwiftResultsInTheNormalizedPythonContractShape() async throws {

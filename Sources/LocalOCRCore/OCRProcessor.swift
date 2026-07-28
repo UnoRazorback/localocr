@@ -24,6 +24,7 @@ public actor OCRProcessor {
     ) async throws -> OCRResult {
         do {
             progress(.inspecting)
+            try EngineErrorMapper.validatePDFSourceType(request.sourceURL)
             let sourceSHA256 = try await FileHashing.sha256(of: request.sourceURL)
             let inspection = try pdfSource.inspect(request.sourceURL)
             let selectedPages = try PageRange.parse(
@@ -98,6 +99,8 @@ public actor OCRProcessor {
                     }
                 } catch is CancellationError {
                     throw LocalOCRError.cancelled
+                } catch let error as LocalOCRError where error == .cancelled {
+                    throw error
                 } catch {
                     failedPages.append(page)
                 }
@@ -114,10 +117,12 @@ public actor OCRProcessor {
             )
         } catch is CancellationError {
             throw LocalOCRError.cancelled
+        } catch {
+            throw EngineErrorMapper.map(error, at: .source)
         }
     }
 
-    private func recognize(
+    func recognize(
         _ sourceURL: URL,
         pageIndex: Int,
         settings: RecognitionSettings
@@ -127,10 +132,31 @@ public actor OCRProcessor {
             pageIndex: pageIndex,
             dpi: settings.dpi
         )
-        return try await OrientationSelector().best(
-            image: image,
-            settings: settings,
-            recognizer: recognizer
-        )
+        do {
+            return try await OrientationSelector().best(
+                image: image,
+                settings: settings,
+                recognizer: recognizer
+            )
+        } catch is CancellationError {
+            throw LocalOCRError.cancelled
+        } catch let error as LocalOCRError {
+            switch error {
+            case .cancelled:
+                throw error
+            case let .recognitionFailed(_, message):
+                throw LocalOCRError.recognitionFailed(
+                    page: pageIndex + 1,
+                    message: message
+                )
+            default:
+                throw error
+            }
+        } catch {
+            throw LocalOCRError.recognitionFailed(
+                page: pageIndex + 1,
+                message: error.localizedDescription
+            )
+        }
     }
 }

@@ -174,7 +174,9 @@ public enum FileHashing {
 
 `PageRange.parse` accepts comma-separated pages and inclusive ranges such as
 `"1-5"` and `"3,7,12"`. It returns sorted, deduplicated **zero-based page
-indexes** for use with PDFKit. A `nil` selection returns every page.
+indexes** for use with PDFKit. A `nil`, empty, or whitespace-only selection
+returns every page. Empty comma-separated tokens are skipped, so
+`"1,,3,"` selects pages 1 and 3, matching the Python reference.
 `OutputNaming` returns `<stem>_searchable.pdf`, then
 `<stem>_searchable_2.pdf` and higher collision-free names.
 
@@ -315,7 +317,8 @@ and page-selection strings are one-indexed. The low-level
 zero-based `pageIndex` values to match PDFKit.
 
 After trimming leading and trailing whitespace/newlines, a PDF page is
-searchable at **20 characters or more**. Unless `forceOCR` is `true`, such a
+searchable at **20 Unicode scalar values (code points) or more**, matching
+Python's `len` behavior for native text. Unless `forceOCR` is `true`, such a
 page is returned as `.existingText` with an empty `lines` array and `.up`
 orientation; Vision and rasterization are skipped.
 
@@ -377,6 +380,13 @@ visually unchanged and listed in `SearchablePDFResult.failedPages`;
 atomically moving/replacing the destination and cleans up its temporary
 files on handled failure.
 
+High-level processing accepts case-insensitive `.pdf` local-file extensions;
+other extensions throw `unsupportedFormat` with the normalized extension.
+Missing files, denied access, exhausted destination storage, invalid
+destinations, and post-write validation failures remain distinct
+`LocalOCRError` cases. Both Swift `CancellationError` and adapter-originated
+`LocalOCRError.cancelled` cross the engine boundary as `.cancelled`.
+
 ## Searchable-PDF coordinates and numeric accuracy
 
 Vision line boxes are normalized `0...1` rectangles with a lower-left origin
@@ -386,6 +396,12 @@ PDF media box, applies the PDF page transform (including page rotation and
 non-zero origins), and draws fitted Helvetica text invisibly. Existing native
 text is not duplicated. Media/crop/bleed/trim/art boxes, page rotation, and
 the original visual appearance are preserved.
+
+`SearchablePDFWriter` rebuilds the output document from rendered page
+appearances. Interactive annotations and form widgets are not copied as
+interactive objects: appearances emitted by PDFKit are flattened into page
+content, while objects without a rendered appearance may be omitted.
+Document outlines/bookmarks and document-level metadata are not copied.
 
 The invisible overlay is line-box fitted, not glyph-for-glyph typesetting.
 Text selection bounds are therefore approximate. OCR confidence and geometry

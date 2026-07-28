@@ -1,7 +1,8 @@
 import CoreGraphics
+import Darwin
 import Foundation
 import ImageIO
-import LocalOCRCore
+@testable import LocalOCRCore
 import PDFKit
 import Testing
 
@@ -201,6 +202,176 @@ import Testing
 
         #expect(!FileManager.default.fileExists(atPath: outputURL.path))
         #expect(try Data(contentsOf: sourceURL) == sourceBytes)
+    }
+
+    @Test func diskFullDuringTemporaryWritePreservesExistingDestination() async throws {
+        let sourceURL = try fixtureURL()
+        let location = try temporaryPDFLocation()
+        let originalDestination = Data("ORIGINAL DESTINATION".utf8)
+        try originalDestination.write(to: location.outputURL)
+        defer { try? FileManager.default.removeItem(at: location.directoryURL) }
+        let liveOperations = SearchablePDFFileOperations.live
+        let failingOperations = SearchablePDFFileOperations(
+            write: { data, url, stage in
+                switch stage {
+                case .drawing:
+                    try liveOperations.write(data, url, stage)
+                case .finalized:
+                    throw NSError(
+                        domain: NSPOSIXErrorDomain,
+                        code: Int(ENOSPC)
+                    )
+                }
+            },
+            rename: liveOperations.rename
+        )
+
+        await #expect(throws: LocalOCRError.insufficientDiskSpace) {
+            try await SearchablePDFWriter(
+                pdfReader: PDFDocumentSource(),
+                fileOperations: failingOperations
+            ).write(
+                sourceURL: sourceURL,
+                destinationURL: location.outputURL,
+                pageResults: []
+            )
+        }
+
+        #expect(
+            try Data(contentsOf: location.outputURL) == originalDestination
+        )
+    }
+
+    @Test func diskFullDuringDrawingWritePreservesExistingDestination() async throws {
+        let sourceURL = try fixtureURL()
+        let location = try temporaryPDFLocation()
+        let originalDestination = Data("ORIGINAL DESTINATION".utf8)
+        try originalDestination.write(to: location.outputURL)
+        defer { try? FileManager.default.removeItem(at: location.directoryURL) }
+        let liveOperations = SearchablePDFFileOperations.live
+        let failingOperations = SearchablePDFFileOperations(
+            write: { data, url, stage in
+                switch stage {
+                case .drawing:
+                    throw NSError(
+                        domain: NSPOSIXErrorDomain,
+                        code: Int(ENOSPC)
+                    )
+                case .finalized:
+                    try liveOperations.write(data, url, stage)
+                }
+            },
+            rename: liveOperations.rename
+        )
+
+        await #expect(throws: LocalOCRError.insufficientDiskSpace) {
+            try await SearchablePDFWriter(
+                pdfReader: PDFDocumentSource(),
+                fileOperations: failingOperations
+            ).write(
+                sourceURL: sourceURL,
+                destinationURL: location.outputURL,
+                pageResults: []
+            )
+        }
+
+        #expect(
+            try Data(contentsOf: location.outputURL) == originalDestination
+        )
+    }
+
+    @Test func deniedDestinationDirectoryMapsPermissionAtDrawingWrite() async throws {
+        let sourceURL = try fixtureURL()
+        let location = try temporaryPDFLocation()
+        let originalDestination = Data("ORIGINAL DESTINATION".utf8)
+        try originalDestination.write(to: location.outputURL)
+        #expect(
+            chmod(
+                location.directoryURL.path,
+                S_IRUSR | S_IXUSR
+            ) == 0
+        )
+        defer {
+            _ = chmod(
+                location.directoryURL.path,
+                S_IRUSR | S_IWUSR | S_IXUSR
+            )
+            try? FileManager.default.removeItem(at: location.directoryURL)
+        }
+
+        await #expect(throws: LocalOCRError.permissionDenied) {
+            try await SearchablePDFWriter().write(
+                sourceURL: sourceURL,
+                destinationURL: location.outputURL,
+                pageResults: []
+            )
+        }
+
+        #expect(
+            chmod(
+                location.directoryURL.path,
+                S_IRUSR | S_IWUSR | S_IXUSR
+            ) == 0
+        )
+        #expect(
+            try Data(contentsOf: location.outputURL) == originalDestination
+        )
+    }
+
+    @Test func permissionDeniedDuringAtomicRenamePreservesExistingDestination() async throws {
+        let sourceURL = try fixtureURL()
+        let location = try temporaryPDFLocation()
+        let originalDestination = Data("ORIGINAL DESTINATION".utf8)
+        try originalDestination.write(to: location.outputURL)
+        defer { try? FileManager.default.removeItem(at: location.directoryURL) }
+        let liveOperations = SearchablePDFFileOperations.live
+        let failingOperations = SearchablePDFFileOperations(
+            write: liveOperations.write,
+            rename: { _, _ in EACCES }
+        )
+
+        await #expect(throws: LocalOCRError.permissionDenied) {
+            try await SearchablePDFWriter(
+                pdfReader: PDFDocumentSource(),
+                fileOperations: failingOperations
+            ).write(
+                sourceURL: sourceURL,
+                destinationURL: location.outputURL,
+                pageResults: []
+            )
+        }
+
+        #expect(
+            try Data(contentsOf: location.outputURL) == originalDestination
+        )
+    }
+
+    @Test func missingTargetDuringAtomicRenameMapsInvalidDestination() async throws {
+        let sourceURL = try fixtureURL()
+        let location = try temporaryPDFLocation()
+        let originalDestination = Data("ORIGINAL DESTINATION".utf8)
+        try originalDestination.write(to: location.outputURL)
+        defer { try? FileManager.default.removeItem(at: location.directoryURL) }
+        let liveOperations = SearchablePDFFileOperations.live
+        let failingOperations = SearchablePDFFileOperations(
+            write: liveOperations.write,
+            rename: { _, _ in ENOENT }
+        )
+
+        await #expect(throws: LocalOCRError.invalidDestination) {
+            try await SearchablePDFWriter(
+                pdfReader: PDFDocumentSource(),
+                fileOperations: failingOperations
+            ).write(
+                sourceURL: sourceURL,
+                destinationURL: location.outputURL,
+                pageResults: []
+            )
+        }
+
+        #expect(
+            try Data(contentsOf: location.outputURL) == originalDestination
+        )
     }
 
     @Test func reopensAndValidatesTemporaryOutputBeforeReplacingExistingDestination() async throws {
@@ -460,6 +631,101 @@ import Testing
             try await task.value
         }
         #expect(!FileManager.default.fileExists(atPath: outputURL.path))
+    }
+
+    @Test func validationAdapterCancellationUsesTheCoreError() async throws {
+        let sourceURL = try fixtureURL()
+
+        for site in ValidationCancellationSite.allCases {
+            for kind in ValidationCancellationKind.allCases {
+                let location = try temporaryPDFLocation()
+                defer {
+                    try? FileManager.default.removeItem(at: location.directoryURL)
+                }
+
+                await #expect(throws: LocalOCRError.cancelled) {
+                    try await SearchablePDFWriter(
+                        pdfReader: CancellationValidationProbe(
+                            site: site,
+                            kind: kind
+                        )
+                    ).write(
+                        sourceURL: sourceURL,
+                        destinationURL: location.outputURL,
+                        pageResults: site.pageResults
+                    )
+                }
+                #expect(
+                    !FileManager.default.fileExists(
+                        atPath: location.outputURL.path
+                    )
+                )
+            }
+        }
+    }
+}
+
+private enum ValidationCancellationSite: CaseIterable, Sendable {
+    case inspect
+    case nativeText
+
+    var pageResults: [PageResult] {
+        switch self {
+        case .inspect:
+            []
+        case .nativeText:
+            [
+                PageResult(
+                    page: 2,
+                    text: "VALIDATION CANCELLATION",
+                    method: .visionOCR,
+                    lines: [],
+                    orientation: .up
+                )
+            ]
+        }
+    }
+}
+
+private enum ValidationCancellationKind: CaseIterable, Sendable {
+    case swift
+    case local
+}
+
+private struct CancellationValidationProbe: PDFDocumentReading {
+    let site: ValidationCancellationSite
+    let kind: ValidationCancellationKind
+
+    func inspect(_ url: URL) throws -> PDFInspection {
+        guard site == .inspect else {
+            return PDFInspection(
+                pages: 4,
+                searchablePages: [],
+                ocrNeededPages: [1, 2, 3, 4],
+                characters: 0,
+                fullySearchable: false,
+                pageDetails: []
+            )
+        }
+
+        try throwCancellation()
+    }
+
+    func nativeText(in url: URL, pageIndex: Int) throws -> String {
+        try throwCancellation()
+    }
+
+    func rasterize(_ url: URL, pageIndex: Int, dpi: Int) throws -> CGImage {
+        throw LocalOCRError.cancelled
+    }
+
+    private func throwCancellation() throws -> Never {
+        switch kind {
+        case .swift:
+            throw CancellationError()
+        case .local:
+            throw LocalOCRError.cancelled
+        }
     }
 }
 

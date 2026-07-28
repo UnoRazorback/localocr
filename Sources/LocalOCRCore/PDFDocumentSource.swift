@@ -19,7 +19,7 @@ public struct PDFDocumentSource: PDFDocumentReading {
 
         for pageIndex in 0 ..< document.pageCount {
             let text = try nativeText(in: document, pageIndex: pageIndex)
-            let characters = text.count
+            let characters = Self.nativeCharacterCount(in: text)
             pageDetails.append(
                 PageInspection(
                     page: pageIndex + 1,
@@ -54,8 +54,17 @@ public struct PDFDocumentSource: PDFDocumentReading {
 
         let mediaBox = page.bounds(for: .mediaBox)
         let scale = CGFloat(dpi) / 72
-        let width = Int((mediaBox.width * scale).rounded(.up))
-        let height = Int((mediaBox.height * scale).rounded(.up))
+        let normalizedRotation = ((page.rotation % 360) + 360) % 360
+        guard [0, 90, 180, 270].contains(normalizedRotation) else {
+            throw LocalOCRError.rasterizationFailed(page: pageIndex + 1)
+        }
+        let displayTransform = page.transform(for: .mediaBox)
+        let displayedSize = mediaBox
+            .applying(displayTransform)
+            .standardized
+            .size
+        let width = Int((displayedSize.width * scale).rounded(.up))
+        let height = Int((displayedSize.height * scale).rounded(.up))
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard width > 0, height > 0,
               let context = CGContext(
@@ -74,13 +83,18 @@ public struct PDFDocumentSource: PDFDocumentReading {
         context.setFillColor(CGColor(gray: 1, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         context.scaleBy(x: scale, y: scale)
-        context.translateBy(x: -mediaBox.minX, y: -mediaBox.minY)
+        // PDFPage.draw applies the same display transform, including rotation
+        // and MediaBox origin normalization.
         page.draw(with: .mediaBox, to: context)
 
         guard let image = context.makeImage() else {
             throw LocalOCRError.rasterizationFailed(page: pageIndex + 1)
         }
         return image
+    }
+
+    static func nativeCharacterCount(in text: String) -> Int {
+        text.unicodeScalars.count
     }
 
     private func openDocument(at url: URL) throws -> PDFDocument {
