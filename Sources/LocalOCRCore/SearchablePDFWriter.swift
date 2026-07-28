@@ -164,10 +164,7 @@ public struct SearchablePDFWriter: SearchablePDFWriting {
                 throw LocalOCRError.outputValidationFailed
             }
             let mediaBox = page.bounds(for: .mediaBox)
-            context.beginPDFPage(
-                [
-                    kCGPDFContextMediaBox as String: rectangleData(mediaBox)
-                ] as CFDictionary)
+            context.beginPDFPage(pageInfo(for: page))
 
             context.saveGState()
             let rotation = page.rotation
@@ -179,12 +176,17 @@ public struct SearchablePDFWriter: SearchablePDFWriting {
             if let result = resultsByPage[pageIndex + 1],
                 result.method == .visionOCR
             {
+                context.saveGState()
+                context.concatenate(
+                    page.transform(for: .mediaBox).inverted()
+                )
                 drawInvisibleText(
                     result.lines,
                     orientation: result.orientation,
                     mediaBox: mediaBox,
                     in: context
                 )
+                context.restoreGState()
             }
             context.endPDFPage()
         }
@@ -206,6 +208,26 @@ public struct SearchablePDFWriter: SearchablePDFWriting {
         guard outputDocument.write(to: destinationURL) else {
             throw LocalOCRError.outputValidationFailed
         }
+    }
+
+    private func pageInfo(for page: PDFPage) -> CFDictionary {
+        [
+            kCGPDFContextMediaBox as String: rectangleData(
+                page.bounds(for: .mediaBox)
+            ),
+            kCGPDFContextCropBox as String: rectangleData(
+                page.bounds(for: .cropBox)
+            ),
+            kCGPDFContextBleedBox as String: rectangleData(
+                page.bounds(for: .bleedBox)
+            ),
+            kCGPDFContextTrimBox as String: rectangleData(
+                page.bounds(for: .trimBox)
+            ),
+            kCGPDFContextArtBox as String: rectangleData(
+                page.bounds(for: .artBox)
+            ),
+        ] as CFDictionary
     }
 
     private func rectangleData(_ rectangle: CGRect) -> CFData {
@@ -393,10 +415,26 @@ public struct SearchablePDFWriter: SearchablePDFWriting {
             } catch {
                 throw LocalOCRError.outputValidationFailed
             }
-            guard !outputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let expectedLines = result.lines
+                .map { normalizedText($0.text) }
+                .filter { !$0.isEmpty }
+            let expectedText = normalizedText(result.text)
+            let expectedFragments =
+                expectedLines.isEmpty
+                ? [expectedText].filter { !$0.isEmpty }
+                : expectedLines
+            let normalizedOutput = normalizedText(outputText)
+            guard !expectedFragments.isEmpty,
+                expectedFragments.allSatisfy({ normalizedOutput.contains($0) })
+            else {
                 throw LocalOCRError.outputValidationFailed
             }
         }
+    }
+
+    private func normalizedText(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
     }
 
     private func atomicReplace(

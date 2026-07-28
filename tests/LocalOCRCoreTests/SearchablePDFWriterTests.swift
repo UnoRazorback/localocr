@@ -70,7 +70,7 @@ import Testing
                         TextLine(
                             text: "ROTATED OCR OVERLAY",
                             confidence: 0.97,
-                            boundingBox: CGRect(x: 0.12, y: 0.14, width: 0.7, height: 0.1)
+                            boundingBox: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.1)
                         )
                     ],
                     orientation: .up
@@ -116,6 +116,15 @@ import Testing
         #expect(landscapeBounds.minX >= 70)
         #expect(landscapeBounds.minY < 200)
         #expect(landscapeBounds.height > landscapeBounds.width * 5)
+        let rotatedPage = try #require(output.page(at: 3))
+        let rotatedSelection = try #require(
+            output.findString("ROTATED OCR OVERLAY", withOptions: []).first
+        )
+        let rotatedBounds = rotatedSelection.bounds(for: rotatedPage)
+        #expect(rotatedBounds.minX > 430)
+        #expect(rotatedBounds.minY > 45)
+        #expect(rotatedBounds.minY < 60)
+        #expect(rotatedBounds.height > rotatedBounds.width * 5)
     }
 
     @Test func reportsEveryMissingPageAsIncompleteWhilePreservingItsAppearance() async throws {
@@ -156,7 +165,7 @@ import Testing
                         TextLine(
                             text: "ROTATED OCR OVERLAY",
                             confidence: 0.97,
-                            boundingBox: CGRect(x: 0.12, y: 0.14, width: 0.7, height: 0.1)
+                            boundingBox: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.1)
                         )
                     ],
                     orientation: .up
@@ -234,6 +243,86 @@ import Testing
             includingPropertiesForKeys: nil
         ).filter { $0.lastPathComponent.hasPrefix(".localocr-") }
         #expect(temporaryFiles.isEmpty)
+    }
+
+    @Test func preservesDifferingPageBoxesAndCroppedAppearance() async throws {
+        let location = try temporaryPDFLocation()
+        let sourceURL = location.directoryURL.appendingPathComponent("cropped-source.pdf")
+        let outputURL = location.outputURL
+        defer { try? FileManager.default.removeItem(at: location.directoryURL) }
+        try makeCroppedSource(at: sourceURL)
+
+        _ = try await SearchablePDFWriter().write(
+            sourceURL: sourceURL,
+            destinationURL: outputURL,
+            pageResults: [
+                PageResult(
+                    page: 1,
+                    text: "CROPPED OCR OVERLAY",
+                    method: .visionOCR,
+                    lines: [
+                        TextLine(
+                            text: "CROPPED OCR OVERLAY",
+                            confidence: 0.99,
+                            boundingBox: CGRect(x: 0.2, y: 0.25, width: 0.5, height: 0.1)
+                        )
+                    ],
+                    orientation: .up
+                )
+            ]
+        )
+
+        let sourceDocument = try #require(PDFDocument(url: sourceURL))
+        let outputDocument = try #require(PDFDocument(url: outputURL))
+        let sourcePage = try #require(sourceDocument.page(at: 0))
+        let outputPage = try #require(outputDocument.page(at: 0))
+        for displayBox in [
+            PDFDisplayBox.mediaBox,
+            .cropBox,
+            .bleedBox,
+            .trimBox,
+            .artBox,
+        ] {
+            #expect(outputPage.bounds(for: displayBox) == sourcePage.bounds(for: displayBox))
+        }
+        try expectSampledPixelsMatch(
+            source: sourcePage,
+            output: outputPage,
+            displayBox: .cropBox
+        )
+    }
+
+    @Test func rejectsMissingOCRTextEvenWhenVisionPageHasUnrelatedNativeText() async throws {
+        let sourceURL = try fixtureURL()
+        let location = try temporaryPDFLocation()
+        let outputURL = location.outputURL
+        let originalDestination = Data("ORIGINAL DESTINATION".utf8)
+        try originalDestination.write(to: outputURL)
+        defer { try? FileManager.default.removeItem(at: location.directoryURL) }
+
+        await #expect(throws: LocalOCRError.outputValidationFailed) {
+            try await SearchablePDFWriter().write(
+                sourceURL: sourceURL,
+                destinationURL: outputURL,
+                pageResults: [
+                    PageResult(
+                        page: 1,
+                        text: "EXPECTED OCR TEXT",
+                        method: .visionOCR,
+                        lines: [
+                            TextLine(
+                                text: "EXPECTED OCR TEXT",
+                                confidence: 0.99,
+                                boundingBox: .zero
+                            )
+                        ],
+                        orientation: .up
+                    )
+                ]
+            )
+        }
+
+        #expect(try Data(contentsOf: outputURL) == originalDestination)
     }
 
     @Test func cancellationUsesTheCoreErrorAndLeavesNoOutput() async throws {
@@ -319,13 +408,38 @@ private func temporaryPDFLocation() throws -> (directoryURL: URL, outputURL: URL
     )
 }
 
+private func makeCroppedSource(at outputURL: URL) throws {
+    let fixture = try #require(PDFDocument(url: fixtureURL()))
+    let fixturePage = try #require(fixture.page(at: 2)?.copy() as? PDFPage)
+    fixturePage.setBounds(
+        CGRect(x: 60, y: 45, width: 320, height: 180),
+        for: .cropBox
+    )
+    fixturePage.setBounds(
+        CGRect(x: 55, y: 40, width: 330, height: 190),
+        for: .bleedBox
+    )
+    fixturePage.setBounds(
+        CGRect(x: 70, y: 55, width: 280, height: 150),
+        for: .trimBox
+    )
+    fixturePage.setBounds(
+        CGRect(x: 80, y: 65, width: 250, height: 120),
+        for: .artBox
+    )
+    let document = PDFDocument()
+    document.insert(fixturePage, at: 0)
+    #expect(document.write(to: outputURL))
+}
+
 private func expectSampledPixelsMatch(
     source: PDFPage,
     output: PDFPage,
+    displayBox: PDFDisplayBox = .mediaBox,
     channelTolerance: Int = 3
 ) throws {
-    let sourcePixels = try renderedPixels(of: source)
-    let outputPixels = try renderedPixels(of: output)
+    let sourcePixels = try renderedPixels(of: source, displayBox: displayBox)
+    let outputPixels = try renderedPixels(of: output, displayBox: displayBox)
     #expect(sourcePixels.width == outputPixels.width)
     #expect(sourcePixels.height == outputPixels.height)
     guard sourcePixels.width == outputPixels.width,
@@ -353,8 +467,11 @@ private func expectSampledPixelsMatch(
     #expect(meanDifference <= 0.05)
 }
 
-private func renderedPixels(of page: PDFPage) throws -> (width: Int, height: Int, bytes: [UInt8]) {
-    let bounds = page.bounds(for: .mediaBox)
+private func renderedPixels(
+    of page: PDFPage,
+    displayBox: PDFDisplayBox
+) throws -> (width: Int, height: Int, bytes: [UInt8]) {
+    let bounds = page.bounds(for: displayBox)
     let width = Int(bounds.width.rounded(.up))
     let height = Int(bounds.height.rounded(.up))
     var bytes = [UInt8](repeating: 255, count: width * height * 4)
@@ -378,7 +495,7 @@ private func renderedPixels(of page: PDFPage) throws -> (width: Int, height: Int
         context.translateBy(x: 0, y: CGFloat(height))
         context.scaleBy(x: 1, y: -1)
         context.translateBy(x: -bounds.minX, y: -bounds.minY)
-        page.draw(with: .mediaBox, to: context)
+        page.draw(with: displayBox, to: context)
         return true
     }
     guard created else {
