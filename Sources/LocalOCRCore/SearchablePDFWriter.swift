@@ -169,6 +169,7 @@ public struct SearchablePDFWriter: SearchablePDFWriting {
             context.saveGState()
             let rotation = page.rotation
             page.rotation = 0
+            context.translateBy(x: mediaBox.minX, y: mediaBox.minY)
             page.draw(with: .mediaBox, to: context)
             page.rotation = rotation
             context.restoreGState()
@@ -183,7 +184,7 @@ public struct SearchablePDFWriter: SearchablePDFWriting {
                 drawInvisibleText(
                     result.lines,
                     orientation: result.orientation,
-                    mediaBox: mediaBox,
+                    mediaBox: CGRect(origin: .zero, size: mediaBox.size),
                     in: context
                 )
                 context.restoreGState()

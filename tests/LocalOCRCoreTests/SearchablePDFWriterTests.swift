@@ -292,6 +292,64 @@ import Testing
         )
     }
 
+    @Test func preservesNonZeroMediaBoxOriginAndPlacesOCRRelativeToIt() async throws {
+        let location = try temporaryPDFLocation()
+        let sourceURL = location.directoryURL.appendingPathComponent("offset-source.pdf")
+        let outputURL = location.outputURL
+        defer { try? FileManager.default.removeItem(at: location.directoryURL) }
+        try makeNonZeroOriginSource(at: sourceURL)
+
+        _ = try await SearchablePDFWriter().write(
+            sourceURL: sourceURL,
+            destinationURL: outputURL,
+            pageResults: [
+                PageResult(
+                    page: 1,
+                    text: "NONZERO ORIGIN OCR",
+                    method: .visionOCR,
+                    lines: [
+                        TextLine(
+                            text: "NONZERO ORIGIN OCR",
+                            confidence: 0.99,
+                            boundingBox: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.1)
+                        )
+                    ],
+                    orientation: .up
+                )
+            ]
+        )
+
+        let sourceDocument = try #require(PDFDocument(url: sourceURL))
+        let outputDocument = try #require(PDFDocument(url: outputURL))
+        let sourcePage = try #require(sourceDocument.page(at: 0))
+        let outputPage = try #require(outputDocument.page(at: 0))
+        #expect(
+            sourcePage.bounds(for: .mediaBox)
+                == CGRect(x: 100, y: 50, width: 500, height: 300)
+        )
+        for displayBox in [
+            PDFDisplayBox.mediaBox,
+            .cropBox,
+            .bleedBox,
+            .trimBox,
+            .artBox,
+        ] {
+            #expect(outputPage.bounds(for: displayBox) == sourcePage.bounds(for: displayBox))
+        }
+        try expectSampledPixelsMatch(source: sourcePage, output: outputPage)
+
+        let selection = try #require(
+            outputDocument.findString("NONZERO ORIGIN OCR", withOptions: []).first
+        )
+        let selectionBounds = selection.bounds(for: outputPage)
+        #expect(selectionBounds.minX >= 150)
+        #expect(selectionBounds.minX < 151)
+        #expect(selectionBounds.maxX <= 251)
+        #expect(selectionBounds.minY >= 80)
+        #expect(selectionBounds.maxY <= 110)
+        #expect(selectionBounds.width > selectionBounds.height * 5)
+    }
+
     @Test func rejectsMissingOCRTextEvenWhenVisionPageHasUnrelatedNativeText() async throws {
         let sourceURL = try fixtureURL()
         let location = try temporaryPDFLocation()
@@ -430,6 +488,47 @@ private func makeCroppedSource(at outputURL: URL) throws {
     let document = PDFDocument()
     document.insert(fixturePage, at: 0)
     #expect(document.write(to: outputURL))
+}
+
+private func makeNonZeroOriginSource(at outputURL: URL) throws {
+    let mediaBox = CGRect(x: 100, y: 50, width: 500, height: 300)
+    guard let consumer = CGDataConsumer(url: outputURL as CFURL),
+        let context = CGContext(consumer: consumer, mediaBox: nil, nil)
+    else {
+        throw LocalOCRError.invalidDestination
+    }
+    context.beginPDFPage(
+        [
+            kCGPDFContextMediaBox as String: pdfRectangleData(mediaBox),
+            kCGPDFContextCropBox as String: pdfRectangleData(mediaBox),
+            kCGPDFContextBleedBox as String: pdfRectangleData(
+                CGRect(x: 110, y: 55, width: 480, height: 290)
+            ),
+            kCGPDFContextTrimBox as String: pdfRectangleData(
+                CGRect(x: 120, y: 60, width: 460, height: 280)
+            ),
+            kCGPDFContextArtBox as String: pdfRectangleData(
+                CGRect(x: 130, y: 65, width: 440, height: 270)
+            ),
+        ] as CFDictionary
+    )
+    context.setFillColor(CGColor(gray: 1, alpha: 1))
+    context.fill(mediaBox)
+    context.setFillColor(CGColor(red: 0.1, green: 0.5, blue: 0.9, alpha: 1))
+    context.fill(CGRect(x: 130, y: 90, width: 160, height: 120))
+    context.setFillColor(CGColor(red: 0.2, green: 0.75, blue: 0.4, alpha: 1))
+    context.fill(CGRect(x: 320, y: 180, width: 220, height: 30))
+    context.setFillColor(CGColor(red: 1, green: 0.45, blue: 0.15, alpha: 1))
+    context.fillEllipse(in: CGRect(x: 400, y: 70, width: 120, height: 90))
+    context.endPDFPage()
+    context.closePDF()
+}
+
+private func pdfRectangleData(_ rectangle: CGRect) -> CFData {
+    var rectangle = rectangle
+    return withUnsafeBytes(of: &rectangle) {
+        Data($0) as CFData
+    }
 }
 
 private func expectSampledPixelsMatch(
