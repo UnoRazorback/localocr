@@ -1,0 +1,33 @@
+{
+  "manifest_version": "0.3",
+  "name": "ocr-service",
+  "display_name": "OCR Service (Apple Vision)",
+  "version": "0.1.0",
+  "description": "OCR scanned/image-only PDFs and images locally via Apple's Vision framework — no cloud upload. Provides page counting, per-page OCR with page-range support, batch processing, a pre-OCR text-layer inspector, and searchable-PDF generation.",
+  "author": {
+    "name": "Scott Ray"
+  },
+  "server": {
+    "type": "binary",
+    "entry_point": "ocr_service.server",
+    "mcp_config": {
+      "command": "/Users/scottray/Claude Code/ocr-mcp/.venv/bin/python",
+      "args": ["-m", "ocr_service.server"],
+      "env": {}
+    }
+  },
+  "license": "UNLICENSED",
+  "user_config": {},
+  "tools": [
+    { "name": "get_pdf_page_count", "description": "Return the number of pages in a PDF." },
+    { "name": "inspect_pdf", "description": "Check whether a PDF already has searchable text, without running any OCR." },
+    { "name": "ocr_pdf", "description": "OCR a scanned/image-only PDF and return recognized text per page." },
+    { "name": "ocr_pdf_batch", "description": "OCR several PDFs in one call." },
+    { "name": "ocr_image", "description": "OCR a single image file (PNG/JPG/HEIC/etc.) directly via Vision." },
+    { "name": "make_searchable_pdf", "description": "Write a new PDF with recognized text embedded as an invisible, searchable text layer." }
+  ],
+  "keywords": ["ocr", "pdf", "vision", "construction", "scanned-documents"],
+  "compatibility": {
+    "platforms": ["darwin"]
+  }
+}
