@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import LocalOCRCore
 import PDFKit
@@ -52,19 +53,24 @@ private enum Fixtures {
     #expect(twentyCharacters.searchablePages == [1])
 }
 
-@Test func inspectionRejectsMissingAndInvalidPDFs() throws {
+@Test func inspectionRejectsMissingPDF() {
     let missing = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("LocalOCRCore-missing.pdf")
     #expect(throws: LocalOCRError.fileNotFound) {
         try PDFDocumentSource().inspect(missing)
     }
+}
 
+@Test func inspectionRejectsInvalidPDFWhileContainingCoreGraphicsDiagnostic() throws {
     let invalid = URL.temporaryDirectory.appendingPathComponent("LocalOCRCore-invalid-\(UUID().uuidString).pdf")
-    try Data("not a PDF".utf8).write(to: invalid)
+    try Data("%PDF-1.7\n".utf8).write(to: invalid)
     defer { try? FileManager.default.removeItem(at: invalid) }
 
-    #expect(throws: LocalOCRError.unreadablePDF) {
-        try PDFDocumentSource().inspect(invalid)
+    let standardError = capturedStandardError {
+        #expect(throws: LocalOCRError.unreadablePDF) {
+            try PDFDocumentSource().inspect(invalid)
+        }
     }
+    #expect(standardError.contains("CoreGraphics PDF has logged an error"))
 }
 
 @Test func rasterizesOnePDFPageAtRequestedDPI() throws {
@@ -81,4 +87,30 @@ private enum Fixtures {
     #expect(throws: LocalOCRError.pageOutOfBounds(page: 3, total: 2)) {
         try PDFDocumentSource().rasterize(Fixtures.mixedPDF, pageIndex: 2, dpi: 250)
     }
+}
+
+private func capturedStandardError(_ operation: () -> Void) -> String {
+    let pipe = Pipe()
+    let originalStandardError = dup(STDERR_FILENO)
+    precondition(originalStandardError != -1, "Could not duplicate standard error")
+    fflush(stderr)
+    precondition(dup2(pipe.fileHandleForWriting.fileDescriptor, STDERR_FILENO) != -1, "Could not redirect standard error")
+
+    var restored = false
+    defer {
+        if !restored {
+            fflush(stderr)
+            _ = dup2(originalStandardError, STDERR_FILENO)
+            close(originalStandardError)
+            pipe.fileHandleForWriting.closeFile()
+        }
+    }
+
+    operation()
+    fflush(stderr)
+    precondition(dup2(originalStandardError, STDERR_FILENO) != -1, "Could not restore standard error")
+    close(originalStandardError)
+    pipe.fileHandleForWriting.closeFile()
+    restored = true
+    return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
 }
