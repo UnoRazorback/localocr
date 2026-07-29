@@ -30,7 +30,9 @@ public struct MCPToolDispatcher: Sendable {
             case let .ocrPDF(request):
                 return try objectResult(try await service.ocrPDF(request))
             case let .ocrPDFBatch(request):
-                return try objectResult(await service.ocrPDFBatch(request))
+                let response = await service.ocrPDFBatch(request)
+                try Task.checkCancellation()
+                return try objectResult(response)
             case let .ocrImage(request):
                 let response = try await service.ocrImage(request)
                 return scalarResult(response.text)

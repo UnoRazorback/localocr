@@ -320,6 +320,30 @@ import Testing
     #expect(unexpectedResult.isError == true)
 }
 
+@Test func dispatcherMapsCancelledPartialBatchToStableError() async throws {
+    let service = MCPBatchCancellationService()
+    let dispatcher = MCPToolDispatcher(
+        service: service,
+        currentDirectory: URL(fileURLWithPath: "/cwd")
+    )
+    let call = Task {
+        await dispatcher.call(
+            name: "ocr_pdf_batch",
+            arguments: ["file_paths": ["/input.pdf"]]
+        )
+    }
+
+    await service.waitUntilStarted()
+    call.cancel()
+    let result = await call.value
+    let expected = #"{"error":{"code":"cancelled","message":"Operation cancelled"}}"#
+    let expectedValue = try value(from: expected)
+
+    #expect(try resultText(result) == expected)
+    #expect(result.structuredContent == expectedValue)
+    #expect(result.isError == true)
+}
+
 @Test func dispatcherConvertsNonFiniteResponseEncodingFailureAndSurvives() async throws {
     let nonFiniteResponse = PDFOCRResponse(
         sourcePath: "/input.pdf",
@@ -507,4 +531,92 @@ private extension PDFOCRResponse {
         emptyOCRPages: [],
         rotatedOCRPages: []
     )
+}
+
+struct MCPBatchCancellationService: LocalOCRServing {
+    private let startSignal = MCPBatchStartSignal()
+
+    func waitUntilStarted() async {
+        await startSignal.wait()
+    }
+
+    func pageCount(at _: URL) async throws -> PageCountResponse {
+        throw MCPBatchCancellationServiceError.unexpectedCall
+    }
+
+    func inspectPDF(at _: URL) async throws -> InspectPDFResponse {
+        throw MCPBatchCancellationServiceError.unexpectedCall
+    }
+
+    func ocrPDF(
+        _: PDFOCRRequest,
+        progress _: @escaping @Sendable (OCRProgress) -> Void
+    ) async throws -> PDFOCRResponse {
+        throw MCPBatchCancellationServiceError.unexpectedCall
+    }
+
+    func ocrPDFBatch(
+        _: BatchOCRRequest,
+        progress _: @escaping @Sendable (BatchProgress) -> Void
+    ) async -> BatchOCRResponse {
+        await startSignal.start()
+        try? await Task.sleep(for: .seconds(5))
+        return BatchOCRResponse(
+            processed: 1,
+            succeeded: 1,
+            failed: 0,
+            results: [
+                .success(
+                    PDFOCRResponse(
+                        sourcePath: "/input.pdf",
+                        sourceSHA256: "partial",
+                        pages: [],
+                        failedPages: [],
+                        emptyOCRPages: [],
+                        rotatedOCRPages: []
+                    )
+                ),
+            ]
+        )
+    }
+
+    func ocrImage(_: ImageOCRRequest) async throws -> ImageOCRResponse {
+        throw MCPBatchCancellationServiceError.unexpectedCall
+    }
+
+    func makeSearchablePDF(
+        _: SearchablePDFRequest,
+        progress _: @escaping @Sendable (OCRProgress) -> Void
+    ) async throws -> SearchablePDFResponse {
+        throw MCPBatchCancellationServiceError.unexpectedCall
+    }
+}
+
+private actor MCPBatchStartSignal {
+    private var started = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !started else { return }
+        await withCheckedContinuation { continuation in
+            if started {
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+            }
+        }
+    }
+
+    func start() {
+        started = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending {
+            waiter.resume()
+        }
+    }
+}
+
+private enum MCPBatchCancellationServiceError: Error {
+    case unexpectedCall
 }
