@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shlex
@@ -1354,6 +1355,508 @@ def test_second_mac_acceptance_record_freezes_required_result_fields() -> None:
     record = SECOND_MAC_RECORD.read_text()
     for field in EXPECTED_SECOND_MAC_FIELDS:
         assert field in record
+
+
+def _write_download_test_tool_dispatcher(tool_dir: Path) -> None:
+    tool_dir.mkdir()
+    dispatcher = tool_dir / "dispatcher"
+    dispatcher.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+tool="${0##*/}"
+trace="${LOCALOCR_TEST_TRACE:?}"
+printf '%s' "$tool" >> "$trace"
+for argument in "$@"; do
+    printf ' %q' "$argument" >> "$trace"
+done
+printf '\\n' >> "$trace"
+
+case "$tool" in
+    shasum)
+        exec /usr/bin/shasum "$@"
+        ;;
+    zipinfo)
+        exec /usr/bin/zipinfo "$@"
+        ;;
+    ditto)
+        exec /usr/bin/ditto "$@"
+        ;;
+    file)
+        printf 'Mach-O 64-bit executable arm64\\n'
+        ;;
+    lipo)
+        printf 'arm64\\n'
+        ;;
+    otool)
+        if [[ "$1" == "-L" ]]; then
+            printf '%s:\\n' "$2"
+            printf '\\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1336.61.1)\\n'
+        else
+            cat <<'EOF'
+Load command 0
+      cmd LC_BUILD_VERSION
+    minos 14.0
+Load command 1
+      cmd LC_RPATH
+     path /usr/lib/swift (offset 12)
+EOF
+        fi
+        ;;
+    strings)
+        :
+        ;;
+    codesign)
+        target="${!#}"
+        target_name="${target##*/}"
+        if [[ "$1" == "--verify" ]]; then
+            :
+        elif [[ "$1" == "-dv" ]]; then
+            team="DZ8B5454ZN"
+            if [[ "${LOCALOCR_TEST_BAD_SIGNATURE:-}" == "$target_name" ]]; then
+                team="WRONGTEAM"
+            fi
+            if [[ "${LOCALOCR_TEST_EXTRA_AUTHORITY:-}" == "$target_name" ]]; then
+                printf 'Authority=Developer ID Application: Other Person (DZ8B5454ZN)\\n'
+            fi
+            cat <<EOF
+CodeDirectory v=20500 size=10 flags=0x10000(runtime) hashes=1+2 location=embedded
+Authority=Developer ID Application: John Scott Ray (DZ8B5454ZN)
+Authority=Developer ID Certification Authority
+Authority=Apple Root CA
+Timestamp=Jul 29, 2026 at 12:46:27 PM
+TeamIdentifier=$team
+EOF
+        elif [[ "$1" == "-d" ]]; then
+            if [[ "${LOCALOCR_TEST_DEBUG_ENTITLEMENT:-}" == "$target_name" ]]; then
+                printf '<plist><dict><key>com.apple.security.get-task-allow</key><true/></dict></plist>\\n'
+            elif [[ "${LOCALOCR_TEST_FALSE_DEBUG_ENTITLEMENT:-}" == "$target_name" ]]; then
+                printf '<plist><dict><key>com.apple.security.get-task-allow</key><false/></dict></plist>\\n'
+            else
+                printf '<plist><dict/></plist>\\n'
+            fi
+        fi
+        ;;
+    xcrun)
+        if [[ "$1" == "--version" ]]; then
+            printf 'xcrun version 72.\\n'
+        elif [[ "$1" == "stapler" && "$2" == "validate" ]]; then
+            printf 'The validate action worked!\\n'
+        else
+            exit 64
+        fi
+        ;;
+    spctl)
+        printf 'accepted\\n'
+        ;;
+    PlistBuddy)
+        printf 'LocalOCR\\n'
+        ;;
+    sw_vers)
+        case "$1" in
+            -productVersion) printf '14.7.1\\n' ;;
+            -buildVersion) printf '23H222\\n' ;;
+            *) exit 64 ;;
+        esac
+        ;;
+    sysctl)
+        case "$2" in
+            hw.model) printf 'MacFixture1,1\\n' ;;
+            machdep.cpu.brand_string) printf 'Apple Test Chip\\n' ;;
+            *) exit 64 ;;
+        esac
+        ;;
+    uname)
+        printf 'arm64\\n'
+        ;;
+    date)
+        printf '2026-07-29T18:00:00Z\\n'
+        ;;
+    sleep)
+        :
+        ;;
+    *)
+        exit 64
+        ;;
+esac
+"""
+    )
+    dispatcher.chmod(0o755)
+    for tool in (
+        "shasum",
+        "zipinfo",
+        "ditto",
+        "file",
+        "lipo",
+        "otool",
+        "strings",
+        "codesign",
+        "xcrun",
+        "spctl",
+        "PlistBuddy",
+        "sw_vers",
+        "sysctl",
+        "uname",
+        "date",
+        "sleep",
+    ):
+        (tool_dir / tool).symlink_to(dispatcher)
+
+
+def _create_download_release_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    fixture_root = tmp_path / "fixture-root"
+    app = fixture_root / "LocalOCR Studio.app"
+    macos = app / "Contents" / "MacOS"
+    helpers = app / "Contents" / "Helpers"
+    macos.mkdir(parents=True)
+    helpers.mkdir()
+    (app / "Contents" / "Info.plist").write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>LocalOCR</string>
+</dict></plist>
+"""
+    )
+    main = macos / "LocalOCR"
+    main.write_text("#!/bin/bash\nexit 0\n")
+    main.chmod(0o755)
+    cli = helpers / "localocr"
+    cli.write_text(
+        """#!/bin/bash
+set -euo pipefail
+printf 'localocr %s\\n' "$*" >> "${LOCALOCR_TEST_TRACE:?}"
+if [[ "${1:-}" == "--version" ]]; then
+    printf '%s\\n' "${LOCALOCR_TEST_CLI_VERSION:-${LOCALOCR_RELEASE_VERSION:?}}"
+    exit 0
+fi
+case "${1:-}" in
+    ocr|image)
+        printf '{"text":"controlled fixture output"}\\n'
+        ;;
+    *)
+        exit 64
+        ;;
+esac
+"""
+    )
+    cli.chmod(0o755)
+    mcp = helpers / "localocr-mcp"
+    mcp.write_text(
+        """#!/bin/bash
+set -euo pipefail
+request="$(/bin/cat)"
+printf '%s\\n' "$request" > "${LOCALOCR_TEST_MCP_REQUEST:?}"
+printf 'localocr-mcp initialize\\n' >> "${LOCALOCR_TEST_TRACE:?}"
+version="${LOCALOCR_TEST_MCP_VERSION:-${LOCALOCR_RELEASE_VERSION:?}}"
+printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"localocr-mcp","version":"%s"}}}\\n' "$version"
+"""
+    )
+    mcp.chmod(0o755)
+
+    archive = tmp_path / "downloaded candidate.zip"
+    subprocess.run(
+        ["/usr/bin/ditto", "-c", "-k", "--keepParent", str(app), str(archive)],
+        check=True,
+    )
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    checksum = tmp_path / "published checksum.sha256"
+    checksum.write_text(f"{digest}  {archive.name}\n")
+    return archive, checksum
+
+
+def _run_download_release_fixture(
+    tmp_path: Path,
+    archive: Path,
+    checksum: Path,
+    *,
+    extra_env: dict[str, str] | None = None,
+    temp_parent: Path | None = None,
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    tool_dir = tmp_path / "controlled-tools"
+    _write_download_test_tool_dispatcher(tool_dir)
+    trace = tmp_path / "tool-trace.txt"
+    mcp_request = tmp_path / "mcp-request.json"
+    extraction_parent = temp_parent or (tmp_path / "fresh-extractions")
+    if temp_parent is None:
+        extraction_parent.mkdir()
+    env = os.environ.copy()
+    env.update(
+        {
+            "LOCALOCR_RELEASE_VERSION": "0.2.0",
+            "LOCALOCR_TEST_TRACE": str(trace),
+            "LOCALOCR_TEST_MCP_REQUEST": str(mcp_request),
+            "LOCALOCR_TEST_TEMP_PARENT": str(extraction_parent),
+        }
+    )
+    if extra_env:
+        env.update(extra_env)
+    harness = """
+source "$1"
+tool_dir="$2"
+shift 2
+download_shasum="$tool_dir/shasum"
+download_zipinfo="$tool_dir/zipinfo"
+download_ditto="$tool_dir/ditto"
+download_file="$tool_dir/file"
+download_lipo="$tool_dir/lipo"
+download_otool="$tool_dir/otool"
+download_strings="$tool_dir/strings"
+download_codesign="$tool_dir/codesign"
+download_xcrun="$tool_dir/xcrun"
+download_spctl="$tool_dir/spctl"
+download_plist_buddy="$tool_dir/PlistBuddy"
+download_sw_vers="$tool_dir/sw_vers"
+download_sysctl="$tool_dir/sysctl"
+download_uname="$tool_dir/uname"
+download_date="$tool_dir/date"
+download_sleep="$tool_dir/sleep"
+download_temp_parent="$LOCALOCR_TEST_TEMP_PARENT"
+download_main "$@"
+"""
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            harness,
+            "download-test",
+            str(RELEASE_SCRIPTS["download"]),
+            str(tool_dir),
+            str(archive),
+            str(checksum),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return result, trace, mcp_request
+
+
+def _download_evidence_files(checksum: Path) -> list[Path]:
+    return sorted(
+        checksum.parent.glob("localocr-downloaded-release-evidence-*.txt")
+    )
+
+
+def test_downloaded_release_requires_exactly_two_absolute_file_arguments(
+    tmp_path: Path,
+) -> None:
+    script = RELEASE_SCRIPTS["download"]
+    for arguments in (
+        (),
+        ("relative.zip", "relative.sha256"),
+        (str(tmp_path / "only.zip"),),
+        (
+            str(tmp_path / "one.zip"),
+            str(tmp_path / "one.sha256"),
+            str(tmp_path / "extra"),
+        ),
+    ):
+        result = subprocess.run(
+            ["/bin/bash", str(script), *arguments],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+
+
+def test_downloaded_release_verifies_checksum_before_fresh_extraction_and_runs_all_gates(
+    tmp_path: Path,
+) -> None:
+    archive, checksum = _create_download_release_fixture(tmp_path)
+
+    result, trace_file, mcp_request = _run_download_release_fixture(
+        tmp_path,
+        archive,
+        checksum,
+    )
+
+    assert result.returncode == 0, result.stderr
+    trace = trace_file.read_text().splitlines()
+    checksum_index = next(
+        index
+        for index, line in enumerate(trace)
+        if line.startswith("shasum -a 256 ")
+    )
+    extraction_index = next(
+        index
+        for index, line in enumerate(trace)
+        if line.startswith("ditto -x -k ")
+    )
+    assert checksum_index < extraction_index
+    assert sum(line.startswith("file -b ") for line in trace) == 3
+    assert sum(line.startswith("lipo -archs ") for line in trace) == 3
+    assert sum(line.startswith("otool -L ") for line in trace) == 3
+    assert sum(line.startswith("otool -l ") for line in trace) == 6
+    assert sum(line.startswith("strings -a ") for line in trace) == 3
+    assert any("stapler validate" in line for line in trace)
+    assert any(line.startswith("spctl --assess --type execute") for line in trace)
+    for code_object in ("localocr", "localocr-mcp", "LocalOCR\\ Studio.app"):
+        assert any(
+            line.startswith("codesign -dv --verbose=4 ")
+            and line.endswith(code_object)
+            for line in trace
+        )
+        assert any(
+            line.startswith("codesign -d --entitlements :- ")
+            and line.endswith(code_object)
+            for line in trace
+        )
+    assert '"method":"initialize"' in mcp_request.read_text()
+    assert '"version":"1.0"' in mcp_request.read_text()
+    assert not any(
+        line.startswith("localocr ocr ") or line.startswith("localocr image ")
+        for line in trace
+    )
+    evidence_files = _download_evidence_files(checksum)
+    assert len(evidence_files) == 1
+    evidence = evidence_files[0].read_text()
+    assert "UTC timestamp: 2026-07-29T18:00:00Z" in evidence
+    assert "Toolchain: xcrun version 72." in evidence
+    assert "macOS version: 14.7.1 (23H222)" in evidence
+    assert "Mac model: MacFixture1,1" in evidence
+    assert "Processor: Apple Test Chip" in evidence
+    assert "CPU architecture: arm64" in evidence
+    assert f"ZIP SHA-256: {hashlib.sha256(archive.read_bytes()).hexdigest()}" in evidence
+    assert "OCR smoke input type: not supplied" in evidence
+    assert "OCR smoke result: SKIPPED" in evidence
+    assert "Overall result: PASS" in evidence
+    assert list((tmp_path / "fresh-extractions").iterdir()) == []
+
+
+def test_downloaded_release_checksum_failure_never_extracts(
+    tmp_path: Path,
+) -> None:
+    archive, checksum = _create_download_release_fixture(tmp_path)
+    checksum.write_text(f"{'0' * 64}  {archive.name}\n")
+
+    result, trace_file, _ = _run_download_release_fixture(
+        tmp_path,
+        archive,
+        checksum,
+    )
+
+    assert result.returncode != 0
+    trace = trace_file.read_text().splitlines()
+    assert any(line.startswith("shasum -a 256 ") for line in trace)
+    assert not any(line.startswith("ditto -x -k ") for line in trace)
+    assert list((tmp_path / "fresh-extractions").iterdir()) == []
+    evidence = _download_evidence_files(checksum)[0].read_text()
+    assert "Checksum verification: FAIL" in evidence
+    assert "Overall result: FAIL" in evidence
+
+
+def test_downloaded_release_rejects_traversal_archive_before_extraction(
+    tmp_path: Path,
+) -> None:
+    import zipfile
+
+    archive = tmp_path / "adversarial.zip"
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("../outside-must-not-exist", "bad")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    checksum = tmp_path / "adversarial.sha256"
+    checksum.write_text(f"{digest}  {archive.name}\n")
+    outside = tmp_path / "outside-must-not-exist"
+
+    result, trace_file, _ = _run_download_release_fixture(
+        tmp_path,
+        archive,
+        checksum,
+    )
+
+    assert result.returncode != 0
+    assert not outside.exists()
+    assert not any(
+        line.startswith("ditto -x -k ")
+        for line in trace_file.read_text().splitlines()
+    )
+    evidence = _download_evidence_files(checksum)[0].read_text()
+    assert "Archive path safety: FAIL" in evidence
+
+
+@pytest.mark.parametrize(
+    "extra_env",
+    (
+        {"LOCALOCR_TEST_BAD_SIGNATURE": "localocr-mcp"},
+        {"LOCALOCR_TEST_EXTRA_AUTHORITY": "localocr"},
+        {"LOCALOCR_TEST_DEBUG_ENTITLEMENT": "LocalOCR Studio.app"},
+        {"LOCALOCR_TEST_FALSE_DEBUG_ENTITLEMENT": "localocr"},
+        {"LOCALOCR_TEST_CLI_VERSION": "9.9.9"},
+        {"LOCALOCR_TEST_MCP_VERSION": "9.9.9"},
+    ),
+)
+def test_downloaded_release_fails_closed_on_signature_entitlement_and_version_mismatches(
+    tmp_path: Path,
+    extra_env: dict[str, str],
+) -> None:
+    archive, checksum = _create_download_release_fixture(tmp_path)
+
+    result, _, _ = _run_download_release_fixture(
+        tmp_path,
+        archive,
+        checksum,
+        extra_env=extra_env,
+    )
+
+    assert result.returncode != 0
+    evidence = _download_evidence_files(checksum)[0].read_text()
+    assert "Overall result: FAIL" in evidence
+
+
+def test_downloaded_release_optional_smoke_records_type_not_content_or_paths(
+    tmp_path: Path,
+) -> None:
+    archive, checksum = _create_download_release_fixture(tmp_path)
+    smoke_input = tmp_path / "customer-987654-private-scan.png"
+    smoke_input.write_text("PRIVATE-DOCUMENT-CONTENT-DO-NOT-RECORD")
+    before = hashlib.sha256(smoke_input.read_bytes()).hexdigest()
+
+    result, trace_file, _ = _run_download_release_fixture(
+        tmp_path,
+        archive,
+        checksum,
+        extra_env={"LOCALOCR_SMOKE_INPUT": str(smoke_input)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert hashlib.sha256(smoke_input.read_bytes()).hexdigest() == before
+    assert any(
+        line.startswith("localocr image ") for line in trace_file.read_text().splitlines()
+    )
+    evidence = _download_evidence_files(checksum)[0].read_text()
+    assert "OCR smoke input type: PNG image" in evidence
+    assert "OCR smoke result: PASS" in evidence
+    for forbidden in (
+        str(tmp_path),
+        archive.name,
+        checksum.name,
+        smoke_input.name,
+        "PRIVATE-DOCUMENT-CONTENT-DO-NOT-RECORD",
+    ):
+        assert forbidden not in evidence
+
+
+def test_downloaded_release_cleanup_refuses_unconfined_temp_path(
+    tmp_path: Path,
+) -> None:
+    archive, checksum = _create_download_release_fixture(tmp_path)
+    outside = tmp_path / "outside-extraction"
+    outside.mkdir()
+    sentinel = outside / "must-survive.txt"
+    sentinel.write_text("keep")
+    controlled_parent = tmp_path / "controlled-parent-link"
+    controlled_parent.symlink_to(outside, target_is_directory=True)
+
+    result, _, _ = _run_download_release_fixture(
+        tmp_path,
+        archive,
+        checksum,
+        temp_parent=controlled_parent,
+    )
+
+    assert result.returncode != 0
+    assert sentinel.read_text() == "keep"
 
 
 def test_prepublication_scripts_do_not_touch_beta_metrics() -> None:
