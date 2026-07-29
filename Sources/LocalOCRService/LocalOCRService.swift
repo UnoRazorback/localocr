@@ -400,6 +400,10 @@ public actor LocalOCRService: LocalOCRServing {
             case 0x00 ... 0x08, 0x0B ... 0x0C, 0x0E ... 0x1F, 0x7F ... 0x9F:
                 result += String(format: "\\x%02x", scalar.value)
             default:
+                if shouldEscapeInPythonRepresentation(scalar) {
+                    result += pythonUnicodeEscape(scalar)
+                    continue
+                }
                 if scalar == "\\" || String(scalar) == quote {
                     result += "\\"
                 }
@@ -407,6 +411,27 @@ public actor LocalOCRService: LocalOCRServing {
             }
         }
         return result + quote
+    }
+
+    private static func shouldEscapeInPythonRepresentation(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.properties.generalCategory {
+        case .control, .format, .spaceSeparator, .lineSeparator, .paragraphSeparator,
+             .surrogate, .privateUse, .unassigned:
+            return scalar.value != 0x20
+        default:
+            return false
+        }
+    }
+
+    private static func pythonUnicodeEscape(_ scalar: Unicode.Scalar) -> String {
+        switch scalar.value {
+        case ...0xFF:
+            return String(format: "\\x%02x", scalar.value)
+        case ...0xFFFF:
+            return String(format: "\\u%04x", scalar.value)
+        default:
+            return String(format: "\\U%08x", scalar.value)
+        }
     }
 
     private func errorMessage(_ error: any Error, sourcePath: String) -> String {

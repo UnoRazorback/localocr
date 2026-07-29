@@ -1,0 +1,9 @@
+{
+  "failed": 1, "processed": 3,
+  "results": [
+    {"empty_ocr_pages": [], "failed_pages": [], "pages": [{"method": "existing_text", "page": 1, "text": "Original Contract Sum is $57,508,601.00 per the schedule of values"}, {"method": "vision_ocr", "page": 2, "text": "Retainage withheld this period totals $144,904.17 exactly"}], "rotated_ocr_pages": [], "source_path": "<fixture>/mixed.pdf", "source_sha256": "<sha256>", "status": "ok"},
+    {"error": "[Errno 2] No such file or directory: '<fixture>/missing.pdf'", "source_path": "<fixture>/missing.pdf", "status": "error"},
+    {"empty_ocr_pages": [], "failed_pages": [], "pages": [{"method": "vision_ocr", "page": 1, "text": "Retainage withheld this period totals $144,904.17 exactly"}, {"method": "vision_ocr", "page": 2, "text": "Synthetic image-only page two."}], "rotated_ocr_pages": [], "source_path": "<fixture>/image-only.pdf", "source_sha256": "<sha256>", "status": "ok"}
+  ],
+  "succeeded": 2
+}

@@ -11,7 +11,11 @@ import Testing
             ("double\"quote.pdf", "[Errno 2] No such file or directory: 'double\"quote.pdf'"),
             ("both'\".pdf", "[Errno 2] No such file or directory: 'both\\'\".pdf'"),
             ("back\\slash.pdf", "[Errno 2] No such file or directory: 'back\\\\slash.pdf'"),
-            ("line\n tab\t carriage\r control\u{0001}.pdf", "[Errno 2] No such file or directory: 'line\\n tab\\t carriage\\r control\\x01.pdf'")
+            ("line\n tab\t carriage\r control\u{0001}.pdf", "[Errno 2] No such file or directory: 'line\\n tab\\t carriage\\r control\\x01.pdf'"),
+            ("zero\u{200B}width.pdf", "[Errno 2] No such file or directory: 'zero\\u200bwidth.pdf'"),
+            ("line\u{2028}separator.pdf", "[Errno 2] No such file or directory: 'line\\u2028separator.pdf'"),
+            ("paragraph\u{2029}separator.pdf", "[Errno 2] No such file or directory: 'paragraph\\u2029separator.pdf'"),
+            ("soft\u{00AD}hyphen.pdf", "[Errno 2] No such file or directory: 'soft\\xadhyphen.pdf'")
         ]
 
         for (path, expected) in cases {
