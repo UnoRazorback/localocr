@@ -78,6 +78,8 @@ reject_binary_content() {
     for forbidden_string in \
         '.venv' \
         'python' \
+        'pyobjc' \
+        'pymupdf' \
         'ruby' \
         '/opt/homebrew' \
         '/usr/local' \

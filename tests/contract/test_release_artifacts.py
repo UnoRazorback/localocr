@@ -20,6 +20,8 @@ SYSTEM_SWIFT_RPATH = "/usr/lib/swift"
 FORBIDDEN_RUNTIME_STRING_FRAGMENTS = (
     ".venv",
     "python",
+    "pyobjc",
+    "pymupdf",
     "ruby",
     "/opt/homebrew",
     "/usr/local",
@@ -172,6 +174,8 @@ def test_release_artifact_policy_rejects_malicious_embedded_runtime_strings() ->
         (
             "safe text",
             ".venv/bin/python",
+            "PyObjC.framework",
+            "PyMuPDF.binding",
             "/opt/homebrew/bin/ruby",
             "/usr/local/bin/tool",
             "/Users/example/private",
@@ -186,6 +190,8 @@ def test_release_artifact_policy_rejects_malicious_embedded_runtime_strings() ->
         for forbidden in (
             ".venv",
             "python",
+            "pyobjc",
+            "pymupdf",
             "ruby",
             "/opt/homebrew",
             "/usr/local",
