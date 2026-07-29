@@ -5,30 +5,24 @@ import PDFKit
 
 public actor LocalOCRService: LocalOCRServing {
     private let pdfSourceFactory: @Sendable () -> any PDFDocumentReading
-    private let processorFactory: @Sendable (Bool) throws -> OCRProcessor
+    private let processorFactory: (@Sendable (Bool) throws -> OCRProcessor)?
     private let writerFactory: @Sendable () -> any SearchablePDFWriting
     private let imageSourceFactory: @Sendable () -> any ImageDocumentRecognizing
+    private let cacheURLProvider: @Sendable () throws -> URL
+    private let cacheFactory: @Sendable (URL) -> OCRCache
 
     public init() {
         pdfSourceFactory = { PDFDocumentSource() }
-        processorFactory = { usesCache in
-            let cache: OCRCache?
-            if usesCache {
-                cache = OCRCache(
-                    rootURL: try LocalOCRRuntime.cacheURL(),
-                    compatibilityVersion: LocalOCRRuntime.version
-                )
-            } else {
-                cache = nil
-            }
-            return OCRProcessor(
-                pdfSource: PDFDocumentSource(),
-                recognizer: VisionTextRecognizer(),
-                cache: cache
-            )
-        }
+        processorFactory = nil
         writerFactory = { SearchablePDFWriter() }
         imageSourceFactory = { ImageDocumentSource() }
+        cacheURLProvider = { try LocalOCRRuntime.cacheURL() }
+        cacheFactory = {
+            OCRCache(
+                rootURL: $0,
+                compatibilityVersion: LocalOCRRuntime.version
+            )
+        }
     }
 
     init(
@@ -41,6 +35,28 @@ public actor LocalOCRService: LocalOCRServing {
         self.processorFactory = processorFactory
         self.writerFactory = writerFactory
         self.imageSourceFactory = imageSourceFactory
+        cacheURLProvider = { try LocalOCRRuntime.cacheURL() }
+        cacheFactory = {
+            OCRCache(
+                rootURL: $0,
+                compatibilityVersion: LocalOCRRuntime.version
+            )
+        }
+    }
+
+    init(
+        pdfSourceFactory: @escaping @Sendable () -> any PDFDocumentReading,
+        writerFactory: @escaping @Sendable () -> any SearchablePDFWriting,
+        imageSourceFactory: @escaping @Sendable () -> any ImageDocumentRecognizing,
+        cacheURLProvider: @escaping @Sendable () throws -> URL,
+        cacheFactory: @escaping @Sendable (URL) -> OCRCache
+    ) {
+        self.pdfSourceFactory = pdfSourceFactory
+        processorFactory = nil
+        self.writerFactory = writerFactory
+        self.imageSourceFactory = imageSourceFactory
+        self.cacheURLProvider = cacheURLProvider
+        self.cacheFactory = cacheFactory
     }
 
     public func pageCount(at fileURL: URL) async throws -> PageCountResponse {
@@ -140,48 +156,55 @@ public actor LocalOCRService: LocalOCRServing {
         _ request: SearchablePDFRequest,
         progress: @escaping @Sendable (OCRProgress) -> Void
     ) async throws -> SearchablePDFResponse {
-        try checkCancellation()
-        try validatePDFInput(request.fileURL)
-        let outputURL = try resolveOutputURL(for: request)
-        try validateOutput(outputURL, sourceURL: request.fileURL)
+        do {
+            try checkCancellation()
+            try validatePDFInput(request.fileURL)
+            let outputURL = try resolveOutputURL(for: request)
+            try validateOutput(outputURL, sourceURL: request.fileURL)
 
-        let result = try await process(
-            PDFOCRRequest(
-                fileURL: request.fileURL,
-                dpi: request.dpi,
-                forceOCR: request.forceOCR,
-                includeLines: true,
-                usesCache: request.usesCache
-            ),
-            progress: { event in
-                if event != .completed {
-                    progress(event)
+            let result = try await process(
+                PDFOCRRequest(
+                    fileURL: request.fileURL,
+                    dpi: request.dpi,
+                    forceOCR: request.forceOCR,
+                    includeLines: true,
+                    usesCache: request.usesCache
+                ),
+                progress: { event in
+                    if event != .completed {
+                        progress(event)
+                    }
                 }
+            )
+            try checkCancellation()
+            progress(.assembling)
+
+            let temporaryURL = outputURL.deletingLastPathComponent().appendingPathComponent(
+                ".\(outputURL.deletingPathExtension().lastPathComponent).\(UUID().uuidString).partial.pdf"
+            )
+            defer { try? FileManager.default.removeItem(at: temporaryURL) }
+            let writerResult = try await writerFactory().write(
+                sourceURL: request.fileURL,
+                destinationURL: temporaryURL,
+                pageResults: result.pages
+            )
+            try checkCancellation()
+            guard writerResult.outputURL.standardizedFileURL
+                    == temporaryURL.standardizedFileURL,
+                  PDFDocument(url: temporaryURL) != nil
+            else {
+                throw LocalOCRError.outputValidationFailed
             }
-        )
-        try checkCancellation()
-        progress(.assembling)
+            try moveWithoutOverwriting(temporaryURL, to: outputURL)
+            progress(.completed)
 
-        let temporaryURL = outputURL.deletingLastPathComponent().appendingPathComponent(
-            ".\(outputURL.deletingPathExtension().lastPathComponent).\(UUID().uuidString).partial.pdf"
-        )
-        defer { try? FileManager.default.removeItem(at: temporaryURL) }
-        let writerResult = try await writerFactory().write(
-            sourceURL: request.fileURL,
-            destinationURL: temporaryURL,
-            pageResults: result.pages
-        )
-        try checkCancellation()
-        guard PDFDocument(url: writerResult.outputURL) != nil else {
-            throw LocalOCRError.outputValidationFailed
+            return SearchablePDFResponse(
+                outputPath: outputURL.path,
+                failedPages: Array(Set(result.failedPages).union(writerResult.failedPages)).sorted()
+            )
+        } catch is CancellationError {
+            throw LocalOCRError.cancelled
         }
-        try moveWithoutOverwriting(temporaryURL, to: outputURL)
-        progress(.completed)
-
-        return SearchablePDFResponse(
-            outputPath: outputURL.path,
-            failedPages: Array(Set(result.failedPages).union(writerResult.failedPages)).sorted()
-        )
     }
 
     private func process(
@@ -191,7 +214,7 @@ public actor LocalOCRService: LocalOCRServing {
         try checkCancellation()
         try validatePDFInput(request.fileURL)
         try checkCancellation()
-        let processor = try processorFactory(request.usesCache)
+        let processor = try makeProcessor(usesCache: request.usesCache)
         return try await processor.process(
             OCRRequest(
                 sourceURL: request.fileURL,
@@ -202,6 +225,18 @@ public actor LocalOCRService: LocalOCRServing {
                 )
             ),
             progress: progress
+        )
+    }
+
+    private func makeProcessor(usesCache: Bool) throws -> OCRProcessor {
+        if let processorFactory {
+            return try processorFactory(usesCache)
+        }
+        let cache = try usesCache ? cacheFactory(cacheURLProvider()) : nil
+        return OCRProcessor(
+            pdfSource: pdfSourceFactory(),
+            recognizer: VisionTextRecognizer(),
+            cache: cache
         )
     }
 

@@ -16,6 +16,43 @@ import Testing
     #expect(page["lines"] == nil)
 }
 
+@Test func batchSuccessUsesTheLegacyFlatOCRResponseShape() throws {
+    let object = try #require(
+        JSONSerialization.jsonObject(
+            with: ResponseEncoding.encode(
+                BatchItemResponse.success(.fixture(includeLines: true))
+            )
+        ) as? [String: Any]
+    )
+
+    #expect(
+        Set(object.keys) == [
+            "status", "source_path", "source_sha256", "pages", "failed_pages",
+            "empty_ocr_pages", "rotated_ocr_pages",
+        ]
+    )
+    #expect(object["status"] as? String == "ok")
+    #expect(object["result"] == nil)
+}
+
+@Test func batchFailureUsesExactlyTheLegacyThreeKeys() throws {
+    let object = try #require(
+        JSONSerialization.jsonObject(
+            with: ResponseEncoding.encode(
+                BatchItemResponse.failure(
+                    sourcePath: "/tmp/bad.pdf",
+                    message: "PDF could not be read"
+                )
+            )
+        ) as? [String: Any]
+    )
+
+    #expect(Set(object.keys) == ["source_path", "status", "error"])
+    #expect(object["source_path"] as? String == "/tmp/bad.pdf")
+    #expect(object["status"] as? String == "error")
+    #expect(object["error"] as? String == "PDF could not be read")
+}
+
 private extension PDFOCRResponse {
     static func fixture(includeLines: Bool) -> Self {
         PDFOCRResponse(

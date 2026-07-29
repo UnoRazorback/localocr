@@ -82,6 +82,35 @@ import Testing
         #expect(recorder.values == [false])
     }
 
+    @Test func defaultProcessorUsesTheRuntimeCachePathOnlyWhenCachingIsEnabled() async throws {
+        let recorder = URLRecorder()
+        let service = LocalOCRService(
+            pdfSourceFactory: { FixturePDFSource() },
+            writerFactory: { FixtureWriter() },
+            imageSourceFactory: { ImageDocumentSource() },
+            cacheURLProvider: { try LocalOCRRuntime.cacheURL() },
+            cacheFactory: { url in
+                recorder.record(url)
+                return OCRCache(
+                    rootURL: url,
+                    compatibilityVersion: LocalOCRRuntime.version
+                )
+            }
+        )
+        let sourceURL = try temporaryPDF()
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+        _ = try await service.ocrPDF(
+            PDFOCRRequest(fileURL: sourceURL, usesCache: false)
+        )
+        #expect(recorder.values.isEmpty)
+
+        _ = try await service.ocrPDF(
+            PDFOCRRequest(fileURL: sourceURL, usesCache: true)
+        )
+        #expect(recorder.values == [try LocalOCRRuntime.cacheURL()])
+    }
+
     @Test func cancelledWorkStopsBeforeItBuildsAnOCRProcessor() async throws {
         let recorder = BoolRecorder()
         let service = LocalOCRService(
@@ -201,6 +230,110 @@ import Testing
         #expect(recorder.events.contains(.assembling))
         #expect(recorder.events.last == .completed)
     }
+
+    @Test func searchablePDFRejectsAWriterThatReturnsAnotherURL() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = fixturePDF(named: "mixed")
+        let outputURL = directory.appendingPathComponent("output.pdf")
+        let service = fixtureService(writer: CopyingWriter(returnedURL: sourceURL))
+
+        await #expect(throws: LocalOCRError.outputValidationFailed) {
+            try await service.makeSearchablePDF(
+                SearchablePDFRequest(
+                    fileURL: sourceURL,
+                    outputURL: outputURL,
+                    usesCache: false
+                )
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: outputURL.path))
+    }
+
+    @Test func searchablePDFMapsDirectWriterCancellationToTheCoreError() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = fixtureService(writer: CancellingWriter())
+
+        await #expect(throws: LocalOCRError.cancelled) {
+            try await service.makeSearchablePDF(
+                SearchablePDFRequest(
+                    fileURL: fixturePDF(named: "mixed"),
+                    outputURL: directory.appendingPathComponent("output.pdf"),
+                    usesCache: false
+                )
+            )
+        }
+    }
+
+    @Test func searchablePDFLeavesSourceBytesUnchanged() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appendingPathComponent("source.pdf")
+        try FileManager.default.copyItem(at: fixturePDF(named: "mixed"), to: sourceURL)
+        let original = try Data(contentsOf: sourceURL)
+        let service = fixtureService(writer: CopyingWriter())
+
+        _ = try await service.makeSearchablePDF(
+            SearchablePDFRequest(fileURL: sourceURL, usesCache: false)
+        )
+
+        #expect(try Data(contentsOf: sourceURL) == original)
+    }
+
+    @Test func searchablePDFRefusesAnExistingDestinationWithoutReplacingIt() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outputURL = directory.appendingPathComponent("output.pdf")
+        let original = Data("existing output".utf8)
+        try original.write(to: outputURL)
+        let service = fixtureService(writer: CopyingWriter())
+
+        await #expect(throws: LocalOCRError.invalidDestination) {
+            try await service.makeSearchablePDF(
+                SearchablePDFRequest(
+                    fileURL: fixturePDF(named: "mixed"),
+                    outputURL: outputURL,
+                    usesCache: false
+                )
+            )
+        }
+        #expect(try Data(contentsOf: outputURL) == original)
+    }
+
+    @Test func searchablePDFRejectsAnInvalidTemporaryWriterOutput() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outputURL = directory.appendingPathComponent("output.pdf")
+        let service = fixtureService(writer: InvalidWriter())
+
+        await #expect(throws: LocalOCRError.outputValidationFailed) {
+            try await service.makeSearchablePDF(
+                SearchablePDFRequest(
+                    fileURL: fixturePDF(named: "mixed"),
+                    outputURL: outputURL,
+                    usesCache: false
+                )
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: outputURL.path))
+    }
+
+    @Test func searchablePDFUnionsOCRAndWriterFailedPages() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = partialFailureService(writer: CopyingWriter(failedPages: [7]))
+
+        let response = try await service.makeSearchablePDF(
+            SearchablePDFRequest(
+                fileURL: fixturePDF(named: "mixed"),
+                outputURL: directory.appendingPathComponent("output.pdf"),
+                usesCache: false
+            )
+        )
+
+        #expect(response.failedPages == [2, 7])
+    }
 }
 
 private extension BatchItemResponse {
@@ -224,6 +357,19 @@ private final class BoolRecorder: @unchecked Sendable {
     }
 
     func record(_ value: Bool) {
+        lock.withLock { storage.append(value) }
+    }
+}
+
+private final class URLRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [URL] = []
+
+    var values: [URL] {
+        lock.withLock { storage }
+    }
+
+    func record(_ value: URL) {
         lock.withLock { storage.append(value) }
     }
 }
@@ -267,6 +413,50 @@ private struct FixtureRecognizer: TextRecognizing {
     }
 }
 
+private struct PartialFailurePDFSource: PDFDocumentReading {
+    func inspect(_ url: URL) throws -> PDFInspection {
+        PDFInspection(
+            pages: 2,
+            searchablePages: [1],
+            ocrNeededPages: [2],
+            characters: 20,
+            fullySearchable: false,
+            pageDetails: [
+                PageInspection(page: 1, characters: 20, searchable: true),
+                PageInspection(page: 2, characters: 0, searchable: false),
+            ]
+        )
+    }
+
+    func nativeText(in url: URL, pageIndex: Int) throws -> String { "fixture text" }
+
+    func rasterize(_ url: URL, pageIndex: Int, dpi: Int) throws -> CGImage {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil,
+            width: 1,
+            height: 1,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let image = context.makeImage() else {
+            throw LocalOCRError.rasterizationFailed(page: pageIndex + 1)
+        }
+        return image
+    }
+}
+
+private struct FailingRecognizer: TextRecognizing {
+    func recognize(
+        image: CGImage,
+        orientation: CGImagePropertyOrientation,
+        settings: RecognitionSettings
+    ) async throws -> RecognitionCandidate {
+        throw LocalOCRError.recognitionFailed(page: 2, message: "fixture")
+    }
+}
+
 private struct FixtureWriter: SearchablePDFWriting {
     func write(
         sourceURL: URL,
@@ -274,6 +464,54 @@ private struct FixtureWriter: SearchablePDFWriting {
         pageResults: [PageResult]
     ) async throws -> SearchablePDFResult {
         fatalError("Not used")
+    }
+}
+
+private struct CopyingWriter: SearchablePDFWriting {
+    let returnedURL: URL?
+    let failedPages: [Int]
+
+    init(returnedURL: URL? = nil, failedPages: [Int] = []) {
+        self.returnedURL = returnedURL
+        self.failedPages = failedPages
+    }
+
+    func write(
+        sourceURL: URL,
+        destinationURL: URL,
+        pageResults: [PageResult]
+    ) async throws -> SearchablePDFResult {
+        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+        return SearchablePDFResult(
+            outputURL: returnedURL ?? destinationURL,
+            failedPages: failedPages,
+            isComplete: failedPages.isEmpty
+        )
+    }
+}
+
+private struct InvalidWriter: SearchablePDFWriting {
+    func write(
+        sourceURL: URL,
+        destinationURL: URL,
+        pageResults: [PageResult]
+    ) async throws -> SearchablePDFResult {
+        try Data("not a PDF".utf8).write(to: destinationURL)
+        return SearchablePDFResult(
+            outputURL: destinationURL,
+            failedPages: [],
+            isComplete: true
+        )
+    }
+}
+
+private struct CancellingWriter: SearchablePDFWriting {
+    func write(
+        sourceURL: URL,
+        destinationURL: URL,
+        pageResults: [PageResult]
+    ) async throws -> SearchablePDFResult {
+        throw CancellationError()
     }
 }
 
@@ -289,6 +527,40 @@ private struct CancellingImageSource: ImageDocumentRecognizing {
 private func fixturePDF(named name: String) -> URL {
     packageRoot
         .appendingPathComponent("tests/LocalOCRCoreTests/Fixtures/\(name).pdf")
+}
+
+private func fixtureService(
+    writer: any SearchablePDFWriting
+) -> LocalOCRService {
+    LocalOCRService(
+        pdfSourceFactory: { FixturePDFSource() },
+        processorFactory: { _ in
+            OCRProcessor(
+                pdfSource: FixturePDFSource(),
+                recognizer: FixtureRecognizer(),
+                cache: nil
+            )
+        },
+        writerFactory: { writer },
+        imageSourceFactory: { ImageDocumentSource() }
+    )
+}
+
+private func partialFailureService(
+    writer: any SearchablePDFWriting
+) -> LocalOCRService {
+    LocalOCRService(
+        pdfSourceFactory: { PartialFailurePDFSource() },
+        processorFactory: { _ in
+            OCRProcessor(
+                pdfSource: PartialFailurePDFSource(),
+                recognizer: FailingRecognizer(),
+                cache: nil
+            )
+        },
+        writerFactory: { writer },
+        imageSourceFactory: { ImageDocumentSource() }
+    )
 }
 
 private func fixtureImage(named name: String) -> URL {
