@@ -9,6 +9,9 @@ verify_staged_app="$verify_release_root/staged/LocalOCR Studio.app"
 verify_expected_team="DZ8B5454ZN"
 verify_expected_authority="Developer ID Application: John Scott Ray (DZ8B5454ZN)"
 verify_plist_buddy="/usr/libexec/PlistBuddy"
+verify_final_test_mode=0
+verify_final_trace_file=""
+verify_final_test_fail_step=""
 
 validate_arm64_architecture() {
     [[ "${1:-}" == "arm64" ]] || {
@@ -352,6 +355,85 @@ verify_direct_release() {
     verify_direct_release_signatures "$app_path"
     /usr/bin/xcrun stapler validate "$app_path"
     /usr/sbin/spctl --assess --type execute --verbose=2 "$app_path"
+}
+
+verify_localocr_version() {
+    local app_path="$1"
+    local actual_version
+
+    actual_version="$("$app_path/Contents/Helpers/localocr" --version)"
+    [[ "$actual_version" == "$LOCALOCR_RELEASE_VERSION" ]] || {
+        echo "extracted localocr version mismatch: $actual_version" >&2
+        return 1
+    }
+    printf 'localocr version: %s\n' "$actual_version"
+}
+
+verify_mcp_initialization_version() {
+    local app_path="$1"
+    local mcp_binary="$app_path/Contents/Helpers/localocr-mcp"
+    local stderr_file="$app_path/../localocr-mcp-initialization.stderr"
+    local initialize_request
+    local initialize_response
+    local server_version
+
+    initialize_request='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"direct-release-verifier","version":"1.0"}}}'
+    : > "$stderr_file"
+    initialize_response="$(
+        {
+            printf '%s\n' "$initialize_request"
+            /bin/sleep 1
+        } | "$mcp_binary" 2> "$stderr_file"
+    )"
+    [[ ! -s "$stderr_file" ]] || {
+        echo "extracted localocr-mcp wrote initialization diagnostics" >&2
+        /bin/cat "$stderr_file" >&2
+        return 1
+    }
+    server_version="$(
+        printf '%s\n' "$initialize_response" |
+            /usr/bin/plutil -extract result.serverInfo.version raw -o - -- - \
+                2>/dev/null
+    )" || {
+        echo "extracted localocr-mcp returned an invalid initialization response" >&2
+        return 1
+    }
+    [[ "$server_version" == "$LOCALOCR_RELEASE_VERSION" ]] || {
+        echo "extracted localocr-mcp version mismatch: $server_version" >&2
+        return 1
+    }
+    printf 'localocr-mcp version: %s\n' "$server_version"
+}
+
+record_final_verification_step() {
+    local step="$1"
+
+    printf '%s\n' "$step" >> "$verify_final_trace_file"
+    [[ "$verify_final_test_fail_step" != "$step" ]] || {
+        echo "controlled final verification failure: $step" >&2
+        return 1
+    }
+}
+
+verify_final_extracted_release() {
+    local app_path="$1"
+
+    if [[ "$verify_final_test_mode" -eq 1 ]]; then
+        record_final_verification_step "extracted-signatures" || return
+        record_final_verification_step "extracted-dependencies" || return
+        record_final_verification_step "extracted-rpaths" || return
+        record_final_verification_step "extracted-stapler-validate" || return
+        record_final_verification_step "extracted-spctl-assess" || return
+        record_final_verification_step "extracted-localocr-version" || return
+        record_final_verification_step "extracted-mcp-initialize-version" || return
+        return 0
+    fi
+
+    verify_direct_release_signatures "$app_path"
+    /usr/bin/xcrun stapler validate "$app_path"
+    /usr/sbin/spctl --assess --type execute --verbose=2 "$app_path"
+    verify_localocr_version "$app_path"
+    verify_mcp_initialization_version "$app_path"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

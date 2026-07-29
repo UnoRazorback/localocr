@@ -1362,3 +1362,321 @@ def test_prepublication_scripts_do_not_touch_beta_metrics() -> None:
         script = path.read_text()
         for beta_record in FORBIDDEN_BETA_RECORDS:
             assert beta_record not in script
+
+
+def _run_notarization_flow_test(
+    tmp_path: Path,
+    submission_result: dict[str, str],
+    *,
+    fail_step: str = "",
+    preexisting_final: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
+    submission_json = tmp_path / "submission-result.json"
+    trace_file = tmp_path / "notarization-trace.txt"
+    release_root = tmp_path / "direct-release"
+    if preexisting_final:
+        final_dir = release_root / "final"
+        final_dir.mkdir(parents=True)
+        (final_dir / "LocalOCR-Studio-0.2.0-42.zip").write_text("stale")
+        (final_dir / "LocalOCR-Studio-0.2.0-42.sha256").write_text("stale")
+    submission_json.write_text(
+        "{"
+        f'"id": "{submission_result["id"]}", '
+        f'"status": "{submission_result["status"]}"'
+        "}\n"
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "LOCALOCR_NOTARY_PROFILE": "controlled-test-profile",
+            "LOCALOCR_RELEASE_VERSION": "0.2.0",
+            "LOCALOCR_RELEASE_BUILD": "42",
+            "LOCALOCR_TEST_FAIL_STEP": fail_step,
+        }
+    )
+
+    result = _run_script_test(
+        "notarize",
+        "--test-workflow",
+        str(submission_json),
+        extra_arguments=(str(trace_file), str(release_root)),
+        env=env,
+    )
+    trace = trace_file.read_text().splitlines() if trace_file.is_file() else []
+    return result, trace, release_root
+
+
+def test_notarization_workflow_uses_required_safe_commands() -> None:
+    script = _script("notarize")
+    verify_script = _script("verify")
+
+    assert "set -x" not in script
+    assert "bash -x" not in script
+    assert "verify_direct_release_signatures" in script
+    assert "ditto -c -k --keepParent" in script
+    assert "--wait" in script
+    assert "--output-format json" in script
+    assert "notary-submit.json" in script
+    assert "notary-log.json" in script
+    assert "stapler staple" in script
+    assert "stapler validate" in script
+    assert "spctl --assess --type execute" in script
+    assert "shasum -a 256" in script
+    assert "mktemp -d" in script
+    assert "ditto -x -k" in script
+    assert "verify_final_extracted_release" in script
+    assert "Contents/Helpers/localocr" in verify_script
+    assert "--version" in verify_script
+    assert '"method":"initialize"' in verify_script
+    assert "codesign --verify --deep --strict" in verify_script
+    assert "verify_binary_dependencies" in verify_script
+    assert "verify_binary_rpaths" in verify_script
+    _assert_notarytool_profile_policy(
+        script,
+        required_subcommands=NOTARY_SUBCOMMANDS,
+    )
+    _assert_no_hard_coded_credentials(script)
+
+
+def test_notarization_accepted_flow_orders_verification_and_apple_gates(
+    tmp_path: Path,
+) -> None:
+    result, trace, release_root = _run_notarization_flow_test(
+        tmp_path,
+        {"id": "accepted-submission-id", "status": "Accepted"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert trace == [
+        "verify-signed-app",
+        "notary-history",
+        "create-submission-zip",
+        "notary-submit",
+        "stapler-staple",
+        "stapler-validate",
+        "spctl-assess",
+        "create-final-zip",
+        "create-final-sha256",
+        "extract-final-zip",
+        "extracted-signatures",
+        "extracted-dependencies",
+        "extracted-rpaths",
+        "extracted-stapler-validate",
+        "extracted-spctl-assess",
+        "extracted-localocr-version",
+        "extracted-mcp-initialize-version",
+        "publish-final-candidate",
+    ]
+    evidence = release_root / "evidence"
+    assert (evidence / "notary-submit.json").read_text() == (
+        '{"id": "accepted-submission-id", "status": "Accepted"}\n'
+    )
+    assert not (evidence / "notary-log.json").exists()
+    final_dir = release_root / "final"
+    final_zip = final_dir / "LocalOCR-Studio-0.2.0-42.zip"
+    final_checksum = final_dir / "LocalOCR-Studio-0.2.0-42.sha256"
+    assert final_zip.is_file()
+    assert final_checksum.is_file()
+    checksum_result = subprocess.run(
+        ["/usr/bin/shasum", "-a", "256", "-c", final_checksum.name],
+        cwd=final_dir,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert checksum_result.returncode == 0, checksum_result.stderr
+    assert not any(final_dir.glob("*.partial*"))
+    assert not any((release_root / "tmp").glob("final-verification.*"))
+
+
+def test_notarization_rejection_fetches_log_and_never_staples_or_packages(
+    tmp_path: Path,
+) -> None:
+    result, trace, release_root = _run_notarization_flow_test(
+        tmp_path,
+        {"id": "rejected-submission-id", "status": "Invalid"},
+        preexisting_final=True,
+    )
+
+    assert result.returncode != 0
+    assert "not accepted" in result.stderr
+    assert trace == [
+        "verify-signed-app",
+        "notary-history",
+        "create-submission-zip",
+        "notary-submit",
+        "notary-log",
+    ]
+    evidence = release_root / "evidence"
+    assert (evidence / "notary-log.json").is_file()
+    assert not any((release_root / "final").iterdir())
+
+
+def test_notarization_requires_a_nonempty_external_profile(
+    tmp_path: Path,
+) -> None:
+    submission_json = tmp_path / "submission-result.json"
+    trace_file = tmp_path / "notarization-trace.txt"
+    release_root = tmp_path / "direct-release"
+    submission_json.write_text(
+        '{"id": "must-not-submit", "status": "Accepted"}\n'
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "LOCALOCR_NOTARY_PROFILE": "",
+            "LOCALOCR_RELEASE_VERSION": "0.2.0",
+            "LOCALOCR_RELEASE_BUILD": "42",
+        }
+    )
+
+    result = _run_script_test(
+        "notarize",
+        "--test-workflow",
+        str(submission_json),
+        extra_arguments=(str(trace_file), str(release_root)),
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "profile must be nonempty" in result.stderr
+    assert trace_file.read_text() == ""
+    assert not release_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("submission_result", "expected_message"),
+    (
+        ({"id": "", "status": "Accepted"}, "submission ID"),
+        ({"id": "submission-id", "status": ""}, "status"),
+    ),
+)
+def test_notarization_rejects_incomplete_submission_json(
+    tmp_path: Path,
+    submission_result: dict[str, str],
+    expected_message: str,
+) -> None:
+    result, trace, release_root = _run_notarization_flow_test(
+        tmp_path,
+        submission_result,
+    )
+
+    assert result.returncode != 0
+    assert expected_message in result.stderr
+    assert "stapler-staple" not in trace
+    final_dir = release_root / "final"
+    assert not final_dir.exists() or not any(final_dir.iterdir())
+
+
+def test_notarization_rejects_malformed_submission_json_without_final_artifacts(
+    tmp_path: Path,
+) -> None:
+    submission_json = tmp_path / "malformed-submission-result.json"
+    trace_file = tmp_path / "notarization-trace.txt"
+    release_root = tmp_path / "direct-release"
+    submission_json.write_text('{"id": "broken"')
+    env = os.environ.copy()
+    env.update(
+        {
+            "LOCALOCR_NOTARY_PROFILE": "controlled-test-profile",
+            "LOCALOCR_RELEASE_VERSION": "0.2.0",
+            "LOCALOCR_RELEASE_BUILD": "42",
+        }
+    )
+
+    result = _run_script_test(
+        "notarize",
+        "--test-workflow",
+        str(submission_json),
+        extra_arguments=(str(trace_file), str(release_root)),
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "submission ID" in result.stderr
+    assert "stapler-staple" not in trace_file.read_text().splitlines()
+    final_dir = release_root / "final"
+    assert not final_dir.exists() or not any(final_dir.iterdir())
+
+
+@pytest.mark.parametrize(
+    "fail_step",
+    (
+        "verify-signed-app",
+        "notary-history",
+        "create-submission-zip",
+        "notary-submit",
+        "stapler-staple",
+        "stapler-validate",
+        "spctl-assess",
+        "create-final-zip",
+        "create-final-sha256",
+        "extract-final-zip",
+        "extracted-signatures",
+        "extracted-dependencies",
+        "extracted-rpaths",
+        "extracted-stapler-validate",
+        "extracted-spctl-assess",
+        "extracted-localocr-version",
+        "extracted-mcp-initialize-version",
+        "publish-final-candidate",
+    ),
+)
+def test_notarization_failure_never_leaves_partial_or_final_candidate(
+    tmp_path: Path,
+    fail_step: str,
+) -> None:
+    outside_sentinel = tmp_path / "outside-must-survive.txt"
+    outside_sentinel.write_text("keep")
+    result, trace, release_root = _run_notarization_flow_test(
+        tmp_path,
+        {"id": "accepted-submission-id", "status": "Accepted"},
+        fail_step=fail_step,
+        preexisting_final=True,
+    )
+
+    assert result.returncode != 0
+    assert fail_step in trace
+    final_dir = release_root / "final"
+    assert not final_dir.exists() or not any(final_dir.iterdir())
+    temp_dir = release_root / "tmp"
+    assert not temp_dir.exists() or not any(temp_dir.iterdir())
+    assert outside_sentinel.read_text() == "keep"
+
+
+def test_notarization_refuses_symlinked_temp_root_without_touching_target(
+    tmp_path: Path,
+) -> None:
+    submission_json = tmp_path / "submission-result.json"
+    trace_file = tmp_path / "notarization-trace.txt"
+    release_root = tmp_path / "direct-release"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "must-survive.txt"
+    sentinel.write_text("keep")
+    release_root.mkdir()
+    (release_root / "tmp").symlink_to(outside, target_is_directory=True)
+    submission_json.write_text(
+        '{"id": "must-not-submit", "status": "Accepted"}\n'
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "LOCALOCR_NOTARY_PROFILE": "controlled-test-profile",
+            "LOCALOCR_RELEASE_VERSION": "0.2.0",
+            "LOCALOCR_RELEASE_BUILD": "42",
+        }
+    )
+
+    result = _run_script_test(
+        "notarize",
+        "--test-workflow",
+        str(submission_json),
+        extra_arguments=(str(trace_file), str(release_root)),
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "must not be symlinks" in result.stderr
+    assert trace_file.read_text() == ""
+    assert sentinel.read_text() == "keep"
