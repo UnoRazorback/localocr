@@ -1,6 +1,7 @@
 public enum LocalOCRError: Error, Sendable, Equatable {
     case fileNotFound
     case unsupportedFormat(String)
+    case imageDecodeFailed
     case permissionDenied
     case invalidPageSelection(String)
     case pageOutOfBounds(page: Int, total: Int)

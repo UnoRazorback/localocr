@@ -67,6 +67,7 @@ let package = Package(
             name: "LocalOCRServiceTests",
             dependencies: ["LocalOCRService"],
             path: "tests/LocalOCRServiceTests",
+            resources: [.copy("Fixtures")],
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
         .testTarget(
