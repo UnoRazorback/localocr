@@ -4,6 +4,8 @@ set -euo pipefail
 
 verify_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 verify_repo_root="$(cd "$verify_script_dir/.." && pwd -P)"
+# shellcheck source=scripts/release-toolchain.sh
+source "$verify_script_dir/release-toolchain.sh"
 verify_release_root="$verify_repo_root/dist/direct-release"
 verify_staged_app="$verify_release_root/staged/LocalOCR Studio.app"
 verify_expected_team="DZ8B5454ZN"
@@ -82,18 +84,20 @@ validate_rpath() {
 
 validate_no_debug_entitlement_text() {
     local entitlements="${1:-}"
-    local debug_value
 
-    if debug_value="$(
-        printf '%s' "$entitlements" |
-            /usr/bin/plutil -extract \
-                'com\.apple\.security\.get-task-allow' \
-                raw -o - -- - 2>/dev/null
-    )"; then
-        [[ "$debug_value" != "true" ]] || {
-            echo "com.apple.security.get-task-allow must not be true" >&2
-            return 1
-        }
+    [[ -n "$entitlements" ]] || return 0
+    printf '%s' "$entitlements" |
+        /usr/bin/plutil -lint -- - >/dev/null 2>&1 || {
+        echo "signature entitlements are malformed" >&2
+        return 1
+    }
+    if printf '%s' "$entitlements" |
+        /usr/bin/plutil -extract \
+            'com\.apple\.security\.get-task-allow' \
+            raw -o - -- - >/dev/null 2>&1
+    then
+        echo "com.apple.security.get-task-allow must be completely absent" >&2
+        return 1
     fi
 }
 
@@ -339,6 +343,7 @@ verify_direct_release_signatures() {
     local main_executable
     local helper
 
+    validate_release_bundle_metadata "$app_path"
     main_executable="$(resolve_staged_main_executable "$app_path")"
     for helper in localocr localocr-mcp; do
         verify_binary_policy "$app_path/Contents/Helpers/$helper"
@@ -352,6 +357,7 @@ verify_direct_release_signatures() {
 verify_direct_release() {
     local app_path="${1:-$verify_staged_app}"
 
+    configure_release_developer_dir
     verify_direct_release_signatures "$app_path"
     /usr/bin/xcrun stapler validate "$app_path"
     /usr/sbin/spctl --assess --type execute --verbose=2 "$app_path"
@@ -429,6 +435,7 @@ verify_final_extracted_release() {
         return 0
     fi
 
+    validate_release_bundle_metadata "$app_path"
     verify_direct_release_signatures "$app_path"
     /usr/bin/xcrun stapler validate "$app_path"
     /usr/sbin/spctl --assess --type execute --verbose=2 "$app_path"

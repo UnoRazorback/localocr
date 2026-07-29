@@ -107,6 +107,10 @@ validate_controlled_test_root() {
         echo "test workflow trace must remain inside its controlled root" >&2
         return 1
     }
+    [[ ! -e "$notarize_trace_file" || -f "$notarize_trace_file" ]] || {
+        echo "test workflow trace must be a regular file" >&2
+        return 1
+    }
 }
 
 validate_notarization_inputs() {
@@ -300,6 +304,34 @@ prepare_remaining_output_directories() {
         echo "submission ZIP escaped the submission directory" >&2
         return 1
     }
+    validate_all_fixed_output_leaves
+}
+
+require_absent_fixed_output_leaf() {
+    local path="$1"
+
+    [[ ! -e "$path" && ! -L "$path" ]] || {
+        echo "fixed release output already exists or is unsafe: $path" >&2
+        return 1
+    }
+}
+
+validate_all_fixed_output_leaves() {
+    local leaf
+
+    for leaf in \
+        "$NOTARY_SUBMIT_JSON" \
+        "$NOTARY_LOG_JSON" \
+        "$EVIDENCE_DIR/pre-notarization-verification.txt" \
+        "$EVIDENCE_DIR/stapler-staple.txt" \
+        "$EVIDENCE_DIR/stapler-validate.txt" \
+        "$EVIDENCE_DIR/gatekeeper-assessment.txt" \
+        "$EVIDENCE_DIR/final-extracted-verification.txt" \
+        "$EVIDENCE_DIR/final-checksum-validation.txt" \
+        "$SUBMISSION_ZIP"
+    do
+        require_absent_fixed_output_leaf "$leaf"
+    done
 }
 
 clear_published_final_candidate() {
@@ -431,6 +463,7 @@ publish_final_candidate() {
 }
 
 build_and_verify_final_candidate() {
+    validate_release_bundle_metadata "$STAGED_APP" || return
     create_final_zip || return
     create_final_checksum || return
     extract_final_zip || return
@@ -453,12 +486,17 @@ notarize_direct_release() {
     validate_notarization_inputs
     configure_notarization_paths
     prepare_remaining_output_directories
-    /bin/rm -f -- "$NOTARY_SUBMIT_JSON" "$NOTARY_LOG_JSON"
     clear_published_final_candidate
 
+    if [[ "$notarize_test_mode" -ne 1 ]]; then
+        configure_release_developer_dir
+    fi
+    validate_release_bundle_metadata "$STAGED_APP"
     run_pre_notarization_verification
+    validate_release_bundle_metadata "$STAGED_APP"
     validate_notary_profile_access
     create_submission_zip
+    validate_release_bundle_metadata "$STAGED_APP"
     submit_for_notarization || submission_command_status=$?
 
     if [[ -f "$NOTARY_SUBMIT_JSON" ]]; then

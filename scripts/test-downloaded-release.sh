@@ -25,6 +25,7 @@ download_sleep="/bin/sleep"
 download_evidence_awk="/usr/bin/awk"
 download_evidence_mv="/bin/mv"
 download_cleanup_rm="/bin/rm"
+download_evidence_writer=""
 download_temp_parent="/private/tmp"
 
 download_zip=""
@@ -35,6 +36,7 @@ download_evidence_file=""
 download_extraction_root=""
 download_physical_temp_parent=""
 download_extracted_app=""
+download_evidence_write_failed=0
 
 download_validate_arguments() {
     [[ "$#" -eq 2 ]] || {
@@ -181,7 +183,18 @@ download_record_result() {
     local label="$1"
     local result="$2"
 
-    printf '%s: %s\n' "$label" "$result" >> "$download_evidence_file"
+    if [[ -n "$download_evidence_writer" ]]; then
+        "$download_evidence_writer" \
+            "$label" "$result" "$download_evidence_file" || {
+            download_evidence_write_failed=1
+            return 1
+        }
+    else
+        printf '%s: %s\n' "$label" "$result" >> "$download_evidence_file" || {
+            download_evidence_write_failed=1
+            return 1
+        }
+    fi
 }
 
 download_run_gate() {
@@ -189,10 +202,10 @@ download_run_gate() {
     shift
 
     if "$@"; then
-        download_record_result "$label" "PASS"
+        download_record_result "$label" "PASS" || return 1
         return 0
     fi
-    download_record_result "$label" "FAIL"
+    download_record_result "$label" "FAIL" || return 1
     return 1
 }
 
@@ -547,6 +560,7 @@ download_verify_signature_and_binary_policy() {
     local main_executable
     local helper
 
+    validate_release_bundle_metadata "$download_extracted_app" || return
     main_executable="$(download_resolve_main_executable)" || return
     for helper in localocr localocr-mcp; do
         download_verify_binary_policy \
@@ -780,19 +794,65 @@ download_cleanup() {
 download_finish() {
     local status="$1"
 
+    [[ "$download_evidence_write_failed" -eq 0 ]] || status=1
     if download_cleanup; then
-        download_record_result "Temporary cleanup" "PASS"
+        download_record_result "Temporary cleanup" "PASS" || status=1
     else
-        download_record_result "Temporary cleanup" "FAIL"
+        download_record_result "Temporary cleanup" "FAIL" || true
         status=1
     fi
+    [[ "$download_evidence_write_failed" -eq 0 ]] || status=1
     if [[ "$status" -eq 0 ]]; then
-        download_record_result "Overall result" "PASS"
-    else
-        download_record_result "Overall result" "FAIL"
+        if ! download_validate_evidence_completeness; then
+            status=1
+        elif ! download_record_result "Overall result" "PASS"; then
+            status=1
+        fi
     fi
+    if [[ "$status" -ne 0 ]]; then
+        download_record_result "Overall result" "FAIL" || true
+    fi
+    [[ "$download_evidence_write_failed" -eq 0 ]] || status=1
     printf 'Evidence file: %s\n' "$download_evidence_file"
     return "$status"
+}
+
+download_validate_evidence_completeness() {
+    local label
+    local count
+
+    [[ "$download_evidence_write_failed" -eq 0 ]] || return 1
+    ! /usr/bin/grep -F -q "ZIP SHA-256: pending" "$download_evidence_file" || {
+        echo "acceptance evidence still has a pending checksum" >&2
+        return 1
+    }
+    for label in \
+        "Release version input" \
+        "Checksum verification" \
+        "Archive path safety" \
+        "Fresh extraction directory" \
+        "Archive extraction" \
+        "Extraction confinement" \
+        "Signature and binary policy" \
+        "Stapled ticket" \
+        "Gatekeeper assessment" \
+        "CLI version" \
+        "MCP initialization" \
+        "OCR smoke input type" \
+        "OCR smoke result" \
+        "Temporary cleanup"
+    do
+        count="$(
+            /usr/bin/awk -v prefix="$label: " \
+                'index($0, prefix) == 1 { count += 1 } END { print count + 0 }' \
+                "$download_evidence_file"
+        )" || return 1
+        [[ "$count" -eq 1 ]] || {
+            echo "acceptance evidence is incomplete for: $label" >&2
+            return 1
+        }
+    done
+    ! /usr/bin/grep -E -q ': FAIL$' "$download_evidence_file"
 }
 
 download_main() {
@@ -801,6 +861,7 @@ download_main() {
     download_checksum_file="$2"
     download_read_expected_checksum
     download_verify_release_version_input
+    configure_release_developer_dir
     download_initialize_evidence
     download_record_result "Release version input" "PASS"
     if ! download_run_gate "Checksum verification" download_verify_checksum; then

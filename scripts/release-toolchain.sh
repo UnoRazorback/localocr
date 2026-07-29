@@ -6,6 +6,7 @@ release_toolchain_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 release_repo_root="$(cd "$release_toolchain_script_dir/.." && pwd)"
 release_developer_dir="/Applications/Xcode.app/Contents/Developer"
 release_signing_identity="Developer ID Application: John Scott Ray (DZ8B5454ZN)"
+release_plist_buddy="/usr/libexec/PlistBuddy"
 
 release_evidence_dir() {
     printf '%s\n' "$release_repo_root/dist/direct-release/evidence"
@@ -34,6 +35,7 @@ configure_release_developer_dir() {
     local xcodebuild_path
     local evidence_dir
     local version_file
+    local version_file_partial
 
     DEVELOPER_DIR="$release_developer_dir"
     export DEVELOPER_DIR
@@ -54,12 +56,34 @@ configure_release_developer_dir() {
 
     evidence_dir="$(release_evidence_dir)"
     version_file="$evidence_dir/xcode-version.txt"
+    [[ ! -L "$release_repo_root/dist" ]] || {
+        echo "release dist directory must not be a symlink" >&2
+        return 1
+    }
     /bin/mkdir -p "$evidence_dir"
-    "$xcodebuild_path" -version > "$version_file"
-    [[ "$(/usr/bin/awk 'END { print NR }' "$version_file")" -eq 2 ]] || {
+    [[ "$(cd "$evidence_dir" && pwd -P)" == "$evidence_dir" ]] || {
+        echo "release evidence directory must be physical" >&2
+        return 1
+    }
+    [[ ! -L "$version_file" ]] || {
+        echo "Xcode evidence leaf must not be a symlink" >&2
+        return 1
+    }
+    [[ ! -e "$version_file" || -f "$version_file" ]] || {
+        echo "Xcode evidence leaf must be a regular file" >&2
+        return 1
+    }
+    version_file_partial="$(/usr/bin/mktemp "$evidence_dir/.xcode-version.XXXXXX")"
+    "$xcodebuild_path" -version > "$version_file_partial" || {
+        /bin/rm -f -- "$version_file_partial"
+        return 1
+    }
+    [[ "$(/usr/bin/awk 'END { print NR }' "$version_file_partial")" -eq 2 ]] || {
+        /bin/rm -f -- "$version_file_partial"
         echo "expected xcodebuild -version to produce exactly two lines" >&2
         return 1
     }
+    /bin/mv -f -- "$version_file_partial" "$version_file"
 }
 
 validate_release_inputs() {
@@ -73,6 +97,45 @@ validate_release_inputs() {
     do
         [[ -n "${!variable_name:-}" ]] || {
             echo "required release input is missing: $variable_name" >&2
+            return 1
+        }
+    done
+}
+
+validate_release_bundle_metadata() {
+    local app_path="$1"
+    local info_plist="$app_path/Contents/Info.plist"
+    local key
+    local expected
+    local actual
+
+    : "${LOCALOCR_EXPECTED_BUNDLE_ID:?LOCALOCR_EXPECTED_BUNDLE_ID is required}"
+    : "${LOCALOCR_RELEASE_VERSION:?LOCALOCR_RELEASE_VERSION is required}"
+    : "${LOCALOCR_RELEASE_BUILD:?LOCALOCR_RELEASE_BUILD is required}"
+    [[ -d "$app_path" && ! -L "$app_path" ]] || {
+        echo "release app is missing or symlinked: $app_path" >&2
+        return 1
+    }
+    [[ -f "$info_plist" && ! -L "$info_plist" ]] || {
+        echo "release Info.plist is missing or symlinked" >&2
+        return 1
+    }
+    for key in \
+        CFBundleIdentifier \
+        CFBundleShortVersionString \
+        CFBundleVersion
+    do
+        case "$key" in
+            CFBundleIdentifier) expected="$LOCALOCR_EXPECTED_BUNDLE_ID" ;;
+            CFBundleShortVersionString) expected="$LOCALOCR_RELEASE_VERSION" ;;
+            CFBundleVersion) expected="$LOCALOCR_RELEASE_BUILD" ;;
+        esac
+        actual="$("$release_plist_buddy" -c "Print :$key" "$info_plist")" || {
+            echo "could not read $key from release Info.plist" >&2
+            return 1
+        }
+        [[ "$actual" == "$expected" ]] || {
+            echo "$key mismatch: expected '$expected', found '$actual'" >&2
             return 1
         }
     done
@@ -106,6 +169,10 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         --test-developer-dir)
             [[ "$#" -eq 2 ]] || exit 2
             validate_release_developer_dir "$2"
+            ;;
+        --test-bundle-metadata)
+            [[ "$#" -eq 2 ]] || exit 2
+            validate_release_bundle_metadata "$2"
             ;;
         "")
             configure_release_developer_dir

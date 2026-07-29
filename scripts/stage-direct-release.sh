@@ -213,6 +213,31 @@ validate_release_helper() {
     validate_minimum_macos "$minimum_macos"
 }
 
+reject_tree_symlinks() {
+    local tree="$1"
+    local symlink
+
+    symlink="$(/usr/bin/find "$tree" -type l -print -quit)" || {
+        echo "could not enumerate symlinks before metadata mutation" >&2
+        return 1
+    }
+    [[ -z "$symlink" ]] || {
+        echo "release app tree contains a symlink: $symlink" >&2
+        return 1
+    }
+}
+
+clear_staged_app_xattrs() {
+    local app_path="$1"
+
+    reject_tree_symlinks "$app_path"
+    if [[ -n "${LOCALOCR_TEST_XATTR_TRACE:-}" ]]; then
+        printf '%s\n' "$app_path" >> "$LOCALOCR_TEST_XATTR_TRACE"
+        return 0
+    fi
+    /usr/bin/xattr -cr "$app_path"
+}
+
 record_pre_signing_hashes() {
     local unsigned_main_executable="$1"
     local localocr_binary="$native_tools_dir/localocr"
@@ -245,6 +270,7 @@ stage_direct_release() {
         echo "unsigned app Info.plist not found: $source_info_plist" >&2
         return 1
     }
+    reject_tree_symlinks "$physical_unsigned_app"
     main_executable_name="$(plist_value "$source_info_plist" CFBundleExecutable)"
     unsigned_main_executable="$(
         resolve_main_executable "$physical_unsigned_app" "$main_executable_name"
@@ -272,7 +298,8 @@ stage_direct_release() {
     /bin/chmod 0755 \
         "$staged_app/Contents/Helpers/localocr" \
         "$staged_app/Contents/Helpers/localocr-mcp"
-    /usr/bin/xattr -cr "$staged_app"
+    reject_tree_symlinks "$staged_app"
+    clear_staged_app_xattrs "$staged_app"
 
     staged_info_plist="$staged_app/Contents/Info.plist"
     require_expected_plist_value \
@@ -313,6 +340,11 @@ case "${1:-}" in
     --test-native-artifact-dir)
         [[ "$#" -eq 2 && "$2" == "$native_tools_dir" ]] || exit 1
         printf '%s\n' "$native_tools_dir"
+        ;;
+    --test-tree-before-xattr)
+        [[ "$#" -eq 2 ]] || exit 2
+        reject_tree_symlinks "$2"
+        clear_staged_app_xattrs "$2"
         ;;
     "")
         stage_direct_release

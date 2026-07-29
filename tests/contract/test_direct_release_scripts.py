@@ -710,6 +710,9 @@ def _nested_code_fixture(tmp_path: Path) -> Path:
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>LocalOCR</string>
+<key>CFBundleIdentifier</key><string>com.rayconsulting.localocr</string>
+<key>CFBundleShortVersionString</key><string>0.2.0</string>
+<key>CFBundleVersion</key><string>42</string>
 </dict></plist>
 """
     )
@@ -1248,7 +1251,7 @@ def test_verifier_rejects_debug_entitlement() -> None:
         "--test-entitlements",
         "<plist><dict></dict></plist>",
     )
-    _assert_script_test_accepts(
+    _assert_script_test_rejects(
         "verify",
         "--test-entitlements",
         (
@@ -1264,6 +1267,111 @@ def test_verifier_rejects_debug_entitlement() -> None:
             "<true/></dict></plist>"
         ),
     )
+    _assert_script_test_rejects(
+        "verify",
+        "--test-entitlements",
+        "<plist><dict>",
+    )
+
+
+def test_shared_bundle_metadata_validator_rejects_post_stage_mutation(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "LocalOCR Studio.app"
+    contents = app / "Contents"
+    contents.mkdir(parents=True)
+    plist = contents / "Info.plist"
+    plist.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.rayconsulting.localocr</string>
+<key>CFBundleShortVersionString</key><string>0.2.0</string>
+<key>CFBundleVersion</key><string>42</string>
+</dict></plist>
+"""
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "LOCALOCR_EXPECTED_BUNDLE_ID": "com.rayconsulting.localocr",
+            "LOCALOCR_RELEASE_VERSION": "0.2.0",
+            "LOCALOCR_RELEASE_BUILD": "42",
+        }
+    )
+    accepted = _run_script_test(
+        "toolchain", "--test-bundle-metadata", str(app), env=env
+    )
+    assert accepted.returncode == 0, accepted.stderr
+
+    plist.write_text(plist.read_text().replace("0.2.0", "9.9.9"))
+    rejected = _run_script_test(
+        "toolchain", "--test-bundle-metadata", str(app), env=env
+    )
+    assert rejected.returncode != 0
+    assert "CFBundleShortVersionString" in rejected.stderr
+
+
+def test_all_release_boundaries_revalidate_bundle_metadata() -> None:
+    sign_script = _script("sign")
+    notarize_script = _script("notarize")
+    verify_script = _script("verify")
+    download_script = _script("download")
+
+    signing_body = sign_script[
+        sign_script.index("sign_direct_release()") :
+        sign_script.index("test_xattr_preflight()")
+    ]
+    assert signing_body.index("validate_release_bundle_metadata") < signing_body.index(
+        'execute_codesign_command "$code_object"'
+    )
+    assert notarize_script.count("validate_release_bundle_metadata") >= 3
+    assert "validate_release_bundle_metadata" in verify_script
+    assert "validate_release_bundle_metadata" in download_script
+
+
+def test_stage_rejects_source_symlink_before_recursive_xattr(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "Unsigned.app"
+    app.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "must-not-receive-xattr.txt"
+    sentinel.write_text("keep")
+    (app / "escape").symlink_to(outside, target_is_directory=True)
+    trace = tmp_path / "xattr-trace.txt"
+    env = os.environ.copy()
+    env["LOCALOCR_TEST_XATTR_TRACE"] = str(trace)
+
+    result = _run_script_test(
+        "stage", "--test-tree-before-xattr", str(app), env=env
+    )
+
+    assert result.returncode != 0
+    assert not trace.exists()
+    assert sentinel.read_text() == "keep"
+
+
+def test_production_xcrun_entrypoints_configure_stable_xcode_first() -> None:
+    verify_script = _script("verify")
+    notarize_script = _script("notarize")
+    assert 'source "$verify_script_dir/release-toolchain.sh"' in verify_script
+    assert verify_script.index("configure_release_developer_dir") < verify_script.index(
+        "/usr/bin/xcrun stapler validate"
+    )
+    notarize_entrypoint = notarize_script[
+        notarize_script.index("notarize_direct_release()") :
+        notarize_script.index('if [[ "${BASH_SOURCE[0]}" == "$0" ]]')
+    ]
+    assert "configure_release_developer_dir" in notarize_entrypoint
+
+
+def test_signing_trace_and_production_share_one_command_builder() -> None:
+    script = _script("sign")
+    assert script.count("build_codesign_command") >= 2
+    assert "execute_codesign_command" in script
+    assert "trace_codesign_command" in script
+    assert script.count("/usr/bin/codesign --force --sign") == 0
 
 
 def test_verifier_requires_exact_developer_id_authority_details() -> None:
@@ -1470,7 +1578,7 @@ EOF
         printf 'accepted\\n'
         ;;
     PlistBuddy)
-        printf 'LocalOCR\\n'
+        exec /usr/libexec/PlistBuddy "$@"
         ;;
     sw_vers)
         case "$1" in
@@ -1513,6 +1621,17 @@ EOF
         fi
         exec /bin/rm "$@"
         ;;
+    evidence-writer)
+        counter_file="${LOCALOCR_TEST_EVIDENCE_COUNTER:?}"
+        count=0
+        [[ ! -f "$counter_file" ]] || count="$(cat "$counter_file")"
+        count=$((count + 1))
+        printf '%s\n' "$count" > "$counter_file"
+        if [[ "${LOCALOCR_TEST_FAIL_EVIDENCE_APPEND_AT:-}" == "$count" ]]; then
+            exit 75
+        fi
+        printf '%s: %s\n' "$1" "$2" >> "$3"
+        ;;
     *)
         exit 64
         ;;
@@ -1540,6 +1659,7 @@ esac
         "evidence-awk",
         "evidence-mv",
         "cleanup-rm",
+        "evidence-writer",
     ):
         (tool_dir / tool).symlink_to(dispatcher)
 
@@ -1555,6 +1675,9 @@ def _create_download_release_fixture(tmp_path: Path) -> tuple[Path, Path]:
         """<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>LocalOCR</string>
+<key>CFBundleIdentifier</key><string>com.rayconsulting.localocr</string>
+<key>CFBundleShortVersionString</key><string>0.2.0</string>
+<key>CFBundleVersion</key><string>42</string>
 </dict></plist>
 """
     )
@@ -1630,9 +1753,12 @@ def _run_download_release_fixture(
     env.update(
         {
             "LOCALOCR_RELEASE_VERSION": "0.2.0",
+            "LOCALOCR_RELEASE_BUILD": "42",
+            "LOCALOCR_EXPECTED_BUNDLE_ID": "com.rayconsulting.localocr",
             "LOCALOCR_TEST_TRACE": str(trace),
             "LOCALOCR_TEST_MCP_REQUEST": str(mcp_request),
             "LOCALOCR_TEST_TEMP_PARENT": str(extraction_parent),
+            "LOCALOCR_TEST_EVIDENCE_COUNTER": str(tmp_path / "evidence-counter.txt"),
         }
     )
     if extra_env:
@@ -1641,6 +1767,7 @@ def _run_download_release_fixture(
 source "$1"
 tool_dir="$2"
 shift 2
+configure_release_developer_dir() { :; }
 download_shasum="$tool_dir/shasum"
 download_zipinfo="$tool_dir/zipinfo"
 download_ditto="$tool_dir/ditto"
@@ -1652,6 +1779,7 @@ download_codesign="$tool_dir/codesign"
 download_xcrun="$tool_dir/xcrun"
 download_spctl="$tool_dir/spctl"
 download_plist_buddy="$tool_dir/PlistBuddy"
+release_plist_buddy="$tool_dir/PlistBuddy"
 download_sw_vers="$tool_dir/sw_vers"
 download_sysctl="$tool_dir/sysctl"
 download_uname="$tool_dir/uname"
@@ -1660,6 +1788,7 @@ download_sleep="$tool_dir/sleep"
 download_evidence_awk="$tool_dir/evidence-awk"
 download_evidence_mv="$tool_dir/evidence-mv"
 download_cleanup_rm="$tool_dir/cleanup-rm"
+download_evidence_writer="$tool_dir/evidence-writer"
 download_temp_parent="$LOCALOCR_TEST_TEMP_PARENT"
 download_main "$@"
 """
@@ -2050,6 +2179,52 @@ def test_downloaded_release_cleanup_refuses_unconfined_temp_path(
     assert sentinel.read_text() == "keep"
 
 
+def test_downloaded_release_rejects_extracted_bundle_metadata_mismatch(
+    tmp_path: Path,
+) -> None:
+    archive, checksum = _create_download_release_fixture(tmp_path)
+    result, trace, _ = _run_download_release_fixture(
+        tmp_path,
+        archive,
+        checksum,
+        extra_env={"LOCALOCR_EXPECTED_BUNDLE_ID": "com.example.mutated"},
+    )
+
+    assert result.returncode != 0
+    assert "codesign" not in trace.read_text()
+    evidence = _download_evidence_files(checksum)[0].read_text()
+    assert "Signature and binary policy: FAIL" in evidence
+    assert "Overall result: PASS" not in evidence
+
+
+@pytest.mark.parametrize("append_number", ("1", "5", "15"))
+def test_downloaded_release_evidence_append_failure_can_never_pass(
+    tmp_path: Path,
+    append_number: str,
+) -> None:
+    archive, checksum = _create_download_release_fixture(tmp_path)
+    result, _, _ = _run_download_release_fixture(
+        tmp_path,
+        archive,
+        checksum,
+        extra_env={"LOCALOCR_TEST_FAIL_EVIDENCE_APPEND_AT": append_number},
+    )
+
+    assert result.returncode != 0
+    evidence_files = _download_evidence_files(checksum)
+    if evidence_files:
+        evidence = evidence_files[0].read_text()
+        assert "Overall result: PASS" not in evidence
+
+
+def test_downloaded_release_requires_complete_evidence_before_pass() -> None:
+    script = _script("download")
+    assert "download_validate_evidence_completeness" in script
+    assert script.index("download_validate_evidence_completeness") < script.rindex(
+        'download_record_result "Overall result" "PASS"'
+    )
+
+
 def test_prepublication_scripts_do_not_touch_beta_metrics() -> None:
     for path in PREPUBLICATION_SCRIPTS:
         assert path.is_file(), f"missing pre-publication script: {path}"
@@ -2077,7 +2252,18 @@ def _run_notarization_flow_test(
         "LOCALOCR NOTARIZATION TEST ROOT\n"
     )
     if create_staged_app:
-        (release_root / "staged" / "LocalOCR Studio.app").mkdir(parents=True)
+        contents = (
+            release_root / "staged" / "LocalOCR Studio.app" / "Contents"
+        )
+        contents.mkdir(parents=True)
+        (contents / "Info.plist").write_text(
+            """<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.rayconsulting.localocr</string>
+<key>CFBundleShortVersionString</key><string>0.2.0</string>
+<key>CFBundleVersion</key><string>42</string>
+</dict></plist>
+"""
+        )
     if preexisting_final:
         final_dir = release_root / "final"
         final_dir.mkdir(parents=True)
@@ -2095,6 +2281,7 @@ def _run_notarization_flow_test(
             "LOCALOCR_NOTARY_PROFILE": profile,
             "LOCALOCR_RELEASE_VERSION": release_version,
             "LOCALOCR_RELEASE_BUILD": release_build,
+            "LOCALOCR_EXPECTED_BUNDLE_ID": "com.rayconsulting.localocr",
             "LOCALOCR_TEST_FAIL_STEP": fail_step,
         }
     )
@@ -2267,7 +2454,16 @@ def test_notarization_rejects_malformed_submission_json_without_final_artifacts(
     (release_root / ".localocr-notarize-test-root").write_text(
         "LOCALOCR NOTARIZATION TEST ROOT\n"
     )
-    (release_root / "staged" / "LocalOCR Studio.app").mkdir(parents=True)
+    contents = release_root / "staged" / "LocalOCR Studio.app" / "Contents"
+    contents.mkdir(parents=True)
+    (contents / "Info.plist").write_text(
+        """<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.rayconsulting.localocr</string>
+<key>CFBundleShortVersionString</key><string>0.2.0</string>
+<key>CFBundleVersion</key><string>42</string>
+</dict></plist>
+"""
+    )
     submission_json.write_text('{"id": "broken"')
     env = os.environ.copy()
     env.update(
@@ -2275,6 +2471,7 @@ def test_notarization_rejects_malformed_submission_json_without_final_artifacts(
             "LOCALOCR_NOTARY_PROFILE": "controlled-test-profile",
             "LOCALOCR_RELEASE_VERSION": "0.2.0",
             "LOCALOCR_RELEASE_BUILD": "42",
+            "LOCALOCR_EXPECTED_BUNDLE_ID": "com.rayconsulting.localocr",
         }
     )
 
@@ -2461,6 +2658,71 @@ def test_notarization_rejects_symlinked_output_directory_without_outside_mutatio
     assert trace_file.read_text() == ""
     assert not any(final_dir.iterdir())
     assert sentinel.read_text() == "keep"
+
+
+@pytest.mark.parametrize(
+    "relative_leaf",
+    (
+        "evidence/notary-submit.json",
+        "evidence/notary-log.json",
+        "evidence/pre-notarization-verification.txt",
+        "evidence/stapler-staple.txt",
+        "evidence/stapler-validate.txt",
+        "evidence/gatekeeper-assessment.txt",
+        "evidence/final-extracted-verification.txt",
+        "evidence/final-checksum-validation.txt",
+        "submission/TEST-ONLY-NOT-A-RELEASE-0.2.0-42.fakezip",
+    ),
+)
+def test_notarization_rejects_fixed_output_leaf_symlinks_without_following(
+    tmp_path: Path,
+    relative_leaf: str,
+) -> None:
+    submission_json = tmp_path / "submission-result.json"
+    release_root = tmp_path / "localocr-notarize-test.leaf"
+    trace_file = release_root / "notarization-trace.txt"
+    release_root.mkdir()
+    (release_root / ".localocr-notarize-test-root").write_text(
+        "LOCALOCR NOTARIZATION TEST ROOT\n"
+    )
+    app = release_root / "staged" / "LocalOCR Studio.app" / "Contents"
+    app.mkdir(parents=True)
+    (app / "Info.plist").write_text(
+        """<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.rayconsulting.localocr</string>
+<key>CFBundleShortVersionString</key><string>0.2.0</string>
+<key>CFBundleVersion</key><string>42</string>
+</dict></plist>
+"""
+    )
+    outside = tmp_path / "outside-evidence.txt"
+    outside.write_text("keep")
+    leaf = release_root / relative_leaf
+    leaf.parent.mkdir(parents=True, exist_ok=True)
+    leaf.symlink_to(outside)
+    submission_json.write_text(
+        '{"id": "accepted-submission-id", "status": "Accepted"}\n'
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "LOCALOCR_NOTARY_PROFILE": "controlled-test-profile",
+            "LOCALOCR_RELEASE_VERSION": "0.2.0",
+            "LOCALOCR_RELEASE_BUILD": "42",
+            "LOCALOCR_EXPECTED_BUNDLE_ID": "com.rayconsulting.localocr",
+        }
+    )
+
+    result = _run_script_test(
+        "notarize",
+        "--test-workflow",
+        str(submission_json),
+        extra_arguments=(str(trace_file), str(release_root)),
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert outside.read_text() == "keep"
 
 
 def test_notarization_test_mode_rejects_repo_release_root_without_mutation(

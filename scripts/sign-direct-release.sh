@@ -10,6 +10,8 @@ source "$sign_script_dir/verify-direct-release.sh"
 
 readonly SIGNING_IDENTITY="Developer ID Application: John Scott Ray (DZ8B5454ZN)"
 STAGED_APP="$sign_script_dir/../dist/direct-release/staged/LocalOCR Studio.app"
+CODESIGN_COMMAND=()
+codesign_command_executor="/usr/bin/codesign"
 
 resolve_physical_staged_app_copy() {
     local app_path="$1"
@@ -230,9 +232,10 @@ trace_codesign_invocation() {
     printf '\n' >> "$trace_file"
 }
 
-record_signing_order() {
-    local app_path="$1"
-    local -a codesign_prefix=(
+build_codesign_command() {
+    local target="$1"
+
+    CODESIGN_COMMAND=(
         /usr/bin/codesign
         --force
         --sign
@@ -240,16 +243,31 @@ record_signing_order() {
         --options
         runtime
         --timestamp
+        "$target"
     )
+}
+
+execute_codesign_command() {
+    build_codesign_command "$1"
+    if [[ "$codesign_command_executor" == "trace" ]]; then
+        trace_codesign_command
+    else
+        "${CODESIGN_COMMAND[@]}"
+    fi
+}
+
+trace_codesign_command() {
+    trace_codesign_invocation "${CODESIGN_COMMAND[@]}"
+}
+
+record_signing_order() {
+    local app_path="$1"
 
     : > "${LOCALOCR_SIGNING_TRACE_FILE:?LOCALOCR_SIGNING_TRACE_FILE is required}"
-    trace_codesign_invocation \
-        "${codesign_prefix[@]}" \
-        "$app_path/Contents/Helpers/localocr"
-    trace_codesign_invocation \
-        "${codesign_prefix[@]}" \
-        "$app_path/Contents/Helpers/localocr-mcp"
-    trace_codesign_invocation "${codesign_prefix[@]}" "$app_path"
+    codesign_command_executor="trace"
+    execute_codesign_command "$app_path/Contents/Helpers/localocr"
+    execute_codesign_command "$app_path/Contents/Helpers/localocr-mcp"
+    execute_codesign_command "$app_path"
 }
 
 preflight_direct_release_signing() {
@@ -271,31 +289,24 @@ preflight_direct_release_signing() {
     done
     verify_binary_policy "$main_executable"
     sanitize_staged_app_metadata "$STAGED_APP"
+    validate_release_bundle_metadata "$STAGED_APP"
 }
 
 sign_direct_release() {
+    local code_object
+
     preflight_direct_release_signing
-
-    /usr/bin/codesign --force --sign "$SIGNING_IDENTITY" \
-        --options runtime --timestamp \
-        "$STAGED_APP/Contents/Helpers/localocr"
-    verify_signature "$STAGED_APP/Contents/Helpers/localocr"
-    verify_hardened_runtime "$STAGED_APP/Contents/Helpers/localocr"
-    verify_no_debug_entitlement "$STAGED_APP/Contents/Helpers/localocr"
-
-    /usr/bin/codesign --force --sign "$SIGNING_IDENTITY" \
-        --options runtime --timestamp \
-        "$STAGED_APP/Contents/Helpers/localocr-mcp"
-    verify_signature "$STAGED_APP/Contents/Helpers/localocr-mcp"
-    verify_hardened_runtime "$STAGED_APP/Contents/Helpers/localocr-mcp"
-    verify_no_debug_entitlement "$STAGED_APP/Contents/Helpers/localocr-mcp"
-
-    /usr/bin/codesign --force --sign "$SIGNING_IDENTITY" \
-        --options runtime --timestamp \
+    for code_object in \
+        "$STAGED_APP/Contents/Helpers/localocr" \
+        "$STAGED_APP/Contents/Helpers/localocr-mcp" \
         "$STAGED_APP"
-    verify_signature "$STAGED_APP"
-    verify_hardened_runtime "$STAGED_APP"
-    verify_no_debug_entitlement "$STAGED_APP"
+    do
+        validate_release_bundle_metadata "$STAGED_APP"
+        execute_codesign_command "$code_object"
+        verify_signature "$code_object"
+        verify_hardened_runtime "$code_object"
+        verify_no_debug_entitlement "$code_object"
+    done
 
     /usr/bin/codesign --verify --deep --strict --verbose=2 "$STAGED_APP"
 }
