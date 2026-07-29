@@ -32,6 +32,33 @@ FORBIDDEN_CREDENTIAL_FLAGS = {
     "--key-id",
     "--password",
 }
+WRAPPER_OPTIONS_WITH_VALUES = {
+    "command": set(),
+    "env": {"-C", "-S", "-u", "--chdir", "--split-string", "--unset"},
+    "exec": {"-a"},
+    "sudo": {
+        "-C",
+        "-g",
+        "-h",
+        "-p",
+        "-r",
+        "-t",
+        "-u",
+        "--chdir",
+        "--close-from",
+        "--group",
+        "--host",
+        "--other-user",
+        "--prompt",
+        "--role",
+        "--type",
+        "--user",
+    },
+}
+NOTARY_GLOBAL_FLAG_OPTIONS = {"--verbose"}
+NOTARY_GLOBAL_VALUE_OPTIONS = {"--output-format"}
+NOTARY_TERMINAL_OPTIONS = {"-h", "--help", "--version"}
+PRIVATE_KEY_REFERENCE = re.compile(r"(?i)\.p8(?=$|[^\w])")
 EXPECTED_SECOND_MAC_FIELDS = (
     "Release version:",
     "Build:",
@@ -165,16 +192,30 @@ def _executable_invocations(
                 index += 1
                 continue
             token_name = Path(token.strip("\"'")).name
-            if token_name in {"command", "env", "exec"}:
+            if token_name in WRAPPER_OPTIONS_WITH_VALUES:
+                wrapper_name = token_name
                 index += 1
-                while index < len(command) and (
-                    command[index].startswith("-")
-                    or re.fullmatch(
+                while index < len(command):
+                    wrapper_argument = command[index]
+                    if re.fullmatch(
                         r"[A-Za-z_][A-Za-z0-9_]*=.*",
-                        command[index],
-                    )
-                ):
+                        wrapper_argument,
+                    ):
+                        index += 1
+                        continue
+                    if wrapper_argument == "--":
+                        index += 1
+                        break
+                    if not wrapper_argument.startswith("-"):
+                        break
+                    option_name = wrapper_argument.partition("=")[0]
                     index += 1
+                    if (
+                        "=" not in wrapper_argument
+                        and option_name
+                        in WRAPPER_OPTIONS_WITH_VALUES[wrapper_name]
+                    ):
+                        index += 1
                 continue
             if token_name == executable:
                 invocations.append(command[index:])
@@ -218,6 +259,33 @@ def _profile_argument(command: list[str]) -> str | None:
     return profile_arguments[0] if profile_arguments else None
 
 
+def _notarytool_subcommand(command: list[str]) -> str | None:
+    index = 1
+    while index < len(command):
+        token = command[index]
+        if token in NOTARY_TERMINAL_OPTIONS:
+            return None
+        if token in NOTARY_GLOBAL_FLAG_OPTIONS:
+            index += 1
+            continue
+        if token in NOTARY_GLOBAL_VALUE_OPTIONS:
+            index += 2
+            continue
+        if any(
+            token.startswith(f"{option}=")
+            for option in NOTARY_GLOBAL_VALUE_OPTIONS
+        ):
+            index += 1
+            continue
+        if token == "--":
+            index += 1
+            continue
+        if token.startswith("-"):
+            return None
+        return token if token in NOTARY_SUBCOMMANDS else None
+    return None
+
+
 def _assert_notarytool_profile_policy(
     script: str,
     *,
@@ -229,11 +297,9 @@ def _assert_notarytool_profile_policy(
         "notarytool",
         preserve_quotes=True,
     ):
-        subcommands = NOTARY_SUBCOMMANDS.intersection(command[1:])
-        if not subcommands:
+        subcommand = _notarytool_subcommand(command)
+        if subcommand is None:
             continue
-        assert len(subcommands) == 1, f"ambiguous notarytool invocation: {command}"
-        subcommand = subcommands.pop()
         found_subcommands.add(subcommand)
         profile_argument = _profile_argument(command)
         assert profile_argument in EXPECTED_QUOTED_NOTARY_PROFILE_ARGUMENTS, (
@@ -278,7 +344,7 @@ def _assert_no_hard_coded_credentials(script: str) -> None:
                 "BEGIN PRIVATE KEY" in token
                 or "BEGIN RSA PRIVATE KEY" in token
                 or "BEGIN EC PRIVATE KEY" in token
-                or token.lower().endswith(".p8")
+                or PRIVATE_KEY_REFERENCE.search(token)
             ):
                 raise AssertionError(
                     f"private-key material/reference is forbidden: {token}"
@@ -296,8 +362,18 @@ def _assert_codesign_deep_policy(script: str) -> None:
     for codesign_command in _executable_invocations(script, "codesign"):
         if "--deep" not in codesign_command:
             continue
-        assert "--verify" in codesign_command, (
+        signing_flags = [
+            token
+            for token in codesign_command
+            if token == "--sign"
+            or token.startswith("--sign=")
+            or re.fullmatch(r"-s(?:.+)?", token)
+        ]
+        assert not signing_flags, (
             f"--deep is forbidden while signing: {codesign_command}"
+        )
+        assert "--verify" in codesign_command, (
+            f"--deep is permitted only while verifying: {codesign_command}"
         )
         assert "--strict" in codesign_command, (
             f"--deep verification must also be strict: {codesign_command}"
@@ -336,6 +412,38 @@ NOTARY_SUBMISSION_ID="submission-id"
 [[ -n "$LOCALOCR_NOTARY_PROFILE" ]]
 """
     )
+
+
+@pytest.mark.parametrize(
+    "reference",
+    (
+        "/secure/AuthKey.p8?version=1",
+        "/secure/AuthKey.p8#release",
+        "/secure/AuthKey.p8.backup",
+        "https://example.invalid/AuthKey.p8?download=1#current",
+    ),
+)
+def test_credential_guard_rejects_private_key_extension_boundaries(
+    reference: str,
+) -> None:
+    with pytest.raises(AssertionError):
+        _assert_no_hard_coded_credentials(f"printf '%s' '{reference}'")
+
+
+@pytest.mark.parametrize(
+    "ordinary_text",
+    (
+        "p8",
+        "ordinary-p8-text",
+        "/secure/AuthKey.p8notes",
+        "/secure/AuthKey.p8_version",
+        "/secure/p8/AuthKey",
+    ),
+)
+def test_credential_guard_does_not_treat_plain_p8_text_as_a_key_reference(
+    ordinary_text: str,
+) -> None:
+    _assert_no_hard_coded_credentials(f"printf '%s' '{ordinary_text}'")
 
 
 @pytest.mark.parametrize(
@@ -398,6 +506,36 @@ false || xcrun notarytool log submission-id \
     )
 
 
+@pytest.mark.parametrize("subcommand", ("history", "submit", "log"))
+def test_notarytool_policy_rejects_help_operands_as_subcommands(
+    subcommand: str,
+) -> None:
+    misleading_help = (
+        f"xcrun notarytool --help {subcommand} "
+        '--keychain-profile "$LOCALOCR_NOTARY_PROFILE"'
+    )
+    with pytest.raises(AssertionError):
+        _assert_notarytool_profile_policy(
+            misleading_help,
+            required_subcommands={subcommand},
+        )
+
+
+def test_notarytool_policy_accepts_actual_subcommands_after_global_options() -> None:
+    commands = """
+xcrun notarytool --verbose history \
+  --keychain-profile "$LOCALOCR_NOTARY_PROFILE"
+xcrun notarytool --output-format json submit artifact.zip \
+  --keychain-profile "$LOCALOCR_NOTARY_PROFILE"
+xcrun notarytool --verbose log submission-id notary-log.json \
+  --keychain-profile "${LOCALOCR_NOTARY_PROFILE}"
+"""
+    _assert_notarytool_profile_policy(
+        commands,
+        required_subcommands=NOTARY_SUBCOMMANDS,
+    )
+
+
 @pytest.mark.parametrize(
     "script",
     (
@@ -406,6 +544,18 @@ false || xcrun notarytool log submission-id \
         "true && /usr/bin/codesign --timestamp --deep --sign identity app",
         "{ /usr/bin/codesign --sign identity --deep app; }",
         "(/usr/bin/codesign --sign identity app --deep)",
+        (
+            "sudo /usr/bin/codesign --verify --strict --deep "
+            "--sign identity app"
+        ),
+        (
+            "sudo -u root command /usr/bin/codesign --deep "
+            "--verify --strict -s identity app"
+        ),
+        (
+            "env RELEASE=1 exec /usr/bin/codesign --verify --strict "
+            "--sign=identity app --deep"
+        ),
     ),
 )
 def test_codesign_policy_rejects_deep_signing_in_compound_commands(
@@ -420,6 +570,7 @@ def test_codesign_policy_permits_only_deep_strict_verification() -> None:
         """
 echo /usr/bin/codesign --deep --sign identity app
 prepare && /usr/bin/codesign --strict app --deep --verify; finish
+sudo -u root /usr/bin/codesign app --verify --deep --strict
 """
     )
     with pytest.raises(AssertionError):
