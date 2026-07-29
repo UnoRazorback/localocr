@@ -19,6 +19,8 @@ NATIVE = ROOT / ".build" / "debug" / "localocr-mcp"
 FIXTURE_NAMES = ("mixed.pdf", "image-only.pdf")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SCALAR_RESULTS = {"get_pdf_page_count", "ocr_image"}
+LINE_GEOMETRY_FIELDS = {"x", "y", "width", "height"}
+GEOMETRY_TOLERANCE = 0.005
 
 
 def _copy_fixtures(destination: Path) -> dict[str, Path]:
@@ -102,6 +104,38 @@ def _normalize(value: Any, fixture_root: Path) -> Any:
     return value
 
 
+def _assert_matching_payloads(python: Any, native: Any, path: tuple[str | int, ...] = ()) -> None:
+    if isinstance(python, dict):
+        assert isinstance(native, dict), f"{_display_path(path)} type differs: dict != {type(native).__name__}"
+        assert set(native) == set(python), f"{_display_path(path)} keys differ: {set(python) ^ set(native)}"
+        for key, python_value in python.items():
+            native_value = native[key]
+            field_path = path + (key,)
+            if key in LINE_GEOMETRY_FIELDS and "lines" in path:
+                assert isinstance(python_value, (int, float)) and not isinstance(python_value, bool)
+                assert isinstance(native_value, (int, float)) and not isinstance(native_value, bool)
+                difference = abs(native_value - python_value)
+                assert difference <= GEOMETRY_TOLERANCE, (
+                    f"{_display_path(field_path)} geometry differs: Python={python_value:.6f}, "
+                    f"Swift={native_value:.6f}, difference={difference:.6f}, "
+                    f"allowed={GEOMETRY_TOLERANCE:.6f}"
+                )
+            else:
+                _assert_matching_payloads(python_value, native_value, field_path)
+        return
+    if isinstance(python, list):
+        assert isinstance(native, list), f"{_display_path(path)} type differs: list != {type(native).__name__}"
+        assert len(native) == len(python), f"{_display_path(path)} length differs: {len(python)} != {len(native)}"
+        for index, (python_value, native_value) in enumerate(zip(python, native, strict=True)):
+            _assert_matching_payloads(python_value, native_value, path + (index,))
+        return
+    assert native == python, f"{_display_path(path)} differs: Python={python!r}, Swift={native!r}"
+
+
+def _display_path(path: tuple[str | int, ...]) -> str:
+    return "result" + "".join(f"[{item}]" if isinstance(item, int) else f".{item}" for item in path)
+
+
 async def _exercise_compatibility(tmp_path: Path) -> None:
     python_fixtures = _copy_fixtures(tmp_path / "python-fixtures")
     native_fixtures = _copy_fixtures(tmp_path / "native-fixtures")
@@ -117,7 +151,7 @@ async def _exercise_compatibility(tmp_path: Path) -> None:
     assert set(normalized_native["tools"]) == set(normalized_python["tools"])
     for name, python_result in normalized_python["results"].items():
         native_result = normalized_native["results"][name]
-        assert native_result["text"] == python_result["text"]
+        _assert_matching_payloads(python_result["text"], native_result["text"], (name, "text"))
         if name in SCALAR_RESULTS:
             assert python_result["structured_content"] == {"result": python_result["text"]}
             assert native_result["structured_content"] is None
