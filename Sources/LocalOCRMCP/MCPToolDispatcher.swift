@@ -14,28 +14,34 @@ public struct MCPToolDispatcher: Sendable {
 
     public func callTool(name: String, arguments: [String: Value]? = nil) async -> CallTool.Result {
         do {
+            try Task.checkCancellation()
+            let result: CallTool.Result
             switch try decoder.decode(toolName: name, arguments: arguments) {
             case let .pageCount(request):
                 let response = try await service.pageCount(at: request.fileURL)
-                return scalarResult(String(response.pages))
+                result = scalarResult(String(response.pages))
             case let .inspectPDF(request):
-                return objectResult(try await service.inspectPDF(at: request.fileURL))
+                result = objectResult(try await service.inspectPDF(at: request.fileURL))
             case let .ocrPDF(request):
-                return objectResult(try await service.ocrPDF(request))
+                result = objectResult(try await service.ocrPDF(request))
             case let .ocrPDFBatch(request):
-                return objectResult(await service.ocrPDFBatch(request))
+                result = objectResult(await service.ocrPDFBatch(request))
             case let .ocrImage(request):
                 let response = try await service.ocrImage(request)
-                return scalarResult(response.text)
+                result = scalarResult(response.text)
             case let .makeSearchablePDF(request):
-                return objectResult(try await service.makeSearchablePDF(request))
+                result = objectResult(try await service.makeSearchablePDF(request))
             }
+            try Task.checkCancellation()
+            return result
         } catch let error as MCPArgumentError {
             let code = switch error {
             case .unknownTool: "unknown_tool"
             default: "invalid_arguments"
             }
             return errorResult(code: code, message: error.message)
+        } catch is CancellationError {
+            return errorResult(code: "cancelled", message: "OCR processing was cancelled.")
         } catch {
             let mapped = stableError(for: error)
             return errorResult(code: mapped.code, message: mapped.message)

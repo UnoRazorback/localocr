@@ -118,6 +118,19 @@ import Testing
             #expect(errorCode(in: result) == code)
         }
     }
+
+    @Test func dispatcherMapsTaskCancellationToTheCancelledToolError() async {
+        let dispatcher = MCPToolDispatcher(service: FakeOCRService(), currentDirectory: currentDirectory)
+        let task = Task {
+            await dispatcher.callTool(name: "get_pdf_page_count", arguments: ["file_path": "input.pdf"])
+        }
+        task.cancel()
+
+        let result = await task.value
+
+        #expect(result.isError == true)
+        #expect(errorCode(in: result) == "cancelled")
+    }
 }
 
 private func text(in result: CallTool.Result) -> String? {
