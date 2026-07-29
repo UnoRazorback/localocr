@@ -6,6 +6,22 @@ public enum LocalOCRRequestError: Error, Sendable, Equatable {
     case emptyBatch
 }
 
+public struct PageCountRequest: Sendable, Equatable {
+    public let fileURL: URL
+
+    public init(fileURL: URL) {
+        self.fileURL = fileURL
+    }
+}
+
+public struct InspectPDFRequest: Sendable, Equatable {
+    public let fileURL: URL
+
+    public init(fileURL: URL) {
+        self.fileURL = fileURL
+    }
+}
+
 public struct PDFOCRRequest: Sendable, Equatable {
     public let fileURL: URL
     public let pageRange: String?
