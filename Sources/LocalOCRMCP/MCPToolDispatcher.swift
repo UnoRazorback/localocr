@@ -26,16 +26,16 @@ public struct MCPToolDispatcher: Sendable {
                 let response = try await service.pageCount(at: fileURL)
                 return scalarResult(String(response.pages))
             case let .inspectPDF(fileURL):
-                return objectResult(try await service.inspectPDF(at: fileURL))
+                return try objectResult(try await service.inspectPDF(at: fileURL))
             case let .ocrPDF(request):
-                return objectResult(try await service.ocrPDF(request))
+                return try objectResult(try await service.ocrPDF(request))
             case let .ocrPDFBatch(request):
-                return objectResult(await service.ocrPDFBatch(request))
+                return try objectResult(await service.ocrPDFBatch(request))
             case let .ocrImage(request):
                 let response = try await service.ocrImage(request)
                 return scalarResult(response.text)
             case let .makeSearchablePDF(request):
-                return objectResult(try await service.makeSearchablePDF(request))
+                return try objectResult(try await service.makeSearchablePDF(request))
             }
         } catch let error as MCPArgumentError {
             return errorResult(code: "invalid_arguments", message: error.message)
@@ -57,14 +57,11 @@ public struct MCPToolDispatcher: Sendable {
         )
     }
 
-    private func objectResult<Response: Encodable>(_ response: Response) -> CallTool.Result {
-        let data = ResponseEncoding.encode(response)
-        guard let structured = try? JSONDecoder().decode(Value.self, from: data) else {
-            return errorResult(
-                code: "processing_failed",
-                message: "OCR response could not be encoded"
-            )
-        }
+    private func objectResult<Response: Encodable>(
+        _ response: Response
+    ) throws -> CallTool.Result {
+        let data = try ResponseEncoding.encodeThrowing(response)
+        let structured = try JSONDecoder().decode(Value.self, from: data)
         return CallTool.Result(
             content: [
                 .text(
@@ -80,8 +77,12 @@ public struct MCPToolDispatcher: Sendable {
 
     private func errorResult(code: String, message: String) -> CallTool.Result {
         let payload = MCPErrorPayload(error: .init(code: code, message: message))
-        let data = ResponseEncoding.encode(payload)
-        let structured = try? JSONDecoder().decode(Value.self, from: data)
+        guard
+            let data = try? ResponseEncoding.encodeThrowing(payload),
+            let structured = try? JSONDecoder().decode(Value.self, from: data)
+        else {
+            return fallbackErrorResult()
+        }
         return CallTool.Result(
             content: [
                 .text(
@@ -90,6 +91,16 @@ public struct MCPToolDispatcher: Sendable {
                     _meta: nil
                 ),
             ],
+            structuredContent: Optional.some(structured),
+            isError: true
+        )
+    }
+
+    private func fallbackErrorResult() -> CallTool.Result {
+        let text = #"{"error":{"code":"processing_failed","message":"OCR processing failed"}}"#
+        let structured = try? JSONDecoder().decode(Value.self, from: Data(text.utf8))
+        return CallTool.Result(
+            content: [.text(text: text, annotations: nil, _meta: nil)],
             structuredContent: structured,
             isError: true
         )

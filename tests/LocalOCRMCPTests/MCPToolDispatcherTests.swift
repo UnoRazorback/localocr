@@ -258,6 +258,37 @@ import Testing
     }
 }
 
+@Test func dispatcherReturnsExactStructuredServiceErrorForScalarAndObjectTools() async throws {
+    let scalarDispatcher = MCPToolDispatcher(
+        service: MCPFakeService(pageCount: .failure(.fileNotFound)),
+        currentDirectory: URL(fileURLWithPath: "/cwd")
+    )
+    let objectDispatcher = MCPToolDispatcher(
+        service: MCPFakeService(searchable: .failure(.outputExists)),
+        currentDirectory: URL(fileURLWithPath: "/cwd")
+    )
+    let scalarExpected = #"{"error":{"code":"file_not_found","message":"File not found"}}"#
+    let objectExpected = #"{"error":{"code":"output_exists","message":"Output already exists"}}"#
+    let scalarExpectedValue = try value(from: scalarExpected)
+    let objectExpectedValue = try value(from: objectExpected)
+
+    let scalarResult = await scalarDispatcher.call(
+        name: "get_pdf_page_count",
+        arguments: ["file_path": "/input.pdf"]
+    )
+    let objectResult = await objectDispatcher.call(
+        name: "make_searchable_pdf",
+        arguments: ["file_path": "/input.pdf"]
+    )
+
+    #expect(try resultText(scalarResult) == scalarExpected)
+    #expect(scalarResult.structuredContent == scalarExpectedValue)
+    #expect(scalarResult.isError == true)
+    #expect(try resultText(objectResult) == objectExpected)
+    #expect(objectResult.structuredContent == objectExpectedValue)
+    #expect(objectResult.isError == true)
+}
+
 @Test func dispatcherMapsTaskCancellationAndUnexpectedFailures() async throws {
     let cancelled = MCPToolDispatcher(
         service: MCPFakeService(pageCount: .cancellation),
@@ -276,9 +307,69 @@ import Testing
         name: "get_pdf_page_count",
         arguments: ["file_path": "/input.pdf"]
     )
+    let cancelledExpected = #"{"error":{"code":"cancelled","message":"Operation cancelled"}}"#
+    let unexpectedExpected = #"{"error":{"code":"processing_failed","message":"OCR processing failed"}}"#
+    let cancelledExpectedValue = try value(from: cancelledExpected)
+    let unexpectedExpectedValue = try value(from: unexpectedExpected)
 
-    #expect(try errorCode(cancelledResult) == "cancelled")
-    #expect(try errorCode(unexpectedResult) == "processing_failed")
+    #expect(try resultText(cancelledResult) == cancelledExpected)
+    #expect(cancelledResult.structuredContent == cancelledExpectedValue)
+    #expect(cancelledResult.isError == true)
+    #expect(try resultText(unexpectedResult) == unexpectedExpected)
+    #expect(unexpectedResult.structuredContent == unexpectedExpectedValue)
+    #expect(unexpectedResult.isError == true)
+}
+
+@Test func dispatcherConvertsNonFiniteResponseEncodingFailureAndSurvives() async throws {
+    let nonFiniteResponse = PDFOCRResponse(
+        sourcePath: "/input.pdf",
+        sourceSHA256: "sha",
+        pages: [
+            .init(
+                page: 1,
+                text: "text",
+                method: .visionOCR,
+                lines: [
+                    .init(
+                        text: "line",
+                        confidence: .nan,
+                        x: 0,
+                        y: 0,
+                        width: 1,
+                        height: 1
+                    ),
+                ]
+            ),
+        ],
+        failedPages: [],
+        emptyOCRPages: [],
+        rotatedOCRPages: []
+    )
+    let dispatcher = MCPToolDispatcher(
+        service: MCPFakeService(
+            pageCount: .success(.init(pages: 3)),
+            ocr: .success(nonFiniteResponse)
+        ),
+        currentDirectory: URL(fileURLWithPath: "/cwd")
+    )
+    let expected = #"{"error":{"code":"processing_failed","message":"OCR processing failed"}}"#
+    let expectedValue = try value(from: expected)
+
+    let failed = await dispatcher.call(
+        name: "ocr_pdf",
+        arguments: ["file_path": "/input.pdf"]
+    )
+    let survived = await dispatcher.call(
+        name: "get_pdf_page_count",
+        arguments: ["file_path": "/input.pdf"]
+    )
+
+    #expect(try resultText(failed) == expected)
+    #expect(failed.structuredContent == expectedValue)
+    #expect(failed.isError == true)
+    #expect(try resultText(survived) == "3")
+    #expect(survived.structuredContent == nil)
+    #expect(survived.isError == false)
 }
 
 private func resultText(_ result: CallTool.Result) throws -> String {
@@ -291,12 +382,6 @@ private func resultText(_ result: CallTool.Result) throws -> String {
 
 private func value(from json: String) throws -> Value {
     try JSONDecoder().decode(Value.self, from: Data(json.utf8))
-}
-
-private func errorCode(_ result: CallTool.Result) throws -> String {
-    let object = try #require(result.structuredContent?.objectValue)
-    let error = try #require(object["error"]?.objectValue)
-    return try #require(error["code"]?.stringValue)
 }
 
 private enum MCPDispatcherTestError: Error {
