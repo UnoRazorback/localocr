@@ -20,6 +20,18 @@ EXPECTED_NOTARY_PROFILE_REFERENCES = {
     "$LOCALOCR_NOTARY_PROFILE",
     "${LOCALOCR_NOTARY_PROFILE}",
 }
+EXPECTED_QUOTED_NOTARY_PROFILE_ARGUMENTS = {
+    '"$LOCALOCR_NOTARY_PROFILE"',
+    '"${LOCALOCR_NOTARY_PROFILE}"',
+}
+NOTARY_SUBCOMMANDS = {"history", "log", "submit"}
+FORBIDDEN_CREDENTIAL_FLAGS = {
+    "--apple-id",
+    "--issuer",
+    "--key",
+    "--key-id",
+    "--password",
+}
 EXPECTED_SECOND_MAC_FIELDS = (
     "Release version:",
     "Build:",
@@ -98,59 +110,322 @@ def _assert_script_test_rejects(script: str, mode: str, value: str) -> None:
     assert result.returncode != 0, result.stdout
 
 
-def _logical_shell_commands(script: str) -> list[list[str]]:
+def _shell_command_segments(
+    script: str,
+    *,
+    preserve_quotes: bool = False,
+) -> list[list[str]]:
     logical_lines = re.sub(r"\\\n[ \t]*", " ", script).splitlines()
     commands: list[list[str]] = []
     for line in logical_lines:
         try:
-            tokens = shlex.split(line, comments=True, posix=True)
+            lexer = shlex.shlex(
+                line,
+                posix=not preserve_quotes,
+                punctuation_chars=";&|()",
+            )
+            lexer.whitespace_split = True
+            lexer.commenters = "#"
+            tokens = list(lexer)
         except ValueError:
             continue
-        if tokens:
-            commands.append(tokens)
+        command: list[str] = []
+        for token in tokens:
+            if token in {"{", "}"} or (
+                token and set(token) <= set(";&|()")
+            ):
+                if command:
+                    commands.append(command)
+                    command = []
+                continue
+            command.append(token)
+        if command:
+            commands.append(command)
     return commands
 
 
-def _assert_notary_profile_is_environment_backed(
+def _executable_invocations(
+    script: str,
+    executable: str,
+    *,
+    preserve_quotes: bool = False,
+) -> list[list[str]]:
+    invocations: list[list[str]] = []
+    for command in _shell_command_segments(
+        script,
+        preserve_quotes=preserve_quotes,
+    ):
+        index = 0
+        while index < len(command):
+            token = command[index]
+            if (
+                token in {"!", "do", "elif", "else", "if", "then", "time"}
+                or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token)
+            ):
+                index += 1
+                continue
+            token_name = Path(token.strip("\"'")).name
+            if token_name in {"command", "env", "exec"}:
+                index += 1
+                while index < len(command) and (
+                    command[index].startswith("-")
+                    or re.fullmatch(
+                        r"[A-Za-z_][A-Za-z0-9_]*=.*",
+                        command[index],
+                    )
+                ):
+                    index += 1
+                continue
+            if token_name == executable:
+                invocations.append(command[index:])
+            elif token_name == "xcrun":
+                tool_index = index + 1
+                while (
+                    tool_index < len(command)
+                    and command[tool_index].startswith("-")
+                ):
+                    tool_index += 1
+                if (
+                    tool_index < len(command)
+                    and Path(command[tool_index].strip("\"'")).name == executable
+                ):
+                    invocations.append(command[tool_index:])
+            break
+    return invocations
+
+
+def _assignment_tokens(script: str) -> list[tuple[str, str]]:
+    assignments: list[tuple[str, str]] = []
+    for command in _shell_command_segments(script):
+        for token in command:
+            match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", token)
+            if match:
+                assignments.append((match.group(1), match.group(2)))
+    return assignments
+
+
+def _profile_argument(command: list[str]) -> str | None:
+    profile_arguments: list[str] = []
+    for index, token in enumerate(command):
+        if token == "--keychain-profile":
+            assert index + 1 < len(command), "missing --keychain-profile argument"
+            profile_arguments.append(command[index + 1])
+        elif token.startswith("--keychain-profile="):
+            profile_arguments.append(token)
+    assert len(profile_arguments) <= 1, (
+        f"multiple --keychain-profile arguments in one command: {command}"
+    )
+    return profile_arguments[0] if profile_arguments else None
+
+
+def _assert_notarytool_profile_policy(
     script: str,
     *,
-    required: bool,
+    required_subcommands: set[str],
 ) -> None:
-    profile_arguments: list[str] = []
-    for command in _logical_shell_commands(script):
-        for index, token in enumerate(command):
-            if token == "--keychain-profile":
-                assert index + 1 < len(command), "missing --keychain-profile argument"
-                profile_arguments.append(command[index + 1])
-            elif token.startswith("--keychain-profile="):
-                profile_arguments.append(token.partition("=")[2])
-
-    if required:
-        assert profile_arguments, "notarization must use --keychain-profile"
-    assert set(profile_arguments) <= EXPECTED_NOTARY_PROFILE_REFERENCES
-    assert not re.search(
-        r"(?m)^\s*(?:export\s+)?LOCALOCR_NOTARY_PROFILE\s*=",
+    found_subcommands: set[str] = set()
+    for command in _executable_invocations(
         script,
-    ), "the repository must not assign a notary profile"
+        "notarytool",
+        preserve_quotes=True,
+    ):
+        subcommands = NOTARY_SUBCOMMANDS.intersection(command[1:])
+        if not subcommands:
+            continue
+        assert len(subcommands) == 1, f"ambiguous notarytool invocation: {command}"
+        subcommand = subcommands.pop()
+        found_subcommands.add(subcommand)
+        profile_argument = _profile_argument(command)
+        assert profile_argument in EXPECTED_QUOTED_NOTARY_PROFILE_ARGUMENTS, (
+            f"notarytool {subcommand} must consume LOCALOCR_NOTARY_PROFILE: {command}"
+        )
+
+    assert required_subcommands <= found_subcommands, (
+        f"missing notarytool commands: {required_subcommands - found_subcommands}"
+    )
+
+
+def _assert_no_hard_coded_credentials(script: str) -> None:
+    secret_assignment_name = re.compile(
+        r"(?i)(?:"
+        r"LOCALOCR_NOTARY_PROFILE|"
+        r"APPLE_(?:ID|PASSWORD)|"
+        r"NOTARY_(?:PROFILE|PASSWORD|CREDENTIALS?|.*KEY.*)|"
+        r"(?:PRIVATE|API|AUTH).*KEY.*|"
+        r"KEY.*(?:FILE|PATH)"
+        r")"
+    )
+    for name, value in _assignment_tokens(script):
+        if name == "LOCALOCR_NOTARY_PROFILE":
+            raise AssertionError(
+                "the repository must not assign LOCALOCR_NOTARY_PROFILE"
+            )
+        if value and secret_assignment_name.fullmatch(name):
+            raise AssertionError(
+                f"hard-coded credential assignment is forbidden: {name}"
+            )
+
+    for command in _shell_command_segments(script):
+        for token in command:
+            if token in FORBIDDEN_CREDENTIAL_FLAGS or any(
+                token.startswith(f"{flag}=")
+                for flag in FORBIDDEN_CREDENTIAL_FLAGS
+            ):
+                raise AssertionError(
+                    f"repository credential flag is forbidden: {token}"
+                )
+            if (
+                "BEGIN PRIVATE KEY" in token
+                or "BEGIN RSA PRIVATE KEY" in token
+                or "BEGIN EC PRIVATE KEY" in token
+                or token.lower().endswith(".p8")
+            ):
+                raise AssertionError(
+                    f"private-key material/reference is forbidden: {token}"
+                )
+            if (
+                "LOCALOCR_NOTARY_PROFILE" in token
+                and token not in EXPECTED_NOTARY_PROFILE_REFERENCES
+            ):
+                raise AssertionError(
+                    f"default/derived notary profile expansion is forbidden: {token}"
+                )
 
 
 def _assert_codesign_deep_policy(script: str) -> None:
-    for command in _logical_shell_commands(script):
-        codesign_indexes = [
-            index
-            for index, token in enumerate(command)
-            if Path(token).name == "codesign"
-        ]
-        for index in codesign_indexes:
-            codesign_command = command[index:]
-            if "--deep" not in codesign_command:
-                continue
-            assert "--verify" in codesign_command, (
-                f"--deep is forbidden while signing: {codesign_command}"
-            )
-            assert "--strict" in codesign_command, (
-                f"--deep verification must also be strict: {codesign_command}"
-            )
+    for codesign_command in _executable_invocations(script, "codesign"):
+        if "--deep" not in codesign_command:
+            continue
+        assert "--verify" in codesign_command, (
+            f"--deep is forbidden while signing: {codesign_command}"
+        )
+        assert "--strict" in codesign_command, (
+            f"--deep verification must also be strict: {codesign_command}"
+        )
+
+
+@pytest.mark.parametrize(
+    "script",
+    (
+        'LOCALOCR_NOTARY_PROFILE="Hardcoded"',
+        'readonly LOCALOCR_NOTARY_PROFILE="Hardcoded"',
+        'declare -r LOCALOCR_NOTARY_PROFILE="Hardcoded"',
+        'typeset LOCALOCR_NOTARY_PROFILE="Hardcoded"',
+        'export LOCALOCR_NOTARY_PROFILE="Hardcoded"',
+        ': "${LOCALOCR_NOTARY_PROFILE:-Hardcoded}"',
+        ': "${LOCALOCR_NOTARY_PROFILE:=Hardcoded}"',
+        'NOTARY_PROFILE="Hardcoded"',
+        'NOTARY_PRIVATE_KEY="/secure/AuthKey"',
+        'AUTH_KEY_PATH="/secure/AuthKey"',
+        'PRIVATE_KEY_PEM="-----BEGIN PRIVATE KEY-----"',
+        'PRIVATE_KEY_FILE="/secure/AuthKey.p8"',
+    ),
+)
+def test_credential_guard_rejects_assignment_and_expansion_bypasses(
+    script: str,
+) -> None:
+    with pytest.raises(AssertionError):
+        _assert_no_hard_coded_credentials(script)
+
+
+def test_credential_guard_permits_public_release_metadata() -> None:
+    _assert_no_hard_coded_credentials(
+        """
+APPLE_TEAM_ID="DZ8B5454ZN"
+NOTARY_SUBMISSION_ID="submission-id"
+[[ -n "$LOCALOCR_NOTARY_PROFILE" ]]
+"""
+    )
+
+
+@pytest.mark.parametrize(
+    "profile_argument",
+    (
+        "Hardcoded",
+        "$NOTARY_PROFILE",
+        "${NOTARY_PROFILE}",
+        "${LOCALOCR_NOTARY_PROFILE:-Hardcoded}",
+        "${LOCALOCR_NOTARY_PROFILE:=Hardcoded}",
+    ),
+)
+def test_notarytool_policy_rejects_hard_coded_or_indirect_profiles(
+    profile_argument: str,
+) -> None:
+    script = (
+        "xcrun notarytool submit artifact.zip "
+        f'--keychain-profile "{profile_argument}" --wait'
+    )
+    with pytest.raises(AssertionError):
+        _assert_notarytool_profile_policy(
+            script,
+            required_subcommands={"submit"},
+        )
+
+
+def test_notarytool_policy_requires_profile_on_actual_required_commands() -> None:
+    unrelated_reference = """
+printf '%s' --keychain-profile "$LOCALOCR_NOTARY_PROFILE"
+echo notarytool submit --keychain-profile "$LOCALOCR_NOTARY_PROFILE"
+xcrun notarytool history --output-format json
+xcrun notarytool submit artifact.zip --wait
+xcrun notarytool log submission-id notary-log.json
+"""
+    with pytest.raises(AssertionError):
+        _assert_notarytool_profile_policy(
+            unrelated_reference,
+            required_subcommands=NOTARY_SUBCOMMANDS,
+        )
+    with pytest.raises(AssertionError):
+        _assert_notarytool_profile_policy(
+            (
+                "xcrun notarytool submit artifact.zip "
+                "--keychain-profile $LOCALOCR_NOTARY_PROFILE"
+            ),
+            required_subcommands={"submit"},
+        )
+
+    valid_commands = """
+xcrun notarytool history --keychain-profile "$LOCALOCR_NOTARY_PROFILE" \
+  --output-format json
+xcrun notarytool submit artifact.zip --wait \
+  --keychain-profile "${LOCALOCR_NOTARY_PROFILE}"
+false || xcrun notarytool log submission-id \
+  --keychain-profile "$LOCALOCR_NOTARY_PROFILE" notary-log.json
+"""
+    _assert_notarytool_profile_policy(
+        valid_commands,
+        required_subcommands=NOTARY_SUBCOMMANDS,
+    )
+
+
+@pytest.mark.parametrize(
+    "script",
+    (
+        "/usr/bin/codesign --deep --force --sign identity app",
+        "/usr/bin/codesign --force --sign identity app --deep",
+        "true && /usr/bin/codesign --timestamp --deep --sign identity app",
+        "{ /usr/bin/codesign --sign identity --deep app; }",
+        "(/usr/bin/codesign --sign identity app --deep)",
+    ),
+)
+def test_codesign_policy_rejects_deep_signing_in_compound_commands(
+    script: str,
+) -> None:
+    with pytest.raises(AssertionError):
+        _assert_codesign_deep_policy(script)
+
+
+def test_codesign_policy_permits_only_deep_strict_verification() -> None:
+    _assert_codesign_deep_policy(
+        """
+echo /usr/bin/codesign --deep --sign identity app
+prepare && /usr/bin/codesign --strict app --deep --verify; finish
+"""
+    )
+    with pytest.raises(AssertionError):
+        _assert_codesign_deep_policy(
+            "/usr/bin/codesign --verify app --deep"
+        )
 
 
 def test_direct_release_scripts_enforce_immutable_policy() -> None:
@@ -173,7 +448,6 @@ def test_direct_release_scripts_enforce_immutable_policy() -> None:
     assert EXPECTED_TEAM in toolchain_script
     assert "--options" in sign_script and "runtime" in sign_script
     assert "--timestamp" in sign_script
-    assert "notarytool submit" in notarize_script
     assert "--wait" in notarize_script
     assert "stapler staple" in notarize_script
     assert "stapler validate" in verify_script
@@ -185,31 +459,27 @@ def test_direct_release_scripts_enforce_immutable_policy() -> None:
         assert f"Contents/Helpers/{helper}" in sign_script
         assert helper in download_script
 
-    _assert_codesign_deep_policy(sign_script)
-    _assert_codesign_deep_policy(verify_script)
-
     assert "shasum -a 256" in download_script
     assert "stapler validate" in download_script
     assert "spctl --assess --type execute" in download_script
     assert "--version" in download_script
     assert "LOCALOCR_RELEASE_VERSION" in download_script
 
-    forbidden_credential_pattern = re.compile(
-        r"(?i)(?:"
-        r"--apple-id\b|--password\b|--issuer\b|--key-id\b|--key(?:\s|=)|"
-        r"BEGIN (?:RSA |EC )?PRIVATE KEY|\.p8\b"
-        r")"
-    )
     forbidden_xcode_pattern = re.compile(
         r"(?i)\bXcode(?:[-_ ]*)(?:beta|rc|preview)\b"
     )
     for release_script in release_scripts:
-        assert not forbidden_credential_pattern.search(release_script)
         assert not forbidden_xcode_pattern.search(release_script)
-        _assert_notary_profile_is_environment_backed(
+        _assert_no_hard_coded_credentials(release_script)
+        _assert_notarytool_profile_policy(
             release_script,
-            required=release_script == notarize_script,
+            required_subcommands=(
+                NOTARY_SUBCOMMANDS
+                if release_script == notarize_script
+                else set()
+            ),
         )
+        _assert_codesign_deep_policy(release_script)
 
     assert "--entitlements" not in sign_script
 
