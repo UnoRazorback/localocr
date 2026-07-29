@@ -62,6 +62,7 @@ artifacts only; it does not sign, notarize, install, or publish them.
 **Status: not yet published.** The private beta remains blocked until one exact
 release commit and its final downloaded assets pass every release gate:
 
+- the exact clean release commit has been pushed to the private repository;
 - the complete Swift, Python, artifact-policy, and direct-release contract
   suites pass;
 - the app and both nested helpers have timestamped Developer ID signatures
@@ -94,15 +95,17 @@ Continue only if the command reports `OK`. Double-click the verified ZIP, move
 authorized beta should open without bypassing Gatekeeper; testers should not
 use `xattr`, disable Gatekeeper, or choose an override for an unverified app.
 
-Release operators and second-Mac testers must also run the repository's
-downloaded-copy verifier against absolute paths before a beta is published or
-promoted:
+Release operators and second-Mac testers must also use a clean checkout at the
+exact approved release commit. From that checkout's repository root, run the
+downloaded-copy verifier with absolute paths to both downloaded assets before a
+beta is published or promoted:
 
 ```bash
+cd /path/to/localocr
 export LOCALOCR_RELEASE_VERSION="<approved-version>"
 scripts/test-downloaded-release.sh \
-  "$PWD/LocalOCR-Studio-<version>-<build>.zip" \
-  "$PWD/LocalOCR-Studio-<version>-<build>.sha256"
+  "/absolute/path/to/LocalOCR-Studio-<version>-<build>.zip" \
+  "/absolute/path/to/LocalOCR-Studio-<version>-<build>.sha256"
 ```
 
 The private release notes will identify the approved version, exact release
