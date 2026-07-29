@@ -42,22 +42,24 @@ validate_code_signing_metadata_name() {
 
 verify_candidate_code_signing_xattrs() {
     local candidate="$1"
+    local xattr_inspector="${2:-/usr/bin/xattr}"
     local attributes
     local attribute
 
-    attributes="$(/usr/bin/xattr "$candidate")" || {
+    attributes="$("$xattr_inspector" "$candidate")" || {
         echo "could not enumerate extended attributes: $candidate" >&2
         return 1
     }
     while IFS= read -r attribute; do
         [[ -n "$attribute" ]] || continue
-        validate_code_signing_metadata_name "$attribute"
+        validate_code_signing_metadata_name "$attribute" || return 1
     done <<< "$attributes"
 }
 
 verify_no_code_signing_hostile_metadata() {
     local physical_app="$1"
     local enumerator="${2:-/usr/bin/find}"
+    local xattr_inspector="${3:-/usr/bin/xattr}"
     local candidate
     local metadata_file
     local candidate_list_dir
@@ -98,7 +100,7 @@ verify_no_code_signing_hostile_metadata() {
                 break
                 ;;
         esac
-        if ! verify_candidate_code_signing_xattrs "$candidate"; then
+        if ! verify_candidate_code_signing_xattrs "$candidate" "$xattr_inspector"; then
             inspection_status=1
             break
         fi
@@ -112,6 +114,7 @@ verify_no_code_signing_hostile_metadata() {
 sanitize_staged_app_metadata() {
     local app_path="$1"
     local enumerator="${2:-/usr/bin/find}"
+    local xattr_inspector="${3:-/usr/bin/xattr}"
     local physical_app
     local unexpected_symlink
 
@@ -135,7 +138,10 @@ sanitize_staged_app_metadata() {
         echo "could not clear extended attributes from staged app copy" >&2
         return 1
     }
-    verify_no_code_signing_hostile_metadata "$physical_app" "$enumerator"
+    verify_no_code_signing_hostile_metadata \
+        "$physical_app" \
+        "$enumerator" \
+        "$xattr_inspector"
 }
 
 require_expected_macho_file() {
@@ -306,7 +312,8 @@ test_xattr_preflight() {
     : > "$trace_file"
     sanitize_staged_app_metadata \
         "$app_path" \
-        "${LOCALOCR_TEST_METADATA_ENUMERATOR:-/usr/bin/find}"
+        "${LOCALOCR_TEST_METADATA_ENUMERATOR:-/usr/bin/find}" \
+        "${LOCALOCR_TEST_XATTR_INSPECTOR:-/usr/bin/xattr}"
     if [[ -n "${LOCALOCR_TEST_REMAINING_XATTRS:-}" ]]; then
         while IFS= read -r injected_attribute; do
             [[ -n "$injected_attribute" ]] || continue

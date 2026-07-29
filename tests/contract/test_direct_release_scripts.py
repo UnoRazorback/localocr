@@ -878,6 +878,48 @@ def test_signer_aborts_when_recursive_metadata_enumerator_fails(
     assert first_helper.read_bytes() == helper_before
 
 
+@pytest.mark.parametrize(
+    ("hostile_attribute", "later_benign_attribute"),
+    (
+        ("com.apple.FinderInfo", "com.apple.provenance"),
+        ("com.apple.fileprovider.fpfs#P", "com.example.other"),
+        ("com.apple.ResourceFork", "com.apple.provenance"),
+    ),
+)
+def test_signer_does_not_mask_hostile_xattr_followed_by_benign_xattr(
+    tmp_path: Path,
+    hostile_attribute: str,
+    later_benign_attribute: str,
+) -> None:
+    staged_app = _nested_code_fixture(tmp_path)
+    first_helper = staged_app / "Contents" / "Helpers" / "localocr"
+    helper_before = first_helper.read_bytes()
+    trace_file = tmp_path / "codesign-invocations.txt"
+    xattr_inspector = tmp_path / "controlled-xattr"
+    xattr_inspector.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' {shlex.quote(hostile_attribute)} "
+        f"{shlex.quote(later_benign_attribute)}\n"
+    )
+    xattr_inspector.chmod(0o755)
+    env = os.environ.copy()
+    env["LOCALOCR_SIGNING_TRACE_FILE"] = str(trace_file)
+    env["LOCALOCR_TEST_XATTR_INSPECTOR"] = str(xattr_inspector)
+
+    result = _run_script_test(
+        "sign",
+        "--test-xattr-preflight",
+        str(staged_app),
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert hostile_attribute in result.stderr
+    assert trace_file.is_file()
+    assert trace_file.read_text() == ""
+    assert first_helper.read_bytes() == helper_before
+
+
 def test_production_signer_refuses_to_sanitize_an_arbitrary_app(
     tmp_path: Path,
 ) -> None:
