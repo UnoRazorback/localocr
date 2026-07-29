@@ -1370,10 +1370,20 @@ def _run_notarization_flow_test(
     *,
     fail_step: str = "",
     preexisting_final: bool = False,
+    profile: str = "controlled-test-profile",
+    release_version: str = "0.2.0",
+    release_build: str = "42",
+    create_staged_app: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
     submission_json = tmp_path / "submission-result.json"
-    trace_file = tmp_path / "notarization-trace.txt"
-    release_root = tmp_path / "direct-release"
+    release_root = tmp_path / "localocr-notarize-test.fixture"
+    trace_file = release_root / "notarization-trace.txt"
+    release_root.mkdir(exist_ok=True)
+    (release_root / ".localocr-notarize-test-root").write_text(
+        "LOCALOCR NOTARIZATION TEST ROOT\n"
+    )
+    if create_staged_app:
+        (release_root / "staged" / "LocalOCR Studio.app").mkdir(parents=True)
     if preexisting_final:
         final_dir = release_root / "final"
         final_dir.mkdir(parents=True)
@@ -1388,9 +1398,9 @@ def _run_notarization_flow_test(
     env = os.environ.copy()
     env.update(
         {
-            "LOCALOCR_NOTARY_PROFILE": "controlled-test-profile",
-            "LOCALOCR_RELEASE_VERSION": "0.2.0",
-            "LOCALOCR_RELEASE_BUILD": "42",
+            "LOCALOCR_NOTARY_PROFILE": profile,
+            "LOCALOCR_RELEASE_VERSION": release_version,
+            "LOCALOCR_RELEASE_BUILD": release_build,
             "LOCALOCR_TEST_FAIL_STEP": fail_step,
         }
     )
@@ -1473,8 +1483,8 @@ def test_notarization_accepted_flow_orders_verification_and_apple_gates(
     )
     assert not (evidence / "notary-log.json").exists()
     final_dir = release_root / "final"
-    final_zip = final_dir / "LocalOCR-Studio-0.2.0-42.zip"
-    final_checksum = final_dir / "LocalOCR-Studio-0.2.0-42.sha256"
+    final_zip = final_dir / "TEST-ONLY-NOT-A-RELEASE-0.2.0-42.fakezip"
+    final_checksum = final_dir / "TEST-ONLY-NOT-A-RELEASE-0.2.0-42.test-sha256"
     assert final_zip.is_file()
     assert final_checksum.is_file()
     checksum_result = subprocess.run(
@@ -1487,6 +1497,7 @@ def test_notarization_accepted_flow_orders_verification_and_apple_gates(
     assert checksum_result.returncode == 0, checksum_result.stderr
     assert not any(final_dir.glob("*.partial*"))
     assert not any((release_root / "tmp").glob("final-verification.*"))
+    assert not list(final_dir.glob("LocalOCR-Studio-*"))
 
 
 def test_notarization_rejection_fetches_log_and_never_staples_or_packages(
@@ -1515,33 +1526,17 @@ def test_notarization_rejection_fetches_log_and_never_staples_or_packages(
 def test_notarization_requires_a_nonempty_external_profile(
     tmp_path: Path,
 ) -> None:
-    submission_json = tmp_path / "submission-result.json"
-    trace_file = tmp_path / "notarization-trace.txt"
-    release_root = tmp_path / "direct-release"
-    submission_json.write_text(
-        '{"id": "must-not-submit", "status": "Accepted"}\n'
-    )
-    env = os.environ.copy()
-    env.update(
-        {
-            "LOCALOCR_NOTARY_PROFILE": "",
-            "LOCALOCR_RELEASE_VERSION": "0.2.0",
-            "LOCALOCR_RELEASE_BUILD": "42",
-        }
-    )
-
-    result = _run_script_test(
-        "notarize",
-        "--test-workflow",
-        str(submission_json),
-        extra_arguments=(str(trace_file), str(release_root)),
-        env=env,
+    result, trace, release_root = _run_notarization_flow_test(
+        tmp_path,
+        {"id": "must-not-submit", "status": "Accepted"},
+        profile="",
+        preexisting_final=True,
     )
 
     assert result.returncode != 0
     assert "profile must be nonempty" in result.stderr
-    assert trace_file.read_text() == ""
-    assert not release_root.exists()
+    assert trace == []
+    assert not any((release_root / "final").iterdir())
 
 
 @pytest.mark.parametrize(
@@ -1572,8 +1567,13 @@ def test_notarization_rejects_malformed_submission_json_without_final_artifacts(
     tmp_path: Path,
 ) -> None:
     submission_json = tmp_path / "malformed-submission-result.json"
-    trace_file = tmp_path / "notarization-trace.txt"
-    release_root = tmp_path / "direct-release"
+    release_root = tmp_path / "localocr-notarize-test.malformed"
+    trace_file = release_root / "notarization-trace.txt"
+    release_root.mkdir()
+    (release_root / ".localocr-notarize-test-root").write_text(
+        "LOCALOCR NOTARIZATION TEST ROOT\n"
+    )
+    (release_root / "staged" / "LocalOCR Studio.app").mkdir(parents=True)
     submission_json.write_text('{"id": "broken"')
     env = os.environ.copy()
     env.update(
@@ -1648,13 +1648,17 @@ def test_notarization_refuses_symlinked_temp_root_without_touching_target(
     tmp_path: Path,
 ) -> None:
     submission_json = tmp_path / "submission-result.json"
-    trace_file = tmp_path / "notarization-trace.txt"
-    release_root = tmp_path / "direct-release"
+    release_root = tmp_path / "localocr-notarize-test.symlink"
+    trace_file = release_root / "notarization-trace.txt"
     outside = tmp_path / "outside"
     outside.mkdir()
     sentinel = outside / "must-survive.txt"
     sentinel.write_text("keep")
     release_root.mkdir()
+    (release_root / ".localocr-notarize-test-root").write_text(
+        "LOCALOCR NOTARIZATION TEST ROOT\n"
+    )
+    (release_root / "staged" / "LocalOCR Studio.app").mkdir(parents=True)
     (release_root / "tmp").symlink_to(outside, target_is_directory=True)
     submission_json.write_text(
         '{"id": "must-not-submit", "status": "Accepted"}\n'
@@ -1680,3 +1684,183 @@ def test_notarization_refuses_symlinked_temp_root_without_touching_target(
     assert "must not be symlinks" in result.stderr
     assert trace_file.read_text() == ""
     assert sentinel.read_text() == "keep"
+
+
+@pytest.mark.parametrize(
+    ("profile", "release_version", "release_build", "create_staged_app"),
+    (
+        ("", "0.2.0", "42", True),
+        ("controlled-test-profile", "../escape", "42", True),
+        ("controlled-test-profile", "0.2.0", "not-numeric", True),
+        ("controlled-test-profile", "0.2.0", "42", False),
+    ),
+)
+def test_notarization_invalidates_stale_official_candidate_before_early_failure(
+    tmp_path: Path,
+    profile: str,
+    release_version: str,
+    release_build: str,
+    create_staged_app: bool,
+) -> None:
+    outside_sentinel = tmp_path / "outside-must-survive.txt"
+    outside_sentinel.write_text("keep")
+    result, trace, release_root = _run_notarization_flow_test(
+        tmp_path,
+        {"id": "must-not-submit", "status": "Accepted"},
+        profile=profile,
+        release_version=release_version,
+        release_build=release_build,
+        create_staged_app=create_staged_app,
+        preexisting_final=True,
+    )
+
+    assert result.returncode != 0
+    assert trace == []
+    assert not any((release_root / "final").iterdir())
+    assert outside_sentinel.read_text() == "keep"
+
+
+@pytest.mark.parametrize("symlink_name", ("evidence", "submission"))
+def test_notarization_rejects_symlinked_output_directory_without_outside_mutation(
+    tmp_path: Path,
+    symlink_name: str,
+) -> None:
+    submission_json = tmp_path / "submission-result.json"
+    release_root = tmp_path / f"localocr-notarize-test.{symlink_name}"
+    trace_file = release_root / "notarization-trace.txt"
+    outside = tmp_path / f"outside-{symlink_name}"
+    outside.mkdir()
+    sentinel = outside / "must-survive.txt"
+    sentinel.write_text("keep")
+    release_root.mkdir()
+    (release_root / ".localocr-notarize-test-root").write_text(
+        "LOCALOCR NOTARIZATION TEST ROOT\n"
+    )
+    (release_root / "staged" / "LocalOCR Studio.app").mkdir(parents=True)
+    final_dir = release_root / "final"
+    final_dir.mkdir()
+    (final_dir / "LocalOCR-Studio-stale.zip").write_text("stale")
+    (final_dir / "LocalOCR-Studio-stale.sha256").write_text("stale")
+    (release_root / symlink_name).symlink_to(outside, target_is_directory=True)
+    submission_json.write_text(
+        '{"id": "must-not-submit", "status": "Accepted"}\n'
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "LOCALOCR_NOTARY_PROFILE": "controlled-test-profile",
+            "LOCALOCR_RELEASE_VERSION": "0.2.0",
+            "LOCALOCR_RELEASE_BUILD": "42",
+        }
+    )
+
+    result = _run_script_test(
+        "notarize",
+        "--test-workflow",
+        str(submission_json),
+        extra_arguments=(str(trace_file), str(release_root)),
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "must not be symlinks" in result.stderr
+    assert trace_file.read_text() == ""
+    assert not any(final_dir.iterdir())
+    assert sentinel.read_text() == "keep"
+
+
+def test_notarization_test_mode_rejects_repo_release_root_without_mutation(
+    tmp_path: Path,
+) -> None:
+    submission_json = tmp_path / "submission-result.json"
+    trace_file = tmp_path / "notarization-trace.txt"
+    release_root = ROOT / "dist" / "direct-release"
+    existed_before = release_root.exists()
+    tree_before = (
+        sorted(
+            (
+                str(path.relative_to(release_root)),
+                path.lstat().st_mode,
+                path.lstat().st_size,
+                path.lstat().st_mtime_ns,
+            )
+            for path in release_root.rglob("*")
+        )
+        if existed_before
+        else []
+    )
+    submission_json.write_text(
+        '{"id": "must-not-submit", "status": "Accepted"}\n'
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "LOCALOCR_NOTARY_PROFILE": "controlled-test-profile",
+            "LOCALOCR_RELEASE_VERSION": "0.2.0",
+            "LOCALOCR_RELEASE_BUILD": "42",
+        }
+    )
+
+    result = _run_script_test(
+        "notarize",
+        "--test-workflow",
+        str(submission_json),
+        extra_arguments=(str(trace_file), str(release_root)),
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "system temporary directory" in result.stderr
+    assert release_root.exists() == existed_before
+    tree_after = (
+        sorted(
+            (
+                str(path.relative_to(release_root)),
+                path.lstat().st_mode,
+                path.lstat().st_size,
+                path.lstat().st_mtime_ns,
+            )
+            for path in release_root.rglob("*")
+        )
+        if release_root.exists()
+        else []
+    )
+    assert tree_after == tree_before
+
+
+def test_notarization_test_mode_rejects_unmarked_arbitrary_temp_without_mutation(
+    tmp_path: Path,
+) -> None:
+    submission_json = tmp_path / "submission-result.json"
+    trace_file = tmp_path / "notarization-trace.txt"
+    release_root = tmp_path / "arbitrary"
+    final_dir = release_root / "final"
+    final_dir.mkdir(parents=True)
+    stale_zip = final_dir / "LocalOCR-Studio-stale.zip"
+    stale_checksum = final_dir / "LocalOCR-Studio-stale.sha256"
+    stale_zip.write_text("keep")
+    stale_checksum.write_text("keep")
+    submission_json.write_text(
+        '{"id": "must-not-submit", "status": "Accepted"}\n'
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "LOCALOCR_NOTARY_PROFILE": "controlled-test-profile",
+            "LOCALOCR_RELEASE_VERSION": "0.2.0",
+            "LOCALOCR_RELEASE_BUILD": "42",
+        }
+    )
+
+    result = _run_script_test(
+        "notarize",
+        "--test-workflow",
+        str(submission_json),
+        extra_arguments=(str(trace_file), str(release_root)),
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "controlled temporary root" in result.stderr
+    assert stale_zip.read_text() == "keep"
+    assert stale_checksum.read_text() == "keep"

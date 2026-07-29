@@ -28,19 +28,85 @@ notarize_test_submission_json=""
 notarize_trace_file=""
 notarize_test_fail_step=""
 
+configure_notarization_base_paths() {
+    STAGED_APP="$NOTARIZE_RELEASE_ROOT/staged/LocalOCR Studio.app"
+    EVIDENCE_DIR="$NOTARIZE_RELEASE_ROOT/evidence"
+    FINAL_DIR="$NOTARIZE_RELEASE_ROOT/final"
+    FINAL_TEMP_ROOT="$NOTARIZE_RELEASE_ROOT/tmp"
+}
+
 configure_notarization_paths() {
     local artifact_name
 
-    artifact_name="LocalOCR-Studio-${LOCALOCR_RELEASE_VERSION}-${LOCALOCR_RELEASE_BUILD}.zip"
-    STAGED_APP="$NOTARIZE_RELEASE_ROOT/staged/LocalOCR Studio.app"
-    EVIDENCE_DIR="$NOTARIZE_RELEASE_ROOT/evidence"
+    if [[ "$notarize_test_mode" -eq 1 ]]; then
+        artifact_name="TEST-ONLY-NOT-A-RELEASE-${LOCALOCR_RELEASE_VERSION}-${LOCALOCR_RELEASE_BUILD}.fakezip"
+        FINAL_CHECKSUM="$FINAL_DIR/TEST-ONLY-NOT-A-RELEASE-${LOCALOCR_RELEASE_VERSION}-${LOCALOCR_RELEASE_BUILD}.test-sha256"
+    else
+        artifact_name="LocalOCR-Studio-${LOCALOCR_RELEASE_VERSION}-${LOCALOCR_RELEASE_BUILD}.zip"
+        FINAL_CHECKSUM="$FINAL_DIR/${artifact_name%.zip}.sha256"
+    fi
     SUBMISSION_ZIP="$NOTARIZE_RELEASE_ROOT/submission/$artifact_name"
     NOTARY_SUBMIT_JSON="$EVIDENCE_DIR/notary-submit.json"
     NOTARY_LOG_JSON="$EVIDENCE_DIR/notary-log.json"
-    FINAL_DIR="$NOTARIZE_RELEASE_ROOT/final"
     FINAL_ZIP="$FINAL_DIR/$artifact_name"
-    FINAL_CHECKSUM="$FINAL_DIR/${artifact_name%.zip}.sha256"
-    FINAL_TEMP_ROOT="$NOTARIZE_RELEASE_ROOT/tmp"
+}
+
+validate_controlled_test_root() {
+    local physical_root
+    local physical_system_temp
+    local system_temp
+    local marker="$NOTARIZE_RELEASE_ROOT/.localocr-notarize-test-root"
+    local trace_parent
+
+    [[ "$NOTARIZE_RELEASE_ROOT" == /* ]] || {
+        echo "test workflow requires a controlled temporary root" >&2
+        return 1
+    }
+    [[ -d "$NOTARIZE_RELEASE_ROOT" && ! -L "$NOTARIZE_RELEASE_ROOT" ]] || {
+        echo "test workflow requires a controlled temporary root" >&2
+        return 1
+    }
+    physical_root="$(cd "$NOTARIZE_RELEASE_ROOT" && pwd -P)"
+    [[ "$physical_root" == "$NOTARIZE_RELEASE_ROOT" ]] || {
+        echo "test workflow requires a physical controlled temporary root" >&2
+        return 1
+    }
+    system_temp="$(/usr/bin/getconf DARWIN_USER_TEMP_DIR)"
+    [[ -d "$system_temp" && ! -L "$system_temp" ]] || {
+        echo "could not resolve the physical system temporary directory" >&2
+        return 1
+    }
+    physical_system_temp="$(cd "$system_temp" && pwd -P)"
+    case "$physical_root" in
+        "$physical_system_temp"/*) ;;
+        *)
+            echo "test workflow root must remain under the system temporary directory" >&2
+            return 1
+            ;;
+    esac
+    case "$physical_root" in
+        "$notarize_repo_root"|"$notarize_repo_root"/*)
+            echo "test workflow cannot target the release repository" >&2
+            return 1
+            ;;
+    esac
+    [[ "$(/usr/bin/basename "$physical_root")" == localocr-notarize-test.* ]] || {
+        echo "test workflow requires a controlled temporary root" >&2
+        return 1
+    }
+    [[ -f "$marker" && ! -L "$marker" ]] || {
+        echo "test workflow requires a controlled temporary root marker" >&2
+        return 1
+    }
+    [[ "$(/bin/cat "$marker")" == "LOCALOCR NOTARIZATION TEST ROOT" ]] || {
+        echo "test workflow has an invalid controlled temporary root marker" >&2
+        return 1
+    }
+    trace_parent="$(cd "$(/usr/bin/dirname "$notarize_trace_file")" && pwd -P)"
+    [[ "$trace_parent" == "$physical_root" && ! -L "$notarize_trace_file" ]] || {
+        echo "test workflow trace must remain inside its controlled root" >&2
+        return 1
+    }
 }
 
 validate_notarization_inputs() {
@@ -60,16 +126,14 @@ validate_notarization_inputs() {
         echo "LOCALOCR_RELEASE_BUILD must be numeric" >&2
         return 1
     }
-    if [[ "$notarize_test_mode" -eq 0 ]]; then
-        [[ -d "$STAGED_APP" && ! -L "$STAGED_APP" ]] || {
-            echo "signed staged app is missing or symlinked: $STAGED_APP" >&2
-            return 1
-        }
-        [[ "$(cd "$STAGED_APP" && pwd -P)" == "$STAGED_APP" ]] || {
-            echo "signed staged app must be the physical staged release copy" >&2
-            return 1
-        }
-    fi
+    [[ -d "$STAGED_APP" && ! -L "$STAGED_APP" ]] || {
+        echo "signed staged app is missing or symlinked: $STAGED_APP" >&2
+        return 1
+    }
+    [[ "$(cd "$STAGED_APP" && pwd -P)" == "$STAGED_APP" ]] || {
+        echo "signed staged app must be the physical staged release copy" >&2
+        return 1
+    }
 }
 
 record_notarization_step() {
@@ -101,7 +165,6 @@ validate_notary_profile_access() {
 }
 
 create_submission_zip() {
-    /bin/mkdir -p "$(/usr/bin/dirname "$SUBMISSION_ZIP")"
     /bin/rm -f -- "$SUBMISSION_ZIP"
     if [[ "$notarize_test_mode" -eq 1 ]]; then
         record_notarization_step "create-submission-zip" || return
@@ -162,10 +225,8 @@ staple_and_assess() {
         > "$EVIDENCE_DIR/gatekeeper-assessment.txt" 2>&1
 }
 
-prepare_final_output_directories() {
+validate_physical_release_root() {
     local physical_release_root
-    local physical_final_dir
-    local physical_temp_root
 
     [[ -d "$NOTARIZE_RELEASE_ROOT" && ! -L "$NOTARIZE_RELEASE_ROOT" ]] || {
         echo "direct-release output root is missing or symlinked" >&2
@@ -176,19 +237,67 @@ prepare_final_output_directories() {
         echo "direct-release output root is not physical" >&2
         return 1
     }
-    [[ ! -L "$FINAL_DIR" && ! -L "$FINAL_TEMP_ROOT" ]] || {
-        echo "final output directories must not be symlinks" >&2
+}
+
+prepare_confined_output_directory() {
+    local directory="$1"
+    local label="$2"
+    local physical_directory
+
+    [[ "$(/usr/bin/dirname "$directory")" == "$NOTARIZE_RELEASE_ROOT" ]] || {
+        echo "$label output directory is not a direct-release child" >&2
         return 1
     }
-    /bin/mkdir -p "$FINAL_DIR" "$FINAL_TEMP_ROOT"
-    physical_final_dir="$(cd "$FINAL_DIR" && pwd -P)"
-    physical_temp_root="$(cd "$FINAL_TEMP_ROOT" && pwd -P)"
-    [[ "$physical_final_dir" == "$NOTARIZE_RELEASE_ROOT/final" ]] || {
-        echo "final output directory escaped direct-release" >&2
+    [[ ! -L "$directory" ]] || {
+        echo "$label output directories must not be symlinks" >&2
         return 1
     }
-    [[ "$physical_temp_root" == "$NOTARIZE_RELEASE_ROOT/tmp" ]] || {
-        echo "final verification temp directory escaped direct-release" >&2
+    /bin/mkdir -p "$directory"
+    physical_directory="$(cd "$directory" && pwd -P)"
+    [[ "$physical_directory" == "$directory" ]] || {
+        echo "$label output directory escaped direct-release" >&2
+        return 1
+    }
+}
+
+prepare_final_directory_for_invalidation() {
+    validate_physical_release_root
+    prepare_confined_output_directory "$FINAL_DIR" "final"
+}
+
+invalidate_all_official_final_candidates() {
+    local candidate
+
+    for candidate in \
+        "$FINAL_DIR"/LocalOCR-Studio-*.zip \
+        "$FINAL_DIR"/LocalOCR-Studio-*.sha256
+    do
+        [[ -e "$candidate" || -L "$candidate" ]] || continue
+        [[ -f "$candidate" || -L "$candidate" ]] || {
+            echo "official final candidate path is not a file: $candidate" >&2
+            return 1
+        }
+        /bin/rm -f -- "$candidate"
+    done
+}
+
+prepare_remaining_output_directories() {
+    validate_physical_release_root
+    prepare_confined_output_directory "$EVIDENCE_DIR" "evidence"
+    prepare_confined_output_directory \
+        "$NOTARIZE_RELEASE_ROOT/submission" \
+        "submission"
+    prepare_confined_output_directory "$FINAL_TEMP_ROOT" "final verification"
+    [[ "$(/usr/bin/dirname "$NOTARY_SUBMIT_JSON")" == "$EVIDENCE_DIR" ]] || {
+        echo "notary evidence paths escaped the evidence directory" >&2
+        return 1
+    }
+    [[ "$(/usr/bin/dirname "$NOTARY_LOG_JSON")" == "$EVIDENCE_DIR" ]] || {
+        echo "notary evidence paths escaped the evidence directory" >&2
+        return 1
+    }
+    [[ "$(/usr/bin/dirname "$SUBMISSION_ZIP")" == "$NOTARIZE_RELEASE_ROOT/submission" ]] || {
+        echo "submission ZIP escaped the submission directory" >&2
         return 1
     }
 }
@@ -335,11 +444,16 @@ notarize_direct_release() {
     local submission_id=""
     local submission_status=""
 
-    configure_notarization_paths
+    configure_notarization_base_paths
+    if [[ "$notarize_test_mode" -eq 1 ]]; then
+        validate_controlled_test_root
+    fi
+    prepare_final_directory_for_invalidation
+    invalidate_all_official_final_candidates
     validate_notarization_inputs
-    /bin/mkdir -p "$EVIDENCE_DIR"
+    configure_notarization_paths
+    prepare_remaining_output_directories
     /bin/rm -f -- "$NOTARY_SUBMIT_JSON" "$NOTARY_LOG_JSON"
-    prepare_final_output_directories
     clear_published_final_candidate
 
     run_pre_notarization_verification
@@ -392,6 +506,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
             verify_final_test_mode=1
             verify_final_trace_file="$notarize_trace_file"
             verify_final_test_fail_step="$notarize_test_fail_step"
+            validate_controlled_test_root
             : > "$notarize_trace_file"
             notarize_direct_release
             ;;
