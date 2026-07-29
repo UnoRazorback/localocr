@@ -1,0 +1,27 @@
+{
+  "failed": 1,
+  "processed": 2,
+  "results": [
+    {
+      "empty_ocr_pages": [],
+      "failed_pages": [],
+      "pages": [
+        {
+          "method": "existing_text",
+          "page": 1,
+          "text": "Original Contract Sum is $57,508,601.00 per the schedule of values"
+        }
+      ],
+      "rotated_ocr_pages": [],
+      "source_path": "<fixture>/mixed.pdf",
+      "source_sha256": "<sha256>",
+      "status": "ok"
+    },
+    {
+      "error": "[Errno 2] No such file or directory: '<fixture>/missing.pdf'",
+      "source_path": "<fixture>/missing.pdf",
+      "status": "error"
+    }
+  ],
+  "succeeded": 1
+}

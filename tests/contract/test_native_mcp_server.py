@@ -1,6 +1,7 @@
 """Executable-level contract tests for the native Swift stdio MCP server."""
 
 import asyncio
+import json
 import subprocess
 import tempfile
 from pathlib import Path
@@ -82,8 +83,22 @@ def test_native_server_session_survives_a_recoverable_tool_error(tmp_path):
     assert result["names"] == EXPECTED_TOOL_NAMES
     assert result["page_count"].isError is False
     assert result["page_count"].content[0].text == "2"
+    assert result["page_count"].structuredContent is None
     assert result["bad"].isError is True
     assert result["good"].isError is False
+    inspection = json.loads(result["good"].content[0].text)
+    assert set(inspection) == {
+        "source_path",
+        "source_sha256",
+        "pages",
+        "searchable_pages",
+        "ocr_needed_pages",
+        "characters",
+        "fully_searchable",
+        "page_details",
+    }
+    assert inspection["searchable_pages"] == 1
+    assert inspection["ocr_needed_pages"] == 1
     assert len(result["messages"]) == 5
     assert not any(isinstance(message, Exception) for message in result["messages"])
     assert result["stderr"] == ""

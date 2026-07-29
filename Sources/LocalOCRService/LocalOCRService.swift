@@ -126,7 +126,12 @@ public actor LocalOCRService: LocalOCRServing {
             } catch let error as LocalOCRError where error == .cancelled {
                 break
             } catch {
-                results.append(.failure(sourcePath: fileURL.path, message: errorMessage(error)))
+                results.append(
+                    .failure(
+                        sourcePath: fileURL.path,
+                        message: errorMessage(error, sourcePath: fileURL.path)
+                    )
+                )
             }
         }
 
@@ -391,10 +396,10 @@ public actor LocalOCRService: LocalOCRServing {
         }
     }
 
-    private func errorMessage(_ error: any Error) -> String {
+    private func errorMessage(_ error: any Error, sourcePath: String) -> String {
         guard let error = error as? LocalOCRError else { return error.localizedDescription }
         return switch error {
-        case .fileNotFound: "File not found"
+        case .fileNotFound: "[Errno 2] No such file or directory: '\(sourcePath)'"
         case let .unsupportedFormat(format): "Unsupported format: \(format)"
         case .imageDecodeFailed: "Image could not be decoded"
         case .permissionDenied: "Permission denied"

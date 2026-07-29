@@ -26,26 +26,29 @@ public enum MCPToolCatalog {
         openWorldHint: false
     )
 
-    private static let localPath: Value = [
+    private static let filePath: Value = [
         "type": "string",
-        "description": "A local absolute or working-directory-relative filesystem path.",
+        "title": "File Path",
     ]
 
     private static let dpi: Value = [
         "type": "integer",
-        "minimum": 72,
-        "maximum": 600,
         "default": 250,
+        "title": "Dpi",
     ]
 
     private static let pdfOptions: [String: Value] = [
         "page_range": [
-            "type": "string",
-            "description": "Optional 1-indexed page specification such as 1-5 or 3,7,12.",
+            "anyOf": [
+                ["type": "string"],
+                ["type": "null"],
+            ],
+            "default": .null,
+            "title": "Page Range",
         ],
         "dpi": dpi,
-        "force_ocr": ["type": "boolean", "default": false],
-        "include_lines": ["type": "boolean", "default": false],
+        "force_ocr": ["type": "boolean", "default": false, "title": "Force Ocr"],
+        "include_lines": ["type": "boolean", "default": false, "title": "Include Lines"],
     ]
 
     private static let lineSchema: Value = objectSchema(
@@ -106,8 +109,9 @@ public enum MCPToolCatalog {
     private static let getPDFPageCount = Tool(
         name: "get_pdf_page_count",
         description: "Return the number of pages in a local PDF.",
-        inputSchema: objectSchema(
-            properties: ["file_path": localPath],
+        inputSchema: argumentSchema(
+            name: "get_pdf_page_count",
+            properties: ["file_path": filePath],
             required: ["file_path"]
         ),
         annotations: readOnlyAnnotations
@@ -116,8 +120,9 @@ public enum MCPToolCatalog {
     private static let inspectPDF = Tool(
         name: "inspect_pdf",
         description: "Check whether a local PDF has searchable text without running OCR.",
-        inputSchema: objectSchema(
-            properties: ["file_path": localPath],
+        inputSchema: argumentSchema(
+            name: "inspect_pdf",
+            properties: ["file_path": filePath],
             required: ["file_path"]
         ),
         annotations: readOnlyAnnotations,
@@ -152,12 +157,20 @@ public enum MCPToolCatalog {
     private static let makeSearchablePDF = Tool(
         name: "make_searchable_pdf",
         description: "Write a new searchable PDF with recognized text embedded as an invisible text layer.",
-        inputSchema: objectSchema(
+        inputSchema: argumentSchema(
+            name: "make_searchable_pdf",
             properties: [
-                "file_path": localPath,
-                "output_path": localPath,
+                "file_path": filePath,
+                "output_path": [
+                    "anyOf": [
+                        ["type": "string"],
+                        ["type": "null"],
+                    ],
+                    "default": .null,
+                    "title": "Output Path",
+                ],
                 "dpi": dpi,
-                "force_ocr": ["type": "boolean", "default": false],
+                "force_ocr": ["type": "boolean", "default": false, "title": "Force Ocr"],
             ],
             required: ["file_path"]
         ),
@@ -174,8 +187,9 @@ public enum MCPToolCatalog {
     private static let ocrImage = Tool(
         name: "ocr_image",
         description: "OCR a single local image file directly with Apple Vision.",
-        inputSchema: objectSchema(
-            properties: ["file_path": localPath],
+        inputSchema: argumentSchema(
+            name: "ocr_image",
+            properties: ["file_path": filePath],
             required: ["file_path"]
         ),
         annotations: readOnlyAnnotations
@@ -184,8 +198,9 @@ public enum MCPToolCatalog {
     private static let ocrPDF = Tool(
         name: "ocr_pdf",
         description: "OCR a local PDF and return recognized text per page.",
-        inputSchema: objectSchema(
-            properties: ["file_path": localPath].merging(pdfOptions) { _, option in option },
+        inputSchema: argumentSchema(
+            name: "ocr_pdf",
+            properties: ["file_path": filePath].merging(pdfOptions) { _, option in option },
             required: ["file_path"]
         ),
         annotations: readOnlyAnnotations,
@@ -195,12 +210,13 @@ public enum MCPToolCatalog {
     private static let ocrPDFBatch = Tool(
         name: "ocr_pdf_batch",
         description: "OCR several local PDFs; one file failure does not abort the batch.",
-        inputSchema: objectSchema(
+        inputSchema: argumentSchema(
+            name: "ocr_pdf_batch",
             properties: [
                 "file_paths": [
                     "type": "array",
-                    "items": localPath,
-                    "minItems": 1,
+                    "items": ["type": "string"],
+                    "title": "File Paths",
                 ],
             ].merging(pdfOptions) { _, option in option },
             required: ["file_paths"]
@@ -246,6 +262,19 @@ public enum MCPToolCatalog {
             "properties": .object(properties),
             "required": .array(required.map(Value.string)),
             "additionalProperties": false,
+        ])
+    }
+
+    private static func argumentSchema(
+        name: String,
+        properties: [String: Value],
+        required: [String]
+    ) -> Value {
+        .object([
+            "type": "object",
+            "title": "\(name)Arguments",
+            "properties": .object(properties),
+            "required": .array(required.map(Value.string)),
         ])
     }
 }
