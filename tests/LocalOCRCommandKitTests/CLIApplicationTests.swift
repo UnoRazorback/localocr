@@ -88,6 +88,36 @@ import LocalOCRService
     #expect(request?.usesCache == false)
 }
 
+@Test func incompleteBatchIsCancellationAndPreservesItsSingleJSONResponse() async {
+    let response = BatchOCRResponse(
+        processed: 1, succeeded: 1, failed: 0, results: [.success(.fixture)]
+    )
+    let harness = CLIHarness(service: FixtureService(batch: response))
+
+    let status = await harness.run(["batch", "/tmp/a.pdf", "/tmp/b.pdf", "--json"])
+
+    #expect(status == 4)
+    #expect(harness.stdoutJSON()["processed"] as? Int == 1)
+    #expect(harness.stderr.contains("cancelled"))
+}
+
+@Test func humanBatchWritesFailuresToStandardErrorAndSuccessfulTextToStandardOutput() async {
+    let response = BatchOCRResponse(
+        processed: 2, succeeded: 1, failed: 1,
+        results: [.success(.fixture), .failure(sourcePath: "/tmp/b.pdf", message: "bad pdf")]
+    )
+    let harness = CLIHarness(service: FixtureService(batch: response))
+
+    let status = await harness.run(["batch", "/tmp/a.pdf", "/tmp/b.pdf"])
+
+    #expect(status == 3)
+    #expect(harness.stdout.contains("--- /tmp/input.pdf ---"))
+    #expect(harness.stdout.contains("Hello"))
+    #expect(!harness.stdout.contains("/tmp/b.pdf"))
+    #expect(harness.stderr.contains("--- /tmp/b.pdf ---"))
+    #expect(harness.stderr.contains("bad pdf"))
+}
+
 @Test func imageMapsRepeatedLanguagesAndLanguageCorrection() async {
     let service = FixtureService()
     let harness = CLIHarness(service: service)
@@ -130,6 +160,14 @@ import LocalOCRService
         #expect(harness.stdout.contains("Usage: localocr \(command)"))
         #expect(harness.stderr == "")
     }
+}
+
+@Test func subcommandHelpWorksAfterAFileArgument() async {
+    let harness = CLIHarness(service: FixtureService())
+
+    #expect(await harness.run(["ocr", "/tmp/input.pdf", "--help"]) == 0)
+    #expect(harness.stdout.contains("Usage: localocr ocr"))
+    #expect(harness.stderr == "")
 }
 
 @Test func malformedArgumentsReturnTwoWithoutCallingTheService() async {

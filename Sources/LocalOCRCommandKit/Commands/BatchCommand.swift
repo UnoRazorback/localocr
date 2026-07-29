@@ -31,9 +31,13 @@ extension CLIApplication {
                     output.stdout("--- \(result.sourcePath) ---\n")
                     writeOCRPages(result)
                 case let .failure(sourcePath, message):
-                    output.stdout("--- \(sourcePath) ---\nerror: \(message)\n")
+                    output.stderr("--- \(sourcePath) ---\nerror: \(message)\n")
                 }
             }
+        }
+        guard response.processed == request.fileURLs.count else {
+            output.stderr("batch: operation cancelled\n")
+            return 4
         }
         return response.failed == 0 ? 0 : 3
     }

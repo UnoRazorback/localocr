@@ -93,7 +93,7 @@ public struct CLIApplication: Sendable {
             }
 
             let remainder = Array(arguments.dropFirst())
-            if remainder == ["--help"] || remainder == ["-h"] {
+            if remainder.contains("--help") || remainder.contains("-h") {
                 guard Self.help(for: command) != nil else {
                     throw CLIArgumentError.message("unknown command \(command)")
                 }
