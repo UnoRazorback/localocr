@@ -35,7 +35,9 @@ public struct ImageDocumentSource: ImageDocumentRecognizing {
             settings: settings
         )
         try Task.checkCancellation()
-        return candidate.lines.map(\.text).joined(separator: "\n")
+        return Self.linesInReadingOrder(candidate.lines)
+            .map(\.text)
+            .joined(separator: "\n")
     }
 
     static func decodeImage(at fileURL: URL) throws -> CGImage {
@@ -56,6 +58,57 @@ public struct ImageDocumentSource: ImageDocumentRecognizing {
             throw LocalOCRError.imageDecodeFailed
         }
         return image
+    }
+
+    private static func linesInReadingOrder(_ lines: [TextLine]) -> [TextLine] {
+        var rows: [[TextLine]] = []
+
+        for line in lines.sorted(by: sortsAsHigherRow) {
+            if let rowIndex = rows.firstIndex(where: { sharesRow(line, with: $0) }) {
+                rows[rowIndex].append(line)
+            } else {
+                rows.append([line])
+            }
+        }
+
+        return rows.flatMap { row in
+            row.sorted(by: sortsFromLeftToRight)
+        }
+    }
+
+    private static func sharesRow(_ line: TextLine, with row: [TextLine]) -> Bool {
+        row.contains { other in
+            let overlap = min(line.boundingBox.maxY, other.boundingBox.maxY)
+                - max(line.boundingBox.minY, other.boundingBox.minY)
+            let shorterHeight = min(line.boundingBox.height, other.boundingBox.height)
+            return shorterHeight > 0 && overlap / shorterHeight >= 0.5
+        }
+    }
+
+    private static func sortsAsHigherRow(_ lhs: TextLine, _ rhs: TextLine) -> Bool {
+        if lhs.boundingBox.maxY != rhs.boundingBox.maxY {
+            return lhs.boundingBox.maxY > rhs.boundingBox.maxY
+        }
+        if lhs.boundingBox.minY != rhs.boundingBox.minY {
+            return lhs.boundingBox.minY > rhs.boundingBox.minY
+        }
+        return sortsFromLeftToRight(lhs, rhs)
+    }
+
+    private static func sortsFromLeftToRight(_ lhs: TextLine, _ rhs: TextLine) -> Bool {
+        if lhs.boundingBox.minX != rhs.boundingBox.minX {
+            return lhs.boundingBox.minX < rhs.boundingBox.minX
+        }
+        if lhs.boundingBox.maxX != rhs.boundingBox.maxX {
+            return lhs.boundingBox.maxX < rhs.boundingBox.maxX
+        }
+        if lhs.boundingBox.maxY != rhs.boundingBox.maxY {
+            return lhs.boundingBox.maxY > rhs.boundingBox.maxY
+        }
+        if lhs.text != rhs.text {
+            return lhs.text < rhs.text
+        }
+        return lhs.confidence > rhs.confidence
     }
 
     private static let imageExtensions: Set<String> = [

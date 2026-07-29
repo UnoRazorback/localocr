@@ -1,4 +1,6 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import LocalOCRCore
 @testable import LocalOCRService
 import Testing
@@ -21,6 +23,51 @@ import Testing
         try await ImageDocumentSource().recognize(
             at: url,
             settings: RecognitionSettings()
+        )
+    }
+}
+
+@Test func imageSourceReadsUnorderedVisionLinesByRowsThenColumns() async throws {
+    let source = ImageDocumentSource(recognizer: UnorderedMultilineRecognizer())
+
+    let text = try await source.recognize(
+        at: fixtureImage(named: "sample"),
+        settings: RecognitionSettings()
+    )
+
+    #expect(text == "TOP LEFT\nTOP RIGHT\nBOTTOM LEFT\nBOTTOM RIGHT")
+}
+
+private struct UnorderedMultilineRecognizer: TextRecognizing {
+    func recognize(
+        image: CGImage,
+        orientation: CGImagePropertyOrientation,
+        settings: RecognitionSettings
+    ) async throws -> RecognitionCandidate {
+        RecognitionCandidate(
+            orientation: orientation,
+            lines: [
+                TextLine(
+                    text: "BOTTOM RIGHT",
+                    confidence: 1,
+                    boundingBox: CGRect(x: 0.65, y: 0.18, width: 0.2, height: 0.1)
+                ),
+                TextLine(
+                    text: "TOP RIGHT",
+                    confidence: 1,
+                    boundingBox: CGRect(x: 0.65, y: 0.76, width: 0.2, height: 0.1)
+                ),
+                TextLine(
+                    text: "BOTTOM LEFT",
+                    confidence: 1,
+                    boundingBox: CGRect(x: 0.1, y: 0.2, width: 0.2, height: 0.1)
+                ),
+                TextLine(
+                    text: "TOP LEFT",
+                    confidence: 1,
+                    boundingBox: CGRect(x: 0.1, y: 0.74, width: 0.2, height: 0.1)
+                ),
+            ]
         )
     }
 }
