@@ -1,0 +1,3 @@
+import LocalOCRCommandKit
+
+LocalOCRCommandKit.self

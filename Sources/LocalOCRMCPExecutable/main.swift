@@ -1,0 +1,3 @@
+import LocalOCRMCP
+
+LocalOCRMCP.self
