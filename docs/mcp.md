@@ -14,6 +14,10 @@ scripts/build-native-tools.sh
 scripts/smoke-native-tools.sh
 ```
 
+The extension manifest invokes `localocr-mcp` by name. Put the built native
+executable on the client's `PATH` before enabling that extension; the
+extension does not bundle an executable or a runtime.
+
 Give an MCP client this generic stdio-server entry, replacing the placeholder
 with the absolute path to the locally built `localocr-mcp` executable:
 

@@ -17,6 +17,15 @@ VERSION = "0.2.0"
 SYSTEM_LIBRARY_PREFIXES = ("/System/Library/", "/usr/lib/")
 COMPATIBILITY_SPAN_INSTALL_NAME = "@rpath/libswiftCompatibilitySpan.dylib"
 SYSTEM_SWIFT_RPATH = "/usr/lib/swift"
+FORBIDDEN_RUNTIME_STRING_FRAGMENTS = (
+    ".venv",
+    "python",
+    "ruby",
+    "/opt/homebrew",
+    "/usr/local",
+    str(ROOT),
+    "/Users/",
+)
 
 
 def _run(*arguments: str) -> str:
@@ -66,6 +75,19 @@ def _assert_allowed_rpaths(rpaths: list[str]) -> None:
     assert not unexpected, f"unapproved dylib RPATHs: {unexpected}"
 
 
+def _assert_no_forbidden_runtime_strings(strings_output: str, binary: Path) -> None:
+    normalized_output = strings_output.lower()
+    forbidden = [
+        fragment
+        for fragment in FORBIDDEN_RUNTIME_STRING_FRAGMENTS
+        if fragment.lower() in normalized_output
+    ]
+    assert not forbidden, (
+        f"release artifact contains forbidden embedded runtime or machine strings: "
+        f"{binary}: {forbidden}"
+    )
+
+
 async def _negotiated_server_version(binary: Path) -> str:
     async with stdio_client(
         StdioServerParameters(command=str(binary), args=[])
@@ -90,6 +112,8 @@ def test_release_artifacts_are_native_standalone_executables() -> None:
                 f"release artifact links forbidden runtime path {forbidden!r}: {binary}\n"
                 f"{dependencies}"
             )
+
+        _assert_no_forbidden_runtime_strings(_run("strings", str(binary)), binary)
 
     assert _run(str(cli), "--version").strip() == VERSION
     assert asyncio.run(_negotiated_server_version(mcp)) == VERSION
@@ -141,3 +165,33 @@ Load command 21
         assert "/tmp/evil" in str(error)
     else:
         raise AssertionError("malicious RPATHs were accepted")
+
+
+def test_release_artifact_policy_rejects_malicious_embedded_runtime_strings() -> None:
+    malicious_strings = "\n".join(
+        (
+            "safe text",
+            ".venv/bin/python",
+            "/opt/homebrew/bin/ruby",
+            "/usr/local/bin/tool",
+            "/Users/example/private",
+            str(ROOT / "embedded"),
+        )
+    )
+
+    try:
+        _assert_no_forbidden_runtime_strings(malicious_strings, ARTIFACTS / "malicious")
+    except AssertionError as error:
+        message = str(error)
+        for forbidden in (
+            ".venv",
+            "python",
+            "ruby",
+            "/opt/homebrew",
+            "/usr/local",
+            "/Users/",
+            str(ROOT),
+        ):
+            assert forbidden in message
+    else:
+        raise AssertionError("malicious embedded runtime strings were accepted")

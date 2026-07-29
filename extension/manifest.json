@@ -2,17 +2,17 @@
   "manifest_version": "0.3",
   "name": "ocr-service",
   "display_name": "OCR Service (Apple Vision)",
-  "version": "0.1.0",
-  "description": "OCR scanned/image-only PDFs and images locally via Apple's Vision framework — no cloud upload. Provides page counting, per-page OCR with page-range support, batch processing, a pre-OCR text-layer inspector, and searchable-PDF generation.",
+  "version": "0.2.0",
+  "description": "OCR scanned/image-only PDFs and images locally via Apple's Vision framework — no cloud upload. Provides page counting, per-page OCR with page-range support, batch processing, a pre-OCR text-layer inspector, and searchable-PDF generation. The localocr-mcp executable must be available on PATH; this extension does not bundle it.",
   "author": {
     "name": "Scott Ray"
   },
   "server": {
     "type": "binary",
-    "entry_point": "ocr_service.server",
+    "entry_point": "localocr-mcp",
     "mcp_config": {
-      "command": "/Users/scottray/Claude Code/ocr-mcp/.venv/bin/python",
-      "args": ["-m", "ocr_service.server"],
+      "command": "localocr-mcp",
+      "args": [],
       "env": {}
     }
   },

@@ -28,6 +28,8 @@ reject_binary_content() {
     local rpath
     local has_compatibility_span=false
     local urls
+    local raw_strings
+    local forbidden_string
 
     if [[ ! -f "$binary" || ! -x "$binary" ]]; then
         echo "missing executable release artifact: $binary" >&2
@@ -72,7 +74,23 @@ reject_binary_content() {
         # an ordinary on-disk file.
     fi
 
-    if urls="$(strings "$binary" | grep -E 'https?://')"; then
+    raw_strings="$(strings "$binary")"
+    for forbidden_string in \
+        '.venv' \
+        'python' \
+        'ruby' \
+        '/opt/homebrew' \
+        '/usr/local' \
+        "$repo_root" \
+        '/Users/'; do
+        if printf '%s\n' "$raw_strings" | grep -Fqi -- "$forbidden_string"; then
+            echo "release artifact contains forbidden embedded runtime or machine string: $binary ($forbidden_string)" >&2
+            printf '%s\n' "$raw_strings" | grep -Fi -- "$forbidden_string" >&2 || true
+            exit 1
+        fi
+    done
+
+    if urls="$(printf '%s\n' "$raw_strings" | grep -E 'https?://')"; then
         # These two loopback-origin prefixes are retained by the pinned MCP
         # SDK's HTTPRequestValidation support. localocr-mcp starts only
         # StdioTransport; this project never instantiates an HTTP transport.
