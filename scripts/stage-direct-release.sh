@@ -2,16 +2,17 @@
 
 set -euo pipefail
 
-stage_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-stage_repo_root="$(cd "$stage_script_dir/.." && pwd)"
+stage_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+stage_repo_root="$(cd "$stage_script_dir/.." && pwd -P)"
 # shellcheck source=scripts/release-toolchain.sh
 source "$stage_script_dir/release-toolchain.sh"
 
 release_root="$stage_repo_root/dist/direct-release"
 evidence_dir="$release_root/evidence"
 staged_app="$release_root/staged/LocalOCR Studio.app"
-native_tools_dir="$stage_repo_root/dist/native-tools"
+native_tools_dir="$release_root/native-tools"
 plist_buddy="/usr/libexec/PlistBuddy"
+physical_unsigned_app=""
 
 validate_arm64_architecture() {
     [[ "${1:-}" == "arm64" ]] || {
@@ -35,8 +36,12 @@ validate_minimum_macos() {
     }
 }
 
-validate_unsigned_app_path() {
-    local app_path="${1:-}"
+canonicalize_release_paths() {
+    local repo_path="${1:-}"
+    local app_path="${2:-}"
+    local physical_repo
+    local physical_dist
+    local physical_release_root
     local resolved_app_path
 
     [[ "$app_path" == /* && "$app_path" == *.app ]] || {
@@ -47,13 +52,119 @@ validate_unsigned_app_path() {
         echo "unsigned app not found: $app_path" >&2
         return 1
     }
+    [[ -d "$repo_path" ]] || {
+        echo "release repository not found: $repo_path" >&2
+        return 1
+    }
+
+    physical_repo="$(cd "$repo_path" && pwd -P)"
     resolved_app_path="$(cd "$app_path" && pwd -P)"
+    [[ ! -L "$physical_repo/dist" ]] || {
+        echo "dist must not be a symlink" >&2
+        return 1
+    }
+    /bin/mkdir -p "$physical_repo/dist"
+    physical_dist="$(cd "$physical_repo/dist" && pwd -P)"
+    [[ "$physical_dist" == "$physical_repo/dist" ]] || {
+        echo "dist resolves outside the physical repository" >&2
+        return 1
+    }
+    [[ ! -L "$physical_dist/direct-release" ]] || {
+        echo "direct-release must not be a symlink" >&2
+        return 1
+    }
+    if [[ -e "$physical_dist/direct-release" ]]; then
+        [[ -d "$physical_dist/direct-release" ]] || {
+            echo "direct-release exists but is not a directory" >&2
+            return 1
+        }
+        physical_release_root="$(cd "$physical_dist/direct-release" && pwd -P)"
+    else
+        physical_release_root="$physical_dist/direct-release"
+    fi
+    [[ "$physical_release_root" == "$physical_repo/dist/direct-release" ]] || {
+        echo "direct-release resolves outside the physical repository" >&2
+        return 1
+    }
     case "$resolved_app_path" in
-        "$release_root"|"$release_root"/*)
-            echo "unsigned app must be outside dist/direct-release" >&2
+        "$physical_release_root"|"$physical_release_root"/*)
+            echo "unsigned app must not be physically inside dist/direct-release" >&2
             return 1
             ;;
     esac
+
+    stage_repo_root="$physical_repo"
+    release_root="$physical_release_root"
+    evidence_dir="$release_root/evidence"
+    staged_app="$release_root/staged/LocalOCR Studio.app"
+    native_tools_dir="$release_root/native-tools"
+    physical_unsigned_app="$resolved_app_path"
+}
+
+clean_release_root() {
+    local physical_dist
+
+    physical_dist="$(cd "$stage_repo_root/dist" && pwd -P)"
+    [[ "$physical_dist" == "$stage_repo_root/dist" ]] || {
+        echo "refusing cleanup because dist escaped the physical repository" >&2
+        return 1
+    }
+    [[ ! -L "$physical_dist/direct-release" ]] || {
+        echo "refusing cleanup of a symlinked direct-release directory" >&2
+        return 1
+    }
+    if [[ -e "$physical_dist/direct-release" ]]; then
+        [[ "$(cd "$physical_dist/direct-release" && pwd -P)" == "$release_root" ]] || {
+            echo "refusing cleanup of a noncanonical direct-release directory" >&2
+            return 1
+        }
+    fi
+    /bin/rm -rf -- "$release_root"
+}
+
+resolve_main_executable() {
+    local app_path="${1:-}"
+    local executable_name="${2:-}"
+    local physical_app
+    local physical_macos_dir
+    local executable_path
+    local physical_executable
+
+    [[ -n "$executable_name" && "$executable_name" != "." && "$executable_name" != ".." ]] || {
+        echo "CFBundleExecutable must be a nonempty basename" >&2
+        return 1
+    }
+    case "$executable_name" in
+        */*|*\\*)
+            echo "CFBundleExecutable must be a nonempty basename" >&2
+            return 1
+            ;;
+    esac
+
+    physical_app="$(cd "$app_path" && pwd -P)"
+    [[ -d "$physical_app/Contents/MacOS" ]] || {
+        echo "unsigned app Contents/MacOS directory not found" >&2
+        return 1
+    }
+    physical_macos_dir="$(cd "$physical_app/Contents/MacOS" && pwd -P)"
+    [[ "$physical_macos_dir" == "$physical_app/Contents/MacOS" ]] || {
+        echo "Contents/MacOS must remain physically inside the unsigned app" >&2
+        return 1
+    }
+    executable_path="$physical_macos_dir/$executable_name"
+    [[ -f "$executable_path" ]] || {
+        echo "unsigned app main executable not found: $executable_path" >&2
+        return 1
+    }
+    physical_executable="$(/bin/realpath "$executable_path")"
+    case "$physical_executable" in
+        "$physical_macos_dir"/*) ;;
+        *)
+            echo "main executable must remain physically inside Contents/MacOS" >&2
+            return 1
+            ;;
+    esac
+    printf '%s\n' "$physical_executable"
 }
 
 plist_value() {
@@ -128,31 +239,22 @@ stage_direct_release() {
     local helper
 
     validate_release_inputs
-    validate_unsigned_app_path "$LOCALOCR_UNSIGNED_APP"
-    source_info_plist="$LOCALOCR_UNSIGNED_APP/Contents/Info.plist"
+    canonicalize_release_paths "$stage_repo_root" "$LOCALOCR_UNSIGNED_APP"
+    source_info_plist="$physical_unsigned_app/Contents/Info.plist"
     [[ -f "$source_info_plist" ]] || {
         echo "unsigned app Info.plist not found: $source_info_plist" >&2
         return 1
     }
     main_executable_name="$(plist_value "$source_info_plist" CFBundleExecutable)"
-    unsigned_main_executable="$LOCALOCR_UNSIGNED_APP/Contents/MacOS/$main_executable_name"
-    [[ -f "$unsigned_main_executable" ]] || {
-        echo "unsigned app main executable not found: $unsigned_main_executable" >&2
-        return 1
-    }
+    unsigned_main_executable="$(
+        resolve_main_executable "$physical_unsigned_app" "$main_executable_name"
+    )"
 
-    case "$release_root" in
-        "$stage_repo_root/dist/direct-release") ;;
-        *)
-            echo "refusing to clean unexpected release directory: $release_root" >&2
-            return 1
-            ;;
-    esac
-    /bin/rm -rf -- "$release_root"
+    clean_release_root
     /bin/mkdir -p "$evidence_dir"
 
     configure_release_developer_dir
-    "$stage_script_dir/build-native-tools.sh"
+    "$stage_script_dir/build-native-tools.sh" --artifact-dir "$native_tools_dir"
     for helper in localocr localocr-mcp; do
         [[ -f "$native_tools_dir/$helper" ]] || {
             echo "native helper not found after build: $helper" >&2
@@ -163,7 +265,7 @@ stage_direct_release() {
     record_pre_signing_hashes "$unsigned_main_executable"
 
     /bin/mkdir -p "$(/usr/bin/dirname "$staged_app")"
-    /usr/bin/ditto "$LOCALOCR_UNSIGNED_APP" "$staged_app"
+    /usr/bin/ditto "$physical_unsigned_app" "$staged_app"
     /bin/mkdir -p "$staged_app/Contents/Helpers"
     /usr/bin/ditto "$native_tools_dir/localocr" "$staged_app/Contents/Helpers/localocr"
     /usr/bin/ditto "$native_tools_dir/localocr-mcp" "$staged_app/Contents/Helpers/localocr-mcp"
@@ -198,6 +300,19 @@ case "${1:-}" in
     --test-minimum-macos)
         [[ "$#" -eq 2 ]] || exit 2
         validate_minimum_macos "$2"
+        ;;
+    --test-cleanup-safety)
+        [[ "$#" -eq 3 ]] || exit 2
+        canonicalize_release_paths "$2" "$3"
+        clean_release_root
+        ;;
+    --test-main-executable)
+        [[ "$#" -eq 3 ]] || exit 2
+        resolve_main_executable "$2" "$3"
+        ;;
+    --test-native-artifact-dir)
+        [[ "$#" -eq 2 && "$2" == "$native_tools_dir" ]] || exit 1
+        printf '%s\n' "$native_tools_dir"
         ;;
     "")
         stage_direct_release

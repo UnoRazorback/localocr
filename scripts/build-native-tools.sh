@@ -2,13 +2,79 @@
 
 set -euo pipefail
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
-artifact_dir="$repo_root/dist/native-tools"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(cd "$script_dir/.." && pwd -P)"
+default_artifact_dir="$repo_root/dist/native-tools"
+direct_release_artifact_dir="$repo_root/dist/direct-release/native-tools"
+artifact_dir="$default_artifact_dir"
 system_swift_rpath="/usr/lib/swift"
 
+validate_direct_release_artifact_dir() {
+    local candidate="${1:-}"
+    local allow_missing_parent="${2:-false}"
+    local physical_dist
+    local physical_direct_release
+
+    [[ "$candidate" == "$direct_release_artifact_dir" ]] || {
+        echo "explicit artifact directory must be dist/direct-release/native-tools" >&2
+        return 1
+    }
+    [[ ! -L "$repo_root/dist" && ! -L "$repo_root/dist/direct-release" ]] || {
+        echo "explicit artifact directory contains a symlinked release component" >&2
+        return 1
+    }
+    if [[ "$allow_missing_parent" == "true" && ! -e "$repo_root/dist/direct-release" ]]; then
+        return 0
+    fi
+    [[ -d "$repo_root/dist/direct-release" ]] || {
+        echo "dist/direct-release must exist before building release artifacts" >&2
+        return 1
+    }
+    physical_dist="$(cd "$repo_root/dist" && pwd -P)"
+    physical_direct_release="$(cd "$repo_root/dist/direct-release" && pwd -P)"
+    [[ "$physical_dist" == "$repo_root/dist" ]] || {
+        echo "dist resolves outside the physical repository" >&2
+        return 1
+    }
+    [[ "$physical_direct_release" == "$physical_dist/direct-release" ]] || {
+        echo "direct-release resolves outside the physical repository" >&2
+        return 1
+    }
+    [[ ! -L "$candidate" ]] || {
+        echo "explicit artifact directory must not be a symlink" >&2
+        return 1
+    }
+    if [[ -e "$candidate" ]]; then
+        [[ -d "$candidate" && "$(cd "$candidate" && pwd -P)" == "$physical_direct_release/native-tools" ]] || {
+            echo "explicit artifact directory resolves outside dist/direct-release" >&2
+            return 1
+        }
+    fi
+}
+
+case "${1:-}" in
+    "")
+        [[ "$#" -eq 0 ]] || exit 2
+        artifact_dir="$default_artifact_dir"
+        ;;
+    --artifact-dir)
+        [[ "$#" -eq 2 ]] || exit 2
+        validate_direct_release_artifact_dir "$2"
+        artifact_dir="$2"
+        ;;
+    --test-artifact-dir)
+        [[ "$#" -eq 2 ]] || exit 2
+        validate_direct_release_artifact_dir "$2" true
+        exit 0
+        ;;
+    *)
+        echo "unknown build-native-tools mode: $1" >&2
+        exit 2
+        ;;
+esac
+
 case "$artifact_dir" in
-    "$repo_root/dist/native-tools") ;;
+    "$default_artifact_dir"|"$direct_release_artifact_dir") ;;
     *)
         echo "refusing to remove an unexpected artifact directory: $artifact_dir" >&2
         exit 1

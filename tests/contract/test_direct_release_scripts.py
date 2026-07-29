@@ -710,6 +710,148 @@ def test_toolchain_rejects_nonstable_xcode_paths() -> None:
         _assert_script_test_rejects("toolchain", "--test-developer-dir", developer_dir)
 
 
+def test_stage_cleanup_rejects_symlinked_release_root_without_deleting_target(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    dist = repo / "dist"
+    outside = tmp_path / "outside"
+    unsigned_app = tmp_path / "Unsigned.app"
+    dist.mkdir(parents=True)
+    outside.mkdir()
+    unsigned_app.mkdir()
+    sentinel = outside / "must-survive.txt"
+    sentinel.write_text("keep")
+    (dist / "direct-release").symlink_to(outside, target_is_directory=True)
+
+    result = _run_script_test(
+        "stage",
+        "--test-cleanup-safety",
+        str(repo),
+        extra_arguments=(str(unsigned_app),),
+    )
+
+    assert result.returncode != 0
+    assert "symlink" in result.stderr
+    assert sentinel.read_text() == "keep"
+
+
+def test_stage_cleanup_rejects_physical_input_within_release_root(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    unsigned_app = repo / "dist" / "direct-release" / "Unsigned.app"
+    unsigned_app.mkdir(parents=True)
+    sentinel = unsigned_app / "must-survive.txt"
+    sentinel.write_text("keep")
+
+    result = _run_script_test(
+        "stage",
+        "--test-cleanup-safety",
+        str(repo),
+        extra_arguments=(str(unsigned_app),),
+    )
+
+    assert result.returncode != 0
+    assert "inside dist/direct-release" in result.stderr
+    assert sentinel.read_text() == "keep"
+
+
+def test_stage_cleanup_removes_only_canonical_release_root(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    release_root = repo / "dist" / "direct-release"
+    unsigned_app = tmp_path / "Unsigned.app"
+    release_root.mkdir(parents=True)
+    unsigned_app.mkdir()
+    (release_root / "generated.txt").write_text("remove")
+    repo_sentinel = repo / "must-survive.txt"
+    repo_sentinel.write_text("keep")
+
+    result = _run_script_test(
+        "stage",
+        "--test-cleanup-safety",
+        str(repo),
+        extra_arguments=(str(unsigned_app),),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not release_root.exists()
+    assert repo_sentinel.read_text() == "keep"
+
+
+def test_stage_resolves_only_safe_bundle_executable_names(tmp_path: Path) -> None:
+    unsigned_app = tmp_path / "Unsigned.app"
+    macos_dir = unsigned_app / "Contents" / "MacOS"
+    macos_dir.mkdir(parents=True)
+    (macos_dir / "LocalOCR").write_bytes(b"fixture")
+    (unsigned_app / "Contents" / "outside").write_bytes(b"fixture")
+    (macos_dir / "subdir").mkdir()
+    (macos_dir / "subdir" / "tool").write_bytes(b"fixture")
+    (macos_dir / r"subdir\tool").write_bytes(b"fixture")
+
+    accepted = _run_script_test(
+        "stage",
+        "--test-main-executable",
+        str(unsigned_app),
+        extra_arguments=("LocalOCR",),
+    )
+    assert accepted.returncode == 0, accepted.stderr
+
+    for executable_name in ("", ".", "..", "../outside", "subdir/tool", r"subdir\tool"):
+        rejected = _run_script_test(
+            "stage",
+            "--test-main-executable",
+            str(unsigned_app),
+            extra_arguments=(executable_name,),
+        )
+        assert rejected.returncode != 0, executable_name
+        assert "nonempty basename" in rejected.stderr
+
+
+def test_stage_rejects_bundle_executable_symlink_escape(tmp_path: Path) -> None:
+    unsigned_app = tmp_path / "Unsigned.app"
+    macos_dir = unsigned_app / "Contents" / "MacOS"
+    outside_executable = tmp_path / "outside-tool"
+    macos_dir.mkdir(parents=True)
+    outside_executable.write_bytes(b"fixture")
+    (macos_dir / "LocalOCR").symlink_to(outside_executable)
+
+    result = _run_script_test(
+        "stage",
+        "--test-main-executable",
+        str(unsigned_app),
+        extra_arguments=("LocalOCR",),
+    )
+
+    assert result.returncode != 0
+    assert "physically inside Contents/MacOS" in result.stderr
+
+
+def test_stage_uses_confined_native_artifact_directory() -> None:
+    expected = ROOT / "dist" / "direct-release" / "native-tools"
+    stage_result = _run_script_test(
+        "stage",
+        "--test-native-artifact-dir",
+        str(expected),
+    )
+    assert stage_result.returncode == 0, stage_result.stderr
+    assert stage_result.stdout.strip() == str(expected)
+    assert stage_result.stdout.strip() != str(ROOT / "dist" / "native-tools")
+
+    build_result = subprocess.run(
+        [
+            "/bin/bash",
+            str(SCRIPTS / "build-native-tools.sh"),
+            "--test-artifact-dir",
+            str(expected),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert build_result.returncode == 0, build_result.stderr
+
+
 @pytest.mark.parametrize("script", ("stage", "verify"))
 def test_release_scripts_require_arm64_and_macos_14_or_later(script: str) -> None:
     _assert_script_test_accepts(script, "--test-architecture", "arm64")
