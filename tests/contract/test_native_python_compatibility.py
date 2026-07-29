@@ -140,21 +140,31 @@ def _display_path(path: tuple[str | int, ...]) -> str:
     return "result" + "".join(f"[{item}]" if isinstance(item, int) else f".{item}" for item in path)
 
 
+def _schema_semantics(schema: dict[str, Any], required: bool = False) -> dict[str, Any]:
+    alternatives = schema.get("anyOf", [schema])
+    types = sorted({item.get("type") for item in alternatives if item.get("type") != "null"})
+    result: dict[str, Any] = {
+        "types": types,
+        "required": required,
+        # FastMCP's optional None default is presentation-only; native omission means the same call default.
+        "default": None if not (required or schema.get("default") not in (None,)) else schema.get("default"),
+    }
+    effective = next((item for item in alternatives if item.get("type") != "null"), schema)
+    if "items" in effective:
+        result["items"] = _schema_semantics(effective["items"])
+    if "properties" in effective:
+        required_names = set(effective.get("required", []))
+        result["properties"] = {
+            name: _schema_semantics(value, name in required_names)
+            for name, value in effective["properties"].items()
+        }
+    return result
+
+
 def _tool_input_semantics(tool: dict[str, Any]) -> dict[str, dict[str, Any]]:
     schema = tool["inputSchema"]
     required = set(schema.get("required", []))
-    result = {}
-    for name, property_schema in schema.get("properties", {}).items():
-        alternatives = property_schema.get("anyOf", [property_schema])
-        types = sorted({item.get("type") for item in alternatives if item.get("type") != "null"})
-        default = property_schema.get("default")
-        result[name] = {
-            "types": types,
-            "required": name in required,
-            # FastMCP's optional None default is presentation-only; native omission means the same call default.
-            "default": None if not (name in required or default not in (None,)) else default,
-        }
-    return result
+    return {name: _schema_semantics(value, name in required) for name, value in schema.get("properties", {}).items()}
 
 
 def _assert_matching_tool_schemas(python: dict[str, Any], native: dict[str, Any]) -> None:
@@ -233,3 +243,11 @@ def test_normalization_keeps_raw_geometry_at_the_tolerance_boundary(tmp_path):
     assert normalized["lines"][0]["x"] == 0.0050004
     with pytest.raises(AssertionError, match=r"difference=0.005000.*allowed=0.005000"):
         _assert_matching_payloads({"lines": [{"x": 0.0}]}, {"lines": [{"x": normalized["lines"][0]["x"]}]})
+
+
+def test_schema_comparison_rejects_array_item_type_changes():
+    python = {"ocr_pdf_batch": {"inputSchema": {"properties": {"file_paths": {"type": "array", "items": {"type": "string"}}}, "required": ["file_paths"]}}}
+    native = {"ocr_pdf_batch": {"inputSchema": {"properties": {"file_paths": {"type": "array", "items": {"type": "integer"}}}, "required": ["file_paths"]}}}
+
+    with pytest.raises(AssertionError, match=r"items.*integer"):
+        _assert_matching_tool_schemas(python, native)
