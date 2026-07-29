@@ -282,7 +282,14 @@ def _notarytool_subcommand(command: list[str]) -> str | None:
             continue
         if token.startswith("-"):
             return None
-        return token if token in NOTARY_SUBCOMMANDS else None
+        if token not in NOTARY_SUBCOMMANDS:
+            return None
+        for argument in command[index + 1 :]:
+            if argument == "--":
+                break
+            if argument in NOTARY_TERMINAL_OPTIONS:
+                return None
+        return token
     return None
 
 
@@ -517,6 +524,23 @@ def test_notarytool_policy_rejects_help_operands_as_subcommands(
     with pytest.raises(AssertionError):
         _assert_notarytool_profile_policy(
             misleading_help,
+            required_subcommands={subcommand},
+        )
+
+
+@pytest.mark.parametrize("subcommand", ("history", "submit", "log"))
+@pytest.mark.parametrize("terminal_option", ("-h", "--help", "--version"))
+def test_notarytool_policy_rejects_terminal_options_after_subcommands(
+    subcommand: str,
+    terminal_option: str,
+) -> None:
+    per_subcommand_help = (
+        f"xcrun notarytool {subcommand} {terminal_option} "
+        '--keychain-profile "$LOCALOCR_NOTARY_PROFILE"'
+    )
+    with pytest.raises(AssertionError):
+        _assert_notarytool_profile_policy(
+            per_subcommand_help,
             required_subcommands={subcommand},
         )
 
