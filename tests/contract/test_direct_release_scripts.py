@@ -697,6 +697,91 @@ def test_signing_dry_run_records_nested_first_invocation_order(tmp_path: Path) -
     ]
 
 
+def _nested_code_fixture(tmp_path: Path) -> Path:
+    staged_app = tmp_path / "LocalOCR Studio.app"
+    macos_dir = staged_app / "Contents" / "MacOS"
+    helpers_dir = staged_app / "Contents" / "Helpers"
+    macos_dir.mkdir(parents=True)
+    helpers_dir.mkdir()
+    (staged_app / "Contents" / "Info.plist").write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>LocalOCR</string>
+</dict></plist>
+"""
+    )
+    for destination in (
+        macos_dir / "LocalOCR",
+        helpers_dir / "localocr",
+        helpers_dir / "localocr-mcp",
+    ):
+        shutil.copyfile("/usr/bin/true", destination)
+        destination.chmod(0o755)
+    return staged_app
+
+
+def test_signer_rejects_every_unexpected_nested_code_kind(tmp_path: Path) -> None:
+    staged_app = _nested_code_fixture(tmp_path)
+    accepted = _run_script_test("sign", "--test-nested-code", str(staged_app))
+    assert accepted.returncode == 0, accepted.stderr
+
+    unexpected_binary = staged_app / "Contents" / "Resources" / "hidden-tool"
+    unexpected_binary.parent.mkdir()
+    shutil.copyfile("/usr/bin/true", unexpected_binary)
+    unexpected_binary.chmod(0o755)
+    rejected_binary = _run_script_test(
+        "sign",
+        "--test-nested-code",
+        str(staged_app),
+    )
+    assert rejected_binary.returncode != 0
+    assert "unexpected nested code" in rejected_binary.stderr
+    unexpected_binary.unlink()
+
+    unexpected_framework = (
+        staged_app / "Contents" / "Frameworks" / "Hidden.framework"
+    )
+    unexpected_framework.mkdir(parents=True)
+    rejected_framework = _run_script_test(
+        "sign",
+        "--test-nested-code",
+        str(staged_app),
+    )
+    assert rejected_framework.returncode != 0
+    assert "unexpected nested code bundle" in rejected_framework.stderr
+    unexpected_framework.rmdir()
+
+    unexpected_xpc = staged_app / "Contents" / "XPCServices" / "Hidden.XPC"
+    unexpected_xpc.mkdir(parents=True)
+    rejected_xpc = _run_script_test(
+        "sign",
+        "--test-nested-code",
+        str(staged_app),
+    )
+    assert rejected_xpc.returncode != 0
+    assert "unexpected nested code bundle" in rejected_xpc.stderr
+
+
+def test_signer_compares_nested_code_in_one_physical_path_namespace(
+    tmp_path: Path,
+) -> None:
+    staged_app = _nested_code_fixture(tmp_path)
+    physical_path = str(staged_app.resolve())
+    assert physical_path.startswith("/private/var/")
+    lexical_alias = Path(physical_path.replace("/private/var/", "/var/", 1))
+    assert lexical_alias.is_dir()
+
+    result = _run_script_test(
+        "sign",
+        "--test-nested-code",
+        str(lexical_alias),
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_toolchain_rejects_nonstable_xcode_paths() -> None:
     _assert_script_test_accepts(
         "toolchain", "--test-developer-dir", "/Applications/Xcode.app/Contents/Developer"
@@ -929,6 +1014,26 @@ def test_release_scripts_require_arm64_and_macos_14_or_later(script: str) -> Non
         _assert_script_test_accepts(script, "--test-minimum-macos", minimum_version)
     for minimum_version in ("13.6", "10.15", ""):
         _assert_script_test_rejects(script, "--test-minimum-macos", minimum_version)
+
+
+def test_verifier_reads_complete_build_version_output_under_pipefail() -> None:
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            (
+                "set -euo pipefail; "
+                f"source {shlex.quote(str(RELEASE_SCRIPTS['verify']))}; "
+                "binary_minimum_macos /usr/bin/codesign"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert re.fullmatch(r"\d+(?:\.\d+){1,2}\n", result.stdout)
 
 
 def test_verifier_rejects_debug_entitlement() -> None:
