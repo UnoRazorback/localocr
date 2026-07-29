@@ -36,6 +36,44 @@ import Testing
         }
     }
 
+    @Test func decoderAcceptsDocumentedDPIBoundsAndRejectsEveryWrongArgumentType() throws {
+        let decoder = MCPArgumentDecoder(currentDirectory: currentDirectory)
+
+        for dpi in [72, 600] {
+            let request = try decoder.decode(toolName: "ocr_pdf", arguments: ["file_path": "scan.pdf", "dpi": .int(dpi)])
+            guard case let .ocrPDF(value) = request else {
+                Issue.record("Expected an ocr_pdf request")
+                return
+            }
+            #expect(value.dpi == dpi)
+        }
+
+        #expect(throws: MCPArgumentError.invalidPath("file_path")) {
+            try decoder.decode(toolName: "ocr_image", arguments: ["file_path": 1])
+        }
+        #expect(throws: MCPArgumentError.invalidPath("file_path")) {
+            try decoder.decode(toolName: "ocr_image", arguments: ["file_path": "   "])
+        }
+        #expect(throws: MCPArgumentError.invalidPageRange) {
+            try decoder.decode(toolName: "ocr_pdf", arguments: ["file_path": "scan.pdf", "page_range": 1])
+        }
+        #expect(throws: MCPArgumentError.invalidBoolean("force_ocr")) {
+            try decoder.decode(toolName: "ocr_pdf", arguments: ["file_path": "scan.pdf", "force_ocr": "true"])
+        }
+        #expect(throws: MCPArgumentError.invalidBoolean("include_lines")) {
+            try decoder.decode(toolName: "ocr_pdf", arguments: ["file_path": "scan.pdf", "include_lines": 1])
+        }
+        #expect(throws: MCPArgumentError.invalidDPI) {
+            try decoder.decode(toolName: "ocr_pdf", arguments: ["file_path": "scan.pdf", "dpi": "250"])
+        }
+        #expect(throws: MCPArgumentError.invalidDPI) {
+            try decoder.decode(toolName: "ocr_pdf", arguments: ["file_path": "scan.pdf", "dpi": 71])
+        }
+        #expect(throws: MCPArgumentError.invalidPath("file_paths")) {
+            try decoder.decode(toolName: "ocr_pdf_batch", arguments: ["file_paths": "scan.pdf"])
+        }
+    }
+
     @Test func batchRequiresNonemptyStringPathsAndSearchableAllowsAnOptionalOutputPath() throws {
         let decoder = MCPArgumentDecoder(currentDirectory: currentDirectory)
 

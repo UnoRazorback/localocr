@@ -83,6 +83,8 @@ public struct MCPToolDispatcher: Sendable {
                 ("invalid_page_range", "The requested page range is invalid.")
             case .invalidDestination, .outputValidationFailed:
                 ("invalid_output", "The output path is invalid.")
+            case .outputExists:
+                ("output_exists", "The output file already exists.")
             case .imageDecodeFailed:
                 ("image_decode_failed", "The image could not be decoded.")
             case .cancelled:

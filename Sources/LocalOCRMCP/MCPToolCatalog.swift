@@ -147,15 +147,8 @@ public enum MCPToolCatalog {
     )
 
     private static let pdfOCROutputSchema = objectSchema(
-        properties: [
-            "source_path": stringSchema,
-            "source_sha256": stringSchema,
-            "pages": .object(["type": "array", "items": ocrPageSchema]),
-            "failed_pages": .object(["type": "array", "items": integerSchema]),
-            "empty_ocr_pages": .object(["type": "array", "items": integerSchema]),
-            "rotated_ocr_pages": .object(["type": "array", "items": rotatedPageSchema])
-        ],
-        required: ["source_path", "source_sha256", "pages", "failed_pages", "empty_ocr_pages", "rotated_ocr_pages"]
+        properties: pdfOCRProperties,
+        required: pdfOCRRequired
     )
 
     private static let batchOutputSchema = objectSchema(
@@ -163,9 +156,37 @@ public enum MCPToolCatalog {
             "processed": integerSchema,
             "succeeded": integerSchema,
             "failed": integerSchema,
-            "results": .object(["type": "array", "items": .object(["type": "object"])])
+            "results": .object(["type": "array", "items": .object(["oneOf": .array([batchSuccessSchema, batchFailureSchema])])])
         ],
         required: ["processed", "succeeded", "failed", "results"]
+    )
+
+    private static let pdfOCRProperties: [String: Value] = [
+        "source_path": stringSchema,
+        "source_sha256": stringSchema,
+        "pages": .object(["type": "array", "items": ocrPageSchema]),
+        "failed_pages": .object(["type": "array", "items": integerSchema]),
+        "empty_ocr_pages": .object(["type": "array", "items": integerSchema]),
+        "rotated_ocr_pages": .object(["type": "array", "items": rotatedPageSchema])
+    ]
+
+    private static let pdfOCRRequired = [
+        "source_path", "source_sha256", "pages", "failed_pages", "empty_ocr_pages", "rotated_ocr_pages"
+    ]
+
+    private static let batchSuccessSchema: Value = {
+        var properties = pdfOCRProperties
+        properties["status"] = .object(["const": "ok"])
+        return objectSchema(properties: properties, required: ["status"] + pdfOCRRequired)
+    }()
+
+    private static let batchFailureSchema = objectSchema(
+        properties: [
+            "source_path": stringSchema,
+            "status": .object(["const": "error"]),
+            "error": stringSchema
+        ],
+        required: ["source_path", "status", "error"]
     )
 
     private static let searchableOutputSchema = objectSchema(

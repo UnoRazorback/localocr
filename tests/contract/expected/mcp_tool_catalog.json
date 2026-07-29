@@ -402,7 +402,145 @@
         },
         "results" : {
           "items" : {
-            "type" : "object"
+            "oneOf" : [
+              {
+                "additionalProperties" : false,
+                "properties" : {
+                  "empty_ocr_pages" : {
+                    "items" : {
+                      "type" : "integer"
+                    },
+                    "type" : "array"
+                  },
+                  "failed_pages" : {
+                    "items" : {
+                      "type" : "integer"
+                    },
+                    "type" : "array"
+                  },
+                  "pages" : {
+                    "items" : {
+                      "additionalProperties" : false,
+                      "properties" : {
+                        "lines" : {
+                          "items" : {
+                            "additionalProperties" : false,
+                            "properties" : {
+                              "confidence" : {
+                                "type" : "number"
+                              },
+                              "height" : {
+                                "type" : "number"
+                              },
+                              "text" : {
+                                "type" : "string"
+                              },
+                              "width" : {
+                                "type" : "number"
+                              },
+                              "x" : {
+                                "type" : "number"
+                              },
+                              "y" : {
+                                "type" : "number"
+                              }
+                            },
+                            "required" : [
+                              "text",
+                              "confidence",
+                              "x",
+                              "y",
+                              "width",
+                              "height"
+                            ],
+                            "type" : "object"
+                          },
+                          "type" : "array"
+                        },
+                        "method" : {
+                          "enum" : [
+                            "existing_text",
+                            "vision_ocr"
+                          ],
+                          "type" : "string"
+                        },
+                        "page" : {
+                          "type" : "integer"
+                        },
+                        "text" : {
+                          "type" : "string"
+                        }
+                      },
+                      "required" : [
+                        "page",
+                        "text",
+                        "method"
+                      ],
+                      "type" : "object"
+                    },
+                    "type" : "array"
+                  },
+                  "rotated_ocr_pages" : {
+                    "items" : {
+                      "additionalProperties" : false,
+                      "properties" : {
+                        "orientation" : {
+                          "type" : "string"
+                        },
+                        "page" : {
+                          "type" : "integer"
+                        }
+                      },
+                      "required" : [
+                        "page",
+                        "orientation"
+                      ],
+                      "type" : "object"
+                    },
+                    "type" : "array"
+                  },
+                  "source_path" : {
+                    "type" : "string"
+                  },
+                  "source_sha256" : {
+                    "type" : "string"
+                  },
+                  "status" : {
+                    "const" : "ok"
+                  }
+                },
+                "required" : [
+                  "status",
+                  "source_path",
+                  "source_sha256",
+                  "pages",
+                  "failed_pages",
+                  "empty_ocr_pages",
+                  "rotated_ocr_pages"
+                ],
+                "type" : "object"
+              },
+              {
+                "additionalProperties" : false,
+                "properties" : {
+                  "error" : {
+                    "type" : "string"
+                  },
+                  "source_path" : {
+                    "type" : "string"
+                  },
+                  "status" : {
+                    "const" : "error"
+                  }
+                },
+                "required" : [
+                  "source_path",
+                  "status",
+                  "error"
+                ],
+                "type" : "object"
+              }
+            ]
           },
           "type" : "array"
         },

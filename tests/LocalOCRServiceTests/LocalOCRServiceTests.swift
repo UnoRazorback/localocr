@@ -281,7 +281,7 @@ import Testing
         #expect(try Data(contentsOf: sourceURL) == original)
     }
 
-    @Test func searchablePDFRefusesAnExistingDestinationWithoutReplacingIt() async throws {
+    @Test func searchablePDFReportsAnExistingDestinationWithoutReplacingIt() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let outputURL = directory.appendingPathComponent("output.pdf")
@@ -289,7 +289,7 @@ import Testing
         try original.write(to: outputURL)
         let service = fixtureService(writer: CopyingWriter())
 
-        await #expect(throws: LocalOCRError.invalidDestination) {
+        await #expect(throws: LocalOCRError.outputExists) {
             try await service.makeSearchablePDF(
                 SearchablePDFRequest(
                     fileURL: fixturePDF(named: "mixed"),
