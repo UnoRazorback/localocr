@@ -64,7 +64,10 @@ public struct ImageDocumentSource: ImageDocumentRecognizing {
         var rows: [[TextLine]] = []
 
         for line in lines.sorted(by: sortsAsHigherRow) {
-            if let rowIndex = rows.firstIndex(where: { sharesRow(line, with: $0) }) {
+            if let rowIndex = rows.firstIndex(where: {
+                guard let representative = $0.first else { return false }
+                return sharesRow(line, with: representative)
+            }) {
                 rows[rowIndex].append(line)
             } else {
                 rows.append([line])
@@ -76,13 +79,11 @@ public struct ImageDocumentSource: ImageDocumentRecognizing {
         }
     }
 
-    private static func sharesRow(_ line: TextLine, with row: [TextLine]) -> Bool {
-        row.contains { other in
-            let overlap = min(line.boundingBox.maxY, other.boundingBox.maxY)
-                - max(line.boundingBox.minY, other.boundingBox.minY)
-            let shorterHeight = min(line.boundingBox.height, other.boundingBox.height)
-            return shorterHeight > 0 && overlap / shorterHeight >= 0.5
-        }
+    private static func sharesRow(_ line: TextLine, with representative: TextLine) -> Bool {
+        let overlap = min(line.boundingBox.maxY, representative.boundingBox.maxY)
+            - max(line.boundingBox.minY, representative.boundingBox.minY)
+        let shorterHeight = min(line.boundingBox.height, representative.boundingBox.height)
+        return shorterHeight > 0 && overlap / shorterHeight >= 0.5
     }
 
     private static func sortsAsHigherRow(_ lhs: TextLine, _ rhs: TextLine) -> Bool {

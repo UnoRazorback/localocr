@@ -38,6 +38,17 @@ import Testing
     #expect(text == "TOP LEFT\nTOP RIGHT\nBOTTOM LEFT\nBOTTOM RIGHT")
 }
 
+@Test func imageSourceDoesNotBridgeDistinctRowsThroughAnOverlappingMiddleLine() async throws {
+    let source = ImageDocumentSource(recognizer: BridgedRowsRecognizer())
+
+    let text = try await source.recognize(
+        at: fixtureImage(named: "sample"),
+        settings: RecognitionSettings()
+    )
+
+    #expect(text == "TOP\nMIDDLE\nBOTTOM")
+}
+
 private struct UnorderedMultilineRecognizer: TextRecognizing {
     func recognize(
         image: CGImage,
@@ -66,6 +77,35 @@ private struct UnorderedMultilineRecognizer: TextRecognizing {
                     text: "TOP LEFT",
                     confidence: 1,
                     boundingBox: CGRect(x: 0.1, y: 0.74, width: 0.2, height: 0.1)
+                ),
+            ]
+        )
+    }
+}
+
+private struct BridgedRowsRecognizer: TextRecognizing {
+    func recognize(
+        image: CGImage,
+        orientation: CGImagePropertyOrientation,
+        settings: RecognitionSettings
+    ) async throws -> RecognitionCandidate {
+        RecognitionCandidate(
+            orientation: orientation,
+            lines: [
+                TextLine(
+                    text: "BOTTOM",
+                    confidence: 1,
+                    boundingBox: CGRect(x: 0, y: 0.5, width: 0.2, height: 0.2)
+                ),
+                TextLine(
+                    text: "MIDDLE",
+                    confidence: 1,
+                    boundingBox: CGRect(x: 0.5, y: 0.6, width: 0.2, height: 0.2)
+                ),
+                TextLine(
+                    text: "TOP",
+                    confidence: 1,
+                    boundingBox: CGRect(x: 0.1, y: 0.7, width: 0.2, height: 0.2)
                 ),
             ]
         )

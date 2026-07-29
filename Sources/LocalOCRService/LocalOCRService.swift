@@ -10,6 +10,7 @@ public actor LocalOCRService: LocalOCRServing {
     private let imageSourceFactory: @Sendable () -> any ImageDocumentRecognizing
     private let cacheURLProvider: @Sendable () throws -> URL
     private let cacheFactory: @Sendable (URL) -> OCRCache
+    private let beforePublication: @Sendable (URL, URL) throws -> Void
 
     public init() {
         pdfSourceFactory = { PDFDocumentSource() }
@@ -23,13 +24,15 @@ public actor LocalOCRService: LocalOCRServing {
                 compatibilityVersion: LocalOCRRuntime.version
             )
         }
+        beforePublication = { _, _ in }
     }
 
     init(
         pdfSourceFactory: @escaping @Sendable () -> any PDFDocumentReading,
         processorFactory: @escaping @Sendable (Bool) throws -> OCRProcessor,
         writerFactory: @escaping @Sendable () -> any SearchablePDFWriting,
-        imageSourceFactory: @escaping @Sendable () -> any ImageDocumentRecognizing
+        imageSourceFactory: @escaping @Sendable () -> any ImageDocumentRecognizing,
+        beforePublication: @escaping @Sendable (URL, URL) throws -> Void = { _, _ in }
     ) {
         self.pdfSourceFactory = pdfSourceFactory
         self.processorFactory = processorFactory
@@ -42,6 +45,7 @@ public actor LocalOCRService: LocalOCRServing {
                 compatibilityVersion: LocalOCRRuntime.version
             )
         }
+        self.beforePublication = beforePublication
     }
 
     init(
@@ -49,7 +53,8 @@ public actor LocalOCRService: LocalOCRServing {
         writerFactory: @escaping @Sendable () -> any SearchablePDFWriting,
         imageSourceFactory: @escaping @Sendable () -> any ImageDocumentRecognizing,
         cacheURLProvider: @escaping @Sendable () throws -> URL,
-        cacheFactory: @escaping @Sendable (URL) -> OCRCache
+        cacheFactory: @escaping @Sendable (URL) -> OCRCache,
+        beforePublication: @escaping @Sendable (URL, URL) throws -> Void = { _, _ in }
     ) {
         self.pdfSourceFactory = pdfSourceFactory
         processorFactory = nil
@@ -57,6 +62,7 @@ public actor LocalOCRService: LocalOCRServing {
         self.imageSourceFactory = imageSourceFactory
         self.cacheURLProvider = cacheURLProvider
         self.cacheFactory = cacheFactory
+        self.beforePublication = beforePublication
     }
 
     public func pageCount(at fileURL: URL) async throws -> PageCountResponse {
@@ -195,6 +201,7 @@ public actor LocalOCRService: LocalOCRServing {
             else {
                 throw LocalOCRError.outputValidationFailed
             }
+            try beforePublication(temporaryURL, outputURL)
             try moveWithoutOverwriting(temporaryURL, to: outputURL)
             progress(.completed)
 

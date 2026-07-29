@@ -301,6 +301,40 @@ import Testing
         #expect(try Data(contentsOf: outputURL) == original)
     }
 
+    @Test func searchablePDFRefusesARacingDestinationAndCleansItsTemporaryFile() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appendingPathComponent("source.pdf")
+        try FileManager.default.copyItem(at: fixturePDF(named: "mixed"), to: sourceURL)
+        let originalSource = try Data(contentsOf: sourceURL)
+        let outputURL = directory.appendingPathComponent("output.pdf")
+        let racingOutput = Data("racing destination".utf8)
+        let temporaryURLs = URLRecorder()
+        let service = fixtureService(
+            writer: CopyingWriter(),
+            beforePublication: { temporaryURL, destinationURL in
+                temporaryURLs.record(temporaryURL)
+                #expect(destinationURL == outputURL)
+                try racingOutput.write(to: destinationURL, options: .withoutOverwriting)
+            }
+        )
+
+        await #expect(throws: LocalOCRError.invalidDestination) {
+            try await service.makeSearchablePDF(
+                SearchablePDFRequest(
+                    fileURL: sourceURL,
+                    outputURL: outputURL,
+                    usesCache: false
+                )
+            )
+        }
+
+        #expect(try Data(contentsOf: outputURL) == racingOutput)
+        #expect(try Data(contentsOf: sourceURL) == originalSource)
+        let temporaryURL = try #require(temporaryURLs.values.first)
+        #expect(!FileManager.default.fileExists(atPath: temporaryURL.path))
+    }
+
     @Test func searchablePDFRejectsAnInvalidTemporaryWriterOutput() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -530,7 +564,8 @@ private func fixturePDF(named name: String) -> URL {
 }
 
 private func fixtureService(
-    writer: any SearchablePDFWriting
+    writer: any SearchablePDFWriting,
+    beforePublication: @escaping @Sendable (URL, URL) throws -> Void = { _, _ in }
 ) -> LocalOCRService {
     LocalOCRService(
         pdfSourceFactory: { FixturePDFSource() },
@@ -542,7 +577,8 @@ private func fixtureService(
             )
         },
         writerFactory: { writer },
-        imageSourceFactory: { ImageDocumentSource() }
+        imageSourceFactory: { ImageDocumentSource() },
+        beforePublication: beforePublication
     )
 }
 
