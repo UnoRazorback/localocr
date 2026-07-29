@@ -293,13 +293,17 @@ public actor LocalOCRService: LocalOCRServing {
     private func validateOutput(_ outputURL: URL, sourceURL: URL) throws {
         guard outputURL.isFileURL,
               outputURL.resolvingSymlinksInPath().standardizedFileURL
-                != sourceURL.resolvingSymlinksInPath().standardizedFileURL,
-              !FileManager.default.fileExists(atPath: outputURL.path)
+                != sourceURL.resolvingSymlinksInPath().standardizedFileURL
         else {
             throw LocalOCRError.invalidDestination
         }
+        guard !FileManager.default.fileExists(atPath: outputURL.path) else {
+            throw LocalOCRError.outputExists
+        }
         let parent = outputURL.deletingLastPathComponent()
-        guard (try parent.resourceValues(forKeys: [.isDirectoryKey])).isDirectory == true else {
+        guard
+            (try? parent.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+        else {
             throw LocalOCRError.invalidDestination
         }
     }
@@ -310,6 +314,9 @@ public actor LocalOCRService: LocalOCRServing {
                 guard let sourcePath, let destinationPath else { return EINVAL }
                 return renamex_np(sourcePath, destinationPath, UInt32(RENAME_EXCL))
             }
+        }
+        if status == -1, errno == EEXIST {
+            throw LocalOCRError.outputExists
         }
         guard status == 0 else {
             throw LocalOCRError.invalidDestination
@@ -398,6 +405,7 @@ public actor LocalOCRService: LocalOCRServing {
         case let .recognitionFailed(page, message): "Recognition failed on page \(page): \(message)"
         case .insufficientDiskSpace: "Insufficient disk space"
         case .invalidDestination: "Invalid output destination"
+        case .outputExists: "Output already exists"
         case .outputValidationFailed: "Output validation failed"
         case .cancelled: "Cancelled"
         }

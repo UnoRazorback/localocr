@@ -86,6 +86,7 @@ import Testing
     #expect(request == OCRRequest(sourceURL: URL(fileURLWithPath: "/tmp/source.pdf"), pageSelection: "1-3", settings: RecognitionSettings()))
     #expect(OCRProgress.recognizing(page: 2, total: 3) == .recognizing(page: 2, total: 3))
     #expect(LocalOCRError.recognitionFailed(page: 2, message: "Vision failed") == .recognitionFailed(page: 2, message: "Vision failed"))
+    #expect(LocalOCRError.outputExists == .outputExists)
 }
 
 @Test func packagedPythonContractFixturesDecodeIntoPublicModels() throws {

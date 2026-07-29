@@ -289,7 +289,7 @@ import Testing
         try original.write(to: outputURL)
         let service = fixtureService(writer: CopyingWriter())
 
-        await #expect(throws: LocalOCRError.invalidDestination) {
+        await #expect(throws: LocalOCRError.outputExists) {
             try await service.makeSearchablePDF(
                 SearchablePDFRequest(
                     fileURL: fixturePDF(named: "mixed"),
@@ -319,7 +319,7 @@ import Testing
             }
         )
 
-        await #expect(throws: LocalOCRError.invalidDestination) {
+        await #expect(throws: LocalOCRError.outputExists) {
             try await service.makeSearchablePDF(
                 SearchablePDFRequest(
                     fileURL: sourceURL,
