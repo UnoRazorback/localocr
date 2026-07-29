@@ -101,6 +101,14 @@ func validateDPI(_ dpi: Int) throws {
     }
 }
 
+func validatePageSpecification(_ pageRange: String?) throws {
+    do {
+        try PageRange.validateSyntax(pageRange)
+    } catch {
+        throw ValidationError("--pages must use positive page numbers and ascending ranges")
+    }
+}
+
 func textOutput(for response: PDFOCRResponse) -> String {
     response.pages.map { "--- Page \($0.page) ---\n\($0.text)" }.joined(separator: "\n\n") + "\n"
 }

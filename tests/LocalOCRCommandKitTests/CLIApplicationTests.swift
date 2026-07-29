@@ -59,6 +59,22 @@ import Testing
         #expect(await harness.run(["ocr", "/tmp/input.pdf", "--json"]) == 3)
     }
 
+    @Test func humanPartialOCRKeepsTextOnStandardOutputAndReportsFailedPagesOnStandardError() async {
+        let harness = CLIHarness(service: .fixture(ocr: .success(.fixture(failedPages: [2]))))
+        #expect(await harness.run(["ocr", "/tmp/input.pdf"]) == 3)
+        #expect(harness.stdout.contains("--- Page 1 ---"))
+        #expect(harness.stderr.contains("failed pages: 2"))
+    }
+
+    @Test func malformedOCRPageSpecificationReturnsTwoBeforeCallingTheService() async {
+        let service = FakeOCRService.fixture()
+        let harness = CLIHarness(service: service)
+        #expect(await harness.run(["ocr", "/tmp/input.pdf", "--pages", "1-a"]) == 2)
+        #expect(service.lastPDFRequest == nil)
+        #expect(harness.stdout == "")
+        #expect(harness.stderr.contains("pages"))
+    }
+
     @Test func batchMapsOptionsAndUsesSourceHeadingsInTextMode() async throws {
         let service = FakeOCRService.fixture()
         let harness = CLIHarness(service: service)
@@ -75,6 +91,28 @@ import Testing
         let harness = CLIHarness(service: .fixture(batch: .partialFixture))
         #expect(await harness.run(["batch", "/tmp/a.pdf", "/tmp/b.pdf", "--json"]) == 3)
         #expect(try harness.stdoutJSON()["failed"] as? Int == 1)
+    }
+
+    @Test func shortenedBatchResponseReturnsFour() async {
+        let harness = CLIHarness(service: .fixture(batch: .cancelledFixture))
+        #expect(await harness.run(["batch", "/tmp/a.pdf", "/tmp/b.pdf", "--json"]) == 4)
+    }
+
+    @Test func malformedBatchPageSpecificationReturnsTwoBeforeCallingTheService() async {
+        let service = FakeOCRService.fixture()
+        let harness = CLIHarness(service: service)
+        #expect(await harness.run(["batch", "/tmp/a.pdf", "--pages", "1-a"]) == 2)
+        #expect(service.lastBatchRequest == nil)
+        #expect(harness.stdout == "")
+        #expect(harness.stderr.contains("pages"))
+    }
+
+    @Test func humanBatchFailuresAreDiagnosticsOnStandardError() async {
+        let harness = CLIHarness(service: .fixture(batch: .partialFixture))
+        #expect(await harness.run(["batch", "/tmp/a.pdf", "/tmp/b.pdf"]) == 3)
+        #expect(harness.stdout.contains("--- /tmp/input.pdf ---"))
+        #expect(!harness.stdout.contains("/tmp/bad.pdf"))
+        #expect(harness.stderr.contains("--- /tmp/bad.pdf ---\nunreadable"))
     }
 
     @Test func imageMapsLanguageAndCorrectionOptionsAndWritesPlainText() async throws {
@@ -101,6 +139,13 @@ import Testing
     @Test func partialSearchableReturnsThree() async {
         let harness = CLIHarness(service: .fixture(searchable: .success(.init(outputPath: "/tmp/output.pdf", failedPages: [1]))))
         #expect(await harness.run(["searchable", "/tmp/input.pdf", "--json"]) == 3)
+    }
+
+    @Test func humanPartialSearchableKeepsPathOnStandardOutputAndReportsFailedPagesOnStandardError() async {
+        let harness = CLIHarness(service: .fixture(searchable: .success(.init(outputPath: "/tmp/output.pdf", failedPages: [1]))))
+        #expect(await harness.run(["searchable", "/tmp/input.pdf"]) == 3)
+        #expect(harness.stdout == "/tmp/output.pdf\n")
+        #expect(harness.stderr.contains("failed pages: 1"))
     }
 
     @Test func malformedArgumentsReturnTwoAndKeepStandardOutputEmpty() async {

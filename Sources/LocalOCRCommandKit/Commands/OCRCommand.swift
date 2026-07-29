@@ -12,6 +12,9 @@ struct OCRCommand {
         let request = try PDFOCRRequest(fileURL: URL(fileURLWithPath: options.file), pageRange: options.pages, dpi: options.dpi, forceOCR: options.forceOCR, includeLines: options.detail, usesCache: !options.noCache)
         let response = try await service.ocrPDF(request, progress: output.progress)
         options.json ? output.json(response) : output.stdout(textOutput(for: response))
+        if !options.json, !response.failedPages.isEmpty {
+            output.failedPages(response.failedPages)
+        }
         return response.failedPages.isEmpty ? CLIExitCode.success.rawValue : CLIExitCode.partialResult.rawValue
     }
 }
@@ -26,5 +29,8 @@ private struct OCRSyntax: CLISyntax {
     @Flag(name: .customLong("no-cache")) var noCache = false
     @Flag(name: .long) var json = false
 
-    mutating func validate() throws { try validateDPI(dpi) }
+    mutating func validate() throws {
+        try validateDPI(dpi)
+        try validatePageSpecification(pages)
+    }
 }

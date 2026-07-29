@@ -150,4 +150,5 @@ extension PDFOCRResponse {
 extension BatchOCRResponse {
     static let fixture = BatchOCRResponse(processed: 2, succeeded: 2, failed: 0, results: [.success(.fixture()), .success(.fixture())])
     static let partialFixture = BatchOCRResponse(processed: 2, succeeded: 1, failed: 1, results: [.success(.fixture()), .failure(sourcePath: "/tmp/bad.pdf", message: "unreadable")])
+    static let cancelledFixture = BatchOCRResponse(processed: 1, succeeded: 1, failed: 0, results: [.success(.fixture())])
 }

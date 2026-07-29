@@ -39,6 +39,10 @@ public struct CommandOutput: Sendable {
         stderr("[\(progress.currentItem)/\(progress.totalItems)] \(progress.sourcePath): ")
         self.progress(progress.progress)
     }
+
+    func failedPages(_ pages: [Int]) {
+        stderr("failed pages: \(pages.map(String.init).joined(separator: ", "))\n")
+    }
 }
 
 enum CLIError: LocalizedError {

@@ -12,6 +12,9 @@ struct SearchableCommand {
         let request = try SearchablePDFRequest(fileURL: URL(fileURLWithPath: options.file), outputURL: outputURL, dpi: options.dpi, forceOCR: options.forceOCR, usesCache: !options.noCache)
         let response = try await service.makeSearchablePDF(request, progress: output.progress)
         options.json ? output.json(response) : output.stdout(response.outputPath + "\n")
+        if !options.json, !response.failedPages.isEmpty {
+            output.failedPages(response.failedPages)
+        }
         return response.failedPages.isEmpty ? CLIExitCode.success.rawValue : CLIExitCode.partialResult.rawValue
     }
 }

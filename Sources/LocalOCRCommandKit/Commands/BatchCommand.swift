@@ -1,5 +1,6 @@
 import Foundation
 import ArgumentParser
+import LocalOCRCore
 import LocalOCRService
 
 struct BatchCommand {
@@ -16,9 +17,12 @@ struct BatchCommand {
             for item in response.results {
                 switch item {
                 case let .success(ocr): output.stdout("--- \(ocr.sourcePath) ---\n\(textOutput(for: ocr))")
-                case let .failure(sourcePath, message): output.stdout("--- \(sourcePath) ---\n\(message)\n")
+                case let .failure(sourcePath, message): output.stderr("--- \(sourcePath) ---\n\(message)\n")
                 }
             }
+        }
+        if Task.isCancelled || response.processed < request.fileURLs.count {
+            return CLIExitCode.cancelled.rawValue
         }
         return response.failed == 0 ? CLIExitCode.success.rawValue : CLIExitCode.partialResult.rawValue
     }
@@ -37,5 +41,6 @@ private struct BatchSyntax: CLISyntax {
     mutating func validate() throws {
         guard !files.isEmpty else { throw ValidationError("expected at least one input file") }
         try validateDPI(dpi)
+        try validatePageSpecification(pages)
     }
 }
