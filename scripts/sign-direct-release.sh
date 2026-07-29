@@ -40,37 +40,78 @@ validate_code_signing_metadata_name() {
     esac
 }
 
-verify_no_code_signing_hostile_metadata() {
-    local physical_app="$1"
-    local candidate
+verify_candidate_code_signing_xattrs() {
+    local candidate="$1"
     local attributes
     local attribute
-    local metadata_file
 
-    metadata_file="$(
+    attributes="$(/usr/bin/xattr "$candidate")" || {
+        echo "could not enumerate extended attributes: $candidate" >&2
+        return 1
+    }
+    while IFS= read -r attribute; do
+        [[ -n "$attribute" ]] || continue
+        validate_code_signing_metadata_name "$attribute"
+    done <<< "$attributes"
+}
+
+verify_no_code_signing_hostile_metadata() {
+    local physical_app="$1"
+    local enumerator="${2:-/usr/bin/find}"
+    local candidate
+    local metadata_file
+    local candidate_list_dir
+    local candidate_list
+    local inspection_status=0
+
+    if ! metadata_file="$(
         /usr/bin/find "$physical_app" \
             \( -name '.DS_Store' -o -name '._*' \) \
             -print -quit
-    )"
+    )"; then
+        echo "metadata-file enumeration failed" >&2
+        return 1
+    fi
     [[ -z "$metadata_file" ]] || {
         echo "code-signing-hostile metadata file remains: $metadata_file" >&2
         return 1
     }
 
+    candidate_list_dir="$(/usr/bin/mktemp -d /tmp/localocr-sign-metadata.XXXXXX)" || {
+        echo "could not create isolated metadata candidate directory" >&2
+        return 1
+    }
+    candidate_list="$candidate_list_dir/candidates.nul"
+    if ! "$enumerator" "$physical_app" -print0 > "$candidate_list"; then
+        /bin/rm -f -- "$candidate_list"
+        /bin/rmdir "$candidate_list_dir"
+        echo "metadata candidate enumeration failed" >&2
+        return 1
+    fi
+
     while IFS= read -r -d '' candidate; do
-        attributes="$(/usr/bin/xattr "$candidate")" || {
-            echo "could not enumerate extended attributes: $candidate" >&2
-            return 1
-        }
-        while IFS= read -r attribute; do
-            [[ -n "$attribute" ]] || continue
-            validate_code_signing_metadata_name "$attribute"
-        done <<< "$attributes"
-    done < <(/usr/bin/find "$physical_app" -print0)
+        case "$candidate" in
+            "$physical_app"|"$physical_app"/*) ;;
+            *)
+                echo "metadata candidate escaped the staged app: $candidate" >&2
+                inspection_status=1
+                break
+                ;;
+        esac
+        if ! verify_candidate_code_signing_xattrs "$candidate"; then
+            inspection_status=1
+            break
+        fi
+    done < "$candidate_list"
+
+    /bin/rm -f -- "$candidate_list"
+    /bin/rmdir "$candidate_list_dir"
+    [[ "$inspection_status" -eq 0 ]]
 }
 
 sanitize_staged_app_metadata() {
     local app_path="$1"
+    local enumerator="${2:-/usr/bin/find}"
     local physical_app
     local unexpected_symlink
 
@@ -79,9 +120,12 @@ sanitize_staged_app_metadata() {
         return 1
     }
     physical_app="$(cd "$app_path" && pwd -P)"
-    unexpected_symlink="$(
+    if ! unexpected_symlink="$(
         /usr/bin/find "$physical_app" -type l -print -quit
-    )"
+    )"; then
+        echo "symlink enumeration failed before metadata sanitization" >&2
+        return 1
+    fi
     [[ -z "$unexpected_symlink" ]] || {
         echo "refusing metadata sanitization because a symlink remains: $unexpected_symlink" >&2
         return 1
@@ -91,7 +135,7 @@ sanitize_staged_app_metadata() {
         echo "could not clear extended attributes from staged app copy" >&2
         return 1
     }
-    verify_no_code_signing_hostile_metadata "$physical_app"
+    verify_no_code_signing_hostile_metadata "$physical_app" "$enumerator"
 }
 
 require_expected_macho_file() {
@@ -260,7 +304,9 @@ test_xattr_preflight() {
         return 1
     }
     : > "$trace_file"
-    sanitize_staged_app_metadata "$app_path"
+    sanitize_staged_app_metadata \
+        "$app_path" \
+        "${LOCALOCR_TEST_METADATA_ENUMERATOR:-/usr/bin/find}"
     if [[ -n "${LOCALOCR_TEST_REMAINING_XATTRS:-}" ]]; then
         while IFS= read -r injected_attribute; do
             [[ -n "$injected_attribute" ]] || continue

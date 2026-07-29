@@ -846,6 +846,38 @@ def test_signer_aborts_on_persistent_hostile_xattr_before_first_trace(
     assert first_helper.read_bytes() == helper_before
 
 
+def test_signer_aborts_when_recursive_metadata_enumerator_fails(
+    tmp_path: Path,
+) -> None:
+    staged_app = _nested_code_fixture(tmp_path)
+    first_helper = staged_app / "Contents" / "Helpers" / "localocr"
+    helper_before = first_helper.read_bytes()
+    trace_file = tmp_path / "codesign-invocations.txt"
+    failing_enumerator = tmp_path / "failing-find"
+    failing_enumerator.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\0' \"$1/Contents/Info.plist\"\n"
+        "exit 73\n"
+    )
+    failing_enumerator.chmod(0o755)
+    env = os.environ.copy()
+    env["LOCALOCR_SIGNING_TRACE_FILE"] = str(trace_file)
+    env["LOCALOCR_TEST_METADATA_ENUMERATOR"] = str(failing_enumerator)
+
+    result = _run_script_test(
+        "sign",
+        "--test-xattr-preflight",
+        str(staged_app),
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "metadata candidate enumeration failed" in result.stderr
+    assert trace_file.is_file()
+    assert trace_file.read_text() == ""
+    assert first_helper.read_bytes() == helper_before
+
+
 def test_production_signer_refuses_to_sanitize_an_arbitrary_app(
     tmp_path: Path,
 ) -> None:
