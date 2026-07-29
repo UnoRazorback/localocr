@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -850,6 +851,72 @@ def test_stage_uses_confined_native_artifact_directory() -> None:
         text=True,
     )
     assert build_result.returncode == 0, build_result.stderr
+
+
+@pytest.mark.parametrize("use_explicit_artifact_dir", (False, True))
+def test_build_native_tools_publishes_both_helpers_to_selected_directory(
+    tmp_path: Path,
+    use_explicit_artifact_dir: bool,
+) -> None:
+    isolated_repo = tmp_path / "repo"
+    isolated_scripts = isolated_repo / "scripts"
+    direct_release_root = isolated_repo / "dist" / "direct-release"
+    stub_bin = tmp_path / "bin"
+    isolated_scripts.mkdir(parents=True)
+    direct_release_root.mkdir(parents=True)
+    stub_bin.mkdir()
+    build_script = isolated_scripts / "build-native-tools.sh"
+    shutil.copy2(SCRIPTS / "build-native-tools.sh", build_script)
+
+    swift_stub = stub_bin / "swift"
+    swift_stub.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "package" && "$2" == "clean" ]]; then
+    exit 0
+fi
+if [[ "$1" == "build" ]]; then
+    product="${!#}"
+    mkdir -p .build/release
+    printf '#!/usr/bin/env sh\\nexit 0\\n' > ".build/release/$product"
+    chmod 0755 ".build/release/$product"
+    exit 0
+fi
+exit 64
+"""
+    )
+    swift_stub.chmod(0o755)
+    otool_stub = stub_bin / "otool"
+    otool_stub.write_text("#!/usr/bin/env sh\nexit 0\n")
+    otool_stub.chmod(0o755)
+    install_name_tool_stub = stub_bin / "install_name_tool"
+    install_name_tool_stub.write_text("#!/usr/bin/env sh\nexit 99\n")
+    install_name_tool_stub.chmod(0o755)
+
+    default_output = isolated_repo / "dist" / "native-tools"
+    explicit_output = direct_release_root / "native-tools"
+    expected_output = explicit_output if use_explicit_artifact_dir else default_output
+    arguments = ["/bin/bash", str(build_script)]
+    if use_explicit_artifact_dir:
+        arguments.extend(("--artifact-dir", str(explicit_output)))
+    env = os.environ.copy()
+    env["PATH"] = f"{stub_bin}:/usr/bin:/bin"
+
+    result = subprocess.run(
+        arguments,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    for helper in EXPECTED_HELPERS:
+        helper_path = expected_output / helper
+        assert helper_path.is_file()
+        assert os.access(helper_path, os.X_OK)
+    unexpected_output = default_output if use_explicit_artifact_dir else explicit_output
+    assert not unexpected_output.exists()
 
 
 @pytest.mark.parametrize("script", ("stage", "verify"))
