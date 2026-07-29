@@ -782,6 +782,137 @@ def test_signer_compares_nested_code_in_one_physical_path_namespace(
     assert result.returncode == 0, result.stderr
 
 
+def test_signer_clears_removable_xattrs_only_from_the_staged_copy(
+    tmp_path: Path,
+) -> None:
+    staged_app = _nested_code_fixture(tmp_path)
+    staged_target = staged_app / "Contents" / "Info.plist"
+    outside_sentinel = tmp_path / "unsigned-input-sentinel"
+    outside_sentinel.write_text("untouched")
+    for target in (staged_target, outside_sentinel):
+        subprocess.run(
+            ["/usr/bin/xattr", "-w", "com.example.removable", "fixture", str(target)],
+            check=True,
+        )
+    trace_file = tmp_path / "codesign-invocations.txt"
+    env = os.environ.copy()
+    env["LOCALOCR_SIGNING_TRACE_FILE"] = str(trace_file)
+
+    result = _run_script_test(
+        "sign",
+        "--test-xattr-preflight",
+        str(staged_app),
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "com.example.removable" not in subprocess.run(
+        ["/usr/bin/xattr", str(staged_target)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "com.example.removable" in subprocess.run(
+        ["/usr/bin/xattr", str(outside_sentinel)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert len(trace_file.read_text().splitlines()) == 1
+
+
+def test_signer_aborts_on_persistent_hostile_xattr_before_first_trace(
+    tmp_path: Path,
+) -> None:
+    staged_app = _nested_code_fixture(tmp_path)
+    first_helper = staged_app / "Contents" / "Helpers" / "localocr"
+    helper_before = first_helper.read_bytes()
+    trace_file = tmp_path / "codesign-invocations.txt"
+    env = os.environ.copy()
+    env["LOCALOCR_SIGNING_TRACE_FILE"] = str(trace_file)
+    env["LOCALOCR_TEST_REMAINING_XATTRS"] = "com.apple.FinderInfo"
+
+    result = _run_script_test(
+        "sign",
+        "--test-xattr-preflight",
+        str(staged_app),
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "code-signing-hostile metadata" in result.stderr
+    assert trace_file.is_file()
+    assert trace_file.read_text() == ""
+    assert first_helper.read_bytes() == helper_before
+
+
+def test_production_signer_refuses_to_sanitize_an_arbitrary_app(
+    tmp_path: Path,
+) -> None:
+    arbitrary_app = _nested_code_fixture(tmp_path)
+    sentinel = arbitrary_app / "Contents" / "Info.plist"
+    subprocess.run(
+        ["/usr/bin/xattr", "-w", "com.example.must-remain", "fixture", str(sentinel)],
+        check=True,
+    )
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            (
+                f"source {shlex.quote(str(RELEASE_SCRIPTS['sign']))}; "
+                'STAGED_APP="$1"; preflight_direct_release_signing'
+            ),
+            "sign-preflight",
+            str(arbitrary_app),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "physical staged app copy" in result.stderr
+    assert "com.example.must-remain" in subprocess.run(
+        ["/usr/bin/xattr", str(sentinel)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
+@pytest.mark.parametrize(
+    "relative_bundle",
+    (
+        Path("Contents/PlugIns/Unexpected.appex"),
+        Path("Contents/Applications/Unexpected.app"),
+    ),
+)
+def test_signer_rejects_unexpected_extension_and_nested_app_directly(
+    tmp_path: Path,
+    relative_bundle: Path,
+) -> None:
+    staged_app = _nested_code_fixture(tmp_path)
+    (staged_app / relative_bundle).mkdir(parents=True)
+
+    result = _run_script_test("sign", "--test-nested-code", str(staged_app))
+
+    assert result.returncode != 0
+    assert "unexpected nested code bundle" in result.stderr
+
+
+def test_signer_rejects_arbitrary_symlink_directly(tmp_path: Path) -> None:
+    staged_app = _nested_code_fixture(tmp_path)
+    resources = staged_app / "Contents" / "Resources"
+    resources.mkdir()
+    (resources / "alias").symlink_to(staged_app / "Contents" / "Info.plist")
+
+    result = _run_script_test("sign", "--test-nested-code", str(staged_app))
+
+    assert result.returncode != 0
+    assert "unexpected nested code symlink" in result.stderr
+
+
 def test_toolchain_rejects_nonstable_xcode_paths() -> None:
     _assert_script_test_accepts(
         "toolchain", "--test-developer-dir", "/Applications/Xcode.app/Contents/Developer"
@@ -1060,6 +1191,37 @@ def test_verifier_rejects_debug_entitlement() -> None:
     )
 
 
+def test_verifier_requires_exact_developer_id_authority_details() -> None:
+    accepted = "\n".join(
+        (
+            "CodeDirectory v=20500 size=10 flags=0x10000(runtime) hashes=1+2 location=embedded",
+            f"Authority={EXPECTED_IDENTITY}",
+            "Authority=Developer ID Certification Authority",
+            "Authority=Apple Root CA",
+            "Timestamp=Jul 29, 2026 at 12:46:27 PM",
+            f"TeamIdentifier={EXPECTED_TEAM}",
+        )
+    )
+    _assert_script_test_accepts("verify", "--test-signature-details", accepted)
+
+    rejected_vectors = (
+        accepted.replace(f"Authority={EXPECTED_IDENTITY}\n", ""),
+        accepted.replace(EXPECTED_IDENTITY, "Developer ID Application: Other Person (DZ8B5454ZN)"),
+        accepted.replace(
+            f"TeamIdentifier={EXPECTED_TEAM}",
+            "TeamIdentifier=OTHERTEAM",
+        ),
+        accepted.replace("Timestamp=Jul 29, 2026 at 12:46:27 PM", "Timestamp=none"),
+        accepted.replace("flags=0x10000(runtime)", "flags=0x0(none)"),
+    )
+    for rejected in rejected_vectors:
+        _assert_script_test_rejects(
+            "verify",
+            "--test-signature-details",
+            rejected,
+        )
+
+
 def test_verifier_allows_only_the_system_swift_rpath() -> None:
     _assert_script_test_accepts("verify", "--test-rpath", "/usr/lib/swift")
     for rpath in (
@@ -1095,6 +1257,13 @@ def test_verifier_allows_only_system_install_names_and_compatibility_span() -> N
         "/usr/library/libexample.dylib",
         "/opt/homebrew/lib/libexample.dylib",
         "/usr/local/lib/libexample.dylib",
+        "/usr/lib/../local/libevil.dylib",
+        "/usr/lib/./libSystem.B.dylib",
+        "/usr/lib//libSystem.B.dylib",
+        "/usr/lib/swift/../../libevil.dylib",
+        "/System/Library/../Applications/Evil.framework/Evil",
+        "/System/Library//Frameworks/Vision.framework/Vision",
+        "/System/Library/Frameworks/./Vision.framework/Vision",
         "@rpath/third-party.dylib",
         "@rpath/libswiftCompatibilitySpan.dylib.backup",
         "@loader_path/libexample.dylib",

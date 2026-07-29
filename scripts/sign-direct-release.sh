@@ -11,6 +11,89 @@ source "$sign_script_dir/verify-direct-release.sh"
 readonly SIGNING_IDENTITY="Developer ID Application: John Scott Ray (DZ8B5454ZN)"
 STAGED_APP="$sign_script_dir/../dist/direct-release/staged/LocalOCR Studio.app"
 
+resolve_physical_staged_app_copy() {
+    local app_path="$1"
+    local physical_app
+    local physical_repo
+    local expected_physical_app
+
+    [[ -d "$app_path" && ! -L "$app_path" ]] || {
+        echo "staged app is missing or symlinked: $app_path" >&2
+        return 1
+    }
+    physical_repo="$(cd "$sign_script_dir/.." && pwd -P)"
+    expected_physical_app="$physical_repo/dist/direct-release/staged/LocalOCR Studio.app"
+    physical_app="$(cd "$app_path" && pwd -P)"
+    [[ "$physical_app" == "$expected_physical_app" ]] || {
+        echo "refusing to sanitize or sign anything except the physical staged app copy" >&2
+        return 1
+    }
+    printf '%s\n' "$physical_app"
+}
+
+validate_code_signing_metadata_name() {
+    case "${1:-}" in
+        com.apple.FinderInfo|com.apple.ResourceFork|com.apple.fileprovider.fpfs#P)
+            echo "code-signing-hostile metadata remains: $1" >&2
+            return 1
+            ;;
+    esac
+}
+
+verify_no_code_signing_hostile_metadata() {
+    local physical_app="$1"
+    local candidate
+    local attributes
+    local attribute
+    local metadata_file
+
+    metadata_file="$(
+        /usr/bin/find "$physical_app" \
+            \( -name '.DS_Store' -o -name '._*' \) \
+            -print -quit
+    )"
+    [[ -z "$metadata_file" ]] || {
+        echo "code-signing-hostile metadata file remains: $metadata_file" >&2
+        return 1
+    }
+
+    while IFS= read -r -d '' candidate; do
+        attributes="$(/usr/bin/xattr "$candidate")" || {
+            echo "could not enumerate extended attributes: $candidate" >&2
+            return 1
+        }
+        while IFS= read -r attribute; do
+            [[ -n "$attribute" ]] || continue
+            validate_code_signing_metadata_name "$attribute"
+        done <<< "$attributes"
+    done < <(/usr/bin/find "$physical_app" -print0)
+}
+
+sanitize_staged_app_metadata() {
+    local app_path="$1"
+    local physical_app
+    local unexpected_symlink
+
+    [[ -d "$app_path" && ! -L "$app_path" ]] || {
+        echo "metadata sanitization requires a physical staged app directory" >&2
+        return 1
+    }
+    physical_app="$(cd "$app_path" && pwd -P)"
+    unexpected_symlink="$(
+        /usr/bin/find "$physical_app" -type l -print -quit
+    )"
+    [[ -z "$unexpected_symlink" ]] || {
+        echo "refusing metadata sanitization because a symlink remains: $unexpected_symlink" >&2
+        return 1
+    }
+
+    /usr/bin/xattr -cr "$physical_app" || {
+        echo "could not clear extended attributes from staged app copy" >&2
+        return 1
+    }
+    verify_no_code_signing_hostile_metadata "$physical_app"
+}
+
 require_expected_macho_file() {
     local code_path="$1"
     local file_description
@@ -120,6 +203,7 @@ record_signing_order() {
 }
 
 preflight_direct_release_signing() {
+    local physical_staged_app
     local main_executable
     local helper
 
@@ -127,6 +211,8 @@ preflight_direct_release_signing() {
         echo "signing identity constants disagree" >&2
         return 1
     }
+    physical_staged_app="$(resolve_physical_staged_app_copy "$STAGED_APP")"
+    STAGED_APP="$physical_staged_app"
     validate_signing_identity
     verify_expected_nested_code "$STAGED_APP"
     main_executable="$(resolve_staged_main_executable "$STAGED_APP")"
@@ -134,6 +220,7 @@ preflight_direct_release_signing() {
         verify_binary_policy "$STAGED_APP/Contents/Helpers/$helper"
     done
     verify_binary_policy "$main_executable"
+    sanitize_staged_app_metadata "$STAGED_APP"
 }
 
 sign_direct_release() {
@@ -163,6 +250,33 @@ sign_direct_release() {
     /usr/bin/codesign --verify --deep --strict --verbose=2 "$STAGED_APP"
 }
 
+test_xattr_preflight() {
+    local app_path="$1"
+    local trace_file="${LOCALOCR_SIGNING_TRACE_FILE:-}"
+    local injected_attribute
+
+    [[ -n "$trace_file" ]] || {
+        echo "LOCALOCR_SIGNING_TRACE_FILE is required for xattr preflight test mode" >&2
+        return 1
+    }
+    : > "$trace_file"
+    sanitize_staged_app_metadata "$app_path"
+    if [[ -n "${LOCALOCR_TEST_REMAINING_XATTRS:-}" ]]; then
+        while IFS= read -r injected_attribute; do
+            [[ -n "$injected_attribute" ]] || continue
+            validate_code_signing_metadata_name "$injected_attribute"
+        done <<< "$LOCALOCR_TEST_REMAINING_XATTRS"
+    fi
+    trace_codesign_invocation \
+        /usr/bin/codesign \
+        --force \
+        --sign \
+        "$SIGNING_IDENTITY" \
+        --options runtime \
+        --timestamp \
+        "$app_path/Contents/Helpers/localocr"
+}
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     case "${1:-}" in
         --test-nested-code)
@@ -172,6 +286,10 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         --test-signing-order)
             [[ "$#" -eq 2 ]] || exit 2
             record_signing_order "$2"
+            ;;
+        --test-xattr-preflight)
+            [[ "$#" -eq 2 ]] || exit 2
+            test_xattr_preflight "$2"
             ;;
         "")
             sign_direct_release

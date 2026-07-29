@@ -7,6 +7,7 @@ verify_repo_root="$(cd "$verify_script_dir/.." && pwd -P)"
 verify_release_root="$verify_repo_root/dist/direct-release"
 verify_staged_app="$verify_release_root/staged/LocalOCR Studio.app"
 verify_expected_team="DZ8B5454ZN"
+verify_expected_authority="Developer ID Application: John Scott Ray (DZ8B5454ZN)"
 verify_plist_buddy="/usr/libexec/PlistBuddy"
 
 validate_arm64_architecture() {
@@ -31,15 +32,42 @@ validate_minimum_macos() {
     }
 }
 
-validate_install_name() {
-    case "${1:-}" in
-        /System/Library/?*|/usr/lib/?*|@rpath/libswiftCompatibilitySpan.dylib)
+validate_canonical_system_install_name() {
+    local install_name="$1"
+    local relative_path
+    local component
+    local -a components
+
+    case "$install_name" in
+        /System/Library/?*)
+            relative_path="${install_name#/System/Library/}"
+            ;;
+        /usr/lib/?*)
+            relative_path="${install_name#/usr/lib/}"
             ;;
         *)
-            echo "unapproved dynamic-library install name: ${1:-<empty>}" >&2
             return 1
             ;;
     esac
+    [[ "$install_name" != *//* && "$install_name" != */ ]] || return 1
+    IFS=/ read -r -a components <<< "$relative_path"
+    for component in "${components[@]}"; do
+        [[ -n "$component" && "$component" != "." && "$component" != ".." ]] || {
+            return 1
+        }
+    done
+}
+
+validate_install_name() {
+    local install_name="${1:-}"
+
+    if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
+        return 0
+    fi
+    validate_canonical_system_install_name "$install_name" || {
+        echo "unapproved dynamic-library install name: ${install_name:-<empty>}" >&2
+        return 1
+    }
 }
 
 validate_rpath() {
@@ -205,6 +233,18 @@ verify_hardened_runtime() {
     local details
 
     details="$(signature_details "$code_object")"
+    validate_signature_details "$details" "$code_object"
+}
+
+validate_signature_details() {
+    local details="$1"
+    local code_object="${2:-signature details}"
+
+    /usr/bin/grep -F -x -q \
+        "Authority=$verify_expected_authority" <<< "$details" || {
+        echo "signature has the wrong Developer ID authority: $code_object" >&2
+        return 1
+    }
     /usr/bin/grep -F -x -q \
         "TeamIdentifier=$verify_expected_team" <<< "$details" || {
         echo "signature has the wrong TeamIdentifier: $code_object" >&2
@@ -335,6 +375,10 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         --test-rpath)
             [[ "$#" -eq 2 ]] || exit 2
             validate_rpath "$2"
+            ;;
+        --test-signature-details)
+            [[ "$#" -eq 2 ]] || exit 2
+            validate_signature_details "$2"
             ;;
         "")
             verify_direct_release
