@@ -130,9 +130,12 @@ when `failed_pages` is non-empty, the new output is partial.
 
 ## Local behavior and privacy
 
-The server exists only for the client-managed stdio session. It accesses local
-files only when a tool call supplies their paths, and it writes only a
-requested new searchable-PDF destination. PDF OCR uses the same local cache
-as the CLI; set `LOCALOCR_CACHE_DIR` in the server's environment to override
-the default `~/Library/Caches/com.rayconsulting.localocr/ocr-v1` location.
-The server itself makes no network requests.
+The server exists only for the client-managed stdio session and accesses local
+files only when a tool call supplies their paths. PDF OCR may write local cache
+entries at the same default cache location as the CLI,
+`~/Library/Caches/com.rayconsulting.localocr/ocr-v1`; set
+`LOCALOCR_CACHE_DIR` in the server's environment to use a different local
+cache directory. Apart from those local cache writes, its only output write is
+a new searchable PDF at a local destination requested by `make_searchable_pdf`.
+That destination must not already exist and must not resolve to the source
+file. The server itself makes no network requests.
