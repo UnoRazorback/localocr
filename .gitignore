@@ -21,3 +21,5 @@ __pycache__/
 
 # Locally generated standalone release tools
 /dist/
+
+dist/direct-release/
