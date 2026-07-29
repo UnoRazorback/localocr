@@ -5,6 +5,20 @@ import PDFKit
 import Testing
 
 @Suite(.serialized) struct LocalOCRServiceTests {
+    @Test func missingFileMessagesUsePythonStringRepresentations() {
+        let cases = [
+            ("O'Brien.pdf", "[Errno 2] No such file or directory: \"O'Brien.pdf\""),
+            ("double\"quote.pdf", "[Errno 2] No such file or directory: 'double\"quote.pdf'"),
+            ("both'\".pdf", "[Errno 2] No such file or directory: 'both\\'\".pdf'"),
+            ("back\\slash.pdf", "[Errno 2] No such file or directory: 'back\\\\slash.pdf'"),
+            ("line\n tab\t carriage\r control\u{0001}.pdf", "[Errno 2] No such file or directory: 'line\\n tab\\t carriage\\r control\\x01.pdf'")
+        ]
+
+        for (path, expected) in cases {
+            #expect(LocalOCRService.pythonFileNotFoundMessage(path: path) == expected)
+        }
+    }
+
     @Test func pageCountMapsThePDFInspectionPageCount() async throws {
         let response = try await LocalOCRService().pageCount(at: fixturePDF(named: "mixed"))
 

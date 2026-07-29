@@ -120,7 +120,7 @@ public actor LocalOCRService: LocalOCRServing {
             } catch let error as LocalOCRError where error == .cancelled {
                 break
             } catch {
-                results.append(.failure(sourcePath: fileURL.path, message: errorMessage(error)))
+                results.append(.failure(sourcePath: fileURL.path, message: errorMessage(error, sourcePath: fileURL.path)))
             }
         }
 
@@ -382,10 +382,37 @@ public actor LocalOCRService: LocalOCRServing {
         }
     }
 
-    private func errorMessage(_ error: any Error) -> String {
+    static func pythonFileNotFoundMessage(path: String) -> String {
+        "[Errno 2] No such file or directory: \(pythonStringLiteral(path))"
+    }
+
+    private static func pythonStringLiteral(_ value: String) -> String {
+        let quote = value.contains("'") && !value.contains("\"") ? "\"" : "'"
+        var result = quote
+        for scalar in value.unicodeScalars {
+            switch scalar.value {
+            case 0x09:
+                result += "\\t"
+            case 0x0A:
+                result += "\\n"
+            case 0x0D:
+                result += "\\r"
+            case 0x00 ... 0x08, 0x0B ... 0x0C, 0x0E ... 0x1F, 0x7F ... 0x9F:
+                result += String(format: "\\x%02x", scalar.value)
+            default:
+                if scalar == "\\" || String(scalar) == quote {
+                    result += "\\"
+                }
+                result.unicodeScalars.append(scalar)
+            }
+        }
+        return result + quote
+    }
+
+    private func errorMessage(_ error: any Error, sourcePath: String) -> String {
         guard let error = error as? LocalOCRError else { return error.localizedDescription }
         return switch error {
-        case .fileNotFound: "File not found"
+        case .fileNotFound: Self.pythonFileNotFoundMessage(path: sourcePath)
         case let .unsupportedFormat(format): "Unsupported format: \(format)"
         case .imageDecodeFailed: "Image could not be decoded"
         case .permissionDenied: "Permission denied"
