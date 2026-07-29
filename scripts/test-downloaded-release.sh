@@ -22,6 +22,9 @@ download_sysctl="/usr/sbin/sysctl"
 download_uname="/usr/bin/uname"
 download_date="/bin/date"
 download_sleep="/bin/sleep"
+download_evidence_awk="/usr/bin/awk"
+download_evidence_mv="/bin/mv"
+download_cleanup_rm="/bin/rm"
 download_temp_parent="/private/tmp"
 
 download_zip=""
@@ -161,15 +164,17 @@ download_replace_evidence_checksum() {
     local replacement_file
 
     replacement_file="${download_evidence_file}.checksum.$$"
-    /usr/bin/awk \
+    # shellcheck disable=SC2016
+    "$download_evidence_awk" \
         -v checksum="$download_actual_checksum" \
         '$0 == "ZIP SHA-256: pending" {
             print "ZIP SHA-256: " checksum
             next
         }
         { print }' \
-        "$download_evidence_file" > "$replacement_file"
-    /bin/mv -f -- "$replacement_file" "$download_evidence_file"
+        "$download_evidence_file" > "$replacement_file" || return 1
+    "$download_evidence_mv" -f -- \
+        "$replacement_file" "$download_evidence_file" || return 1
 }
 
 download_record_result() {
@@ -201,7 +206,7 @@ download_verify_checksum() {
         echo "could not compute downloaded ZIP SHA-256" >&2
         return 1
     }
-    download_replace_evidence_checksum
+    download_replace_evidence_checksum || return
     [[ "$download_actual_checksum" == "$download_expected_checksum" ]] || {
         echo "downloaded ZIP SHA-256 does not match the published checksum" >&2
         return 1
@@ -657,6 +662,7 @@ download_run_optional_smoke() {
     local command
     local checksum_before
     local checksum_after
+    local command_status=0
     local output_file="$download_extraction_root/ocr-smoke-output.json"
 
     if [[ -z "$input" ]]; then
@@ -686,27 +692,60 @@ download_run_optional_smoke() {
         return 1
     }
     download_record_result "OCR smoke input type" "$input_type"
-    checksum_before="$("$download_shasum" -a 256 "$input" | /usr/bin/awk '{ print $1 }')"
+    checksum_before="$(
+        "$download_shasum" -a 256 "$input" |
+            /usr/bin/awk '{ print $1 }'
+    )" || {
+        echo "could not verify OCR smoke input before the command" >&2
+        download_record_result "OCR smoke input immutability" "FAIL"
+        download_record_result "OCR smoke result" "FAIL"
+        return 1
+    }
     if [[ "$input_type" == "PDF" ]]; then
         command="ocr"
     else
         command="image"
     fi
-    if ! LOCALOCR_CACHE_DIR="$download_extraction_root/ocr-cache" \
+    if LOCALOCR_CACHE_DIR="$download_extraction_root/ocr-cache" \
         "$download_extracted_app/Contents/Helpers/localocr" \
         "$command" "$input" --no-cache --json > "$output_file"
     then
-        download_record_result "OCR smoke result" "FAIL"
-        return 1
+        command_status=0
+    else
+        command_status=$?
     fi
-    [[ -s "$output_file" ]] || {
-        echo "OCR smoke command produced no result" >&2
+    checksum_after="$("$download_shasum" -a 256 "$input" | /usr/bin/awk '{ print $1 }')" || {
+        echo "could not verify OCR smoke input after the command" >&2
+        download_record_result "OCR smoke input immutability" "FAIL"
+        if [[ "$command_status" -eq 0 ]]; then
+            download_record_result "OCR smoke command result" "PASS"
+        else
+            download_record_result "OCR smoke command result" "FAIL"
+        fi
         download_record_result "OCR smoke result" "FAIL"
         return 1
     }
-    checksum_after="$("$download_shasum" -a 256 "$input" | /usr/bin/awk '{ print $1 }')"
-    [[ "$checksum_before" == "$checksum_after" ]] || {
+    if [[ "$checksum_before" != "$checksum_after" ]]; then
+        download_record_result "OCR smoke input immutability" "FAIL"
+        if [[ "$command_status" -eq 0 ]]; then
+            download_record_result "OCR smoke command result" "PASS"
+        else
+            download_record_result "OCR smoke command result" "FAIL"
+        fi
         echo "OCR smoke input changed during verification" >&2
+        download_record_result "OCR smoke result" "FAIL"
+        return 1
+    fi
+    download_record_result "OCR smoke input immutability" "PASS"
+    [[ "$command_status" -eq 0 ]] || {
+        download_record_result "OCR smoke command result" "FAIL"
+        echo "OCR smoke command failed" >&2
+        download_record_result "OCR smoke result" "FAIL"
+        return 1
+    }
+    download_record_result "OCR smoke command result" "PASS"
+    [[ -s "$output_file" ]] || {
+        echo "OCR smoke command produced no result" >&2
         download_record_result "OCR smoke result" "FAIL"
         return 1
     }
@@ -728,7 +767,7 @@ download_cleanup() {
     physical_extraction="$(cd "$download_extraction_root" && pwd -P)"
     case "$physical_extraction" in
         "$download_physical_temp_parent"/localocr-downloaded-release.*)
-            /bin/rm -rf -- "$physical_extraction"
+            "$download_cleanup_rm" -rf -- "$physical_extraction" || return 1
             download_extraction_root=""
             ;;
         *)
@@ -761,12 +800,9 @@ download_main() {
     download_zip="$1"
     download_checksum_file="$2"
     download_read_expected_checksum
+    download_verify_release_version_input
     download_initialize_evidence
-
-    if ! download_run_gate "Release version input" download_verify_release_version_input; then
-        download_finish 1
-        return
-    fi
+    download_record_result "Release version input" "PASS"
     if ! download_run_gate "Checksum verification" download_verify_checksum; then
         download_finish 1
         return

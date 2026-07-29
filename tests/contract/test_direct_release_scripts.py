@@ -1355,6 +1355,27 @@ def test_second_mac_acceptance_record_freezes_required_result_fields() -> None:
     record = SECOND_MAC_RECORD.read_text()
     for field in EXPECTED_SECOND_MAC_FIELDS:
         assert field in record
+    for blank_personal_field in (
+        "Test date and time:",
+        "Mac model:",
+        "Processor:",
+        "Tester:",
+    ):
+        assert re.search(
+            rf"^- {re.escape(blank_personal_field)}$",
+            record,
+            flags=re.MULTILINE,
+        )
+    assert re.search(
+        r"^- Overall result: PASS or FAIL$",
+        record,
+        flags=re.MULTILINE,
+    )
+    assert not re.search(
+        r"^- Overall result: (?:PASS|FAIL)$",
+        record,
+        flags=re.MULTILINE,
+    )
 
 
 def _write_download_test_tool_dispatcher(tool_dir: Path) -> None:
@@ -1474,6 +1495,24 @@ EOF
     sleep)
         :
         ;;
+    evidence-awk)
+        if [[ "${LOCALOCR_TEST_FAIL_EVIDENCE_AWK:-}" == "1" ]]; then
+            exit 71
+        fi
+        exec /usr/bin/awk "$@"
+        ;;
+    evidence-mv)
+        if [[ "${LOCALOCR_TEST_FAIL_EVIDENCE_MV:-}" == "1" ]]; then
+            exit 72
+        fi
+        exec /bin/mv "$@"
+        ;;
+    cleanup-rm)
+        if [[ "${LOCALOCR_TEST_FAIL_CLEANUP_RM:-}" == "1" ]]; then
+            exit 73
+        fi
+        exec /bin/rm "$@"
+        ;;
     *)
         exit 64
         ;;
@@ -1498,6 +1537,9 @@ esac
         "uname",
         "date",
         "sleep",
+        "evidence-awk",
+        "evidence-mv",
+        "cleanup-rm",
     ):
         (tool_dir / tool).symlink_to(dispatcher)
 
@@ -1530,6 +1572,12 @@ if [[ "${1:-}" == "--version" ]]; then
 fi
 case "${1:-}" in
     ocr|image)
+        if [[ "${LOCALOCR_TEST_SMOKE_MUTATE:-}" == "1" ]]; then
+            printf 'mutated-by-controlled-cli\\n' >> "$2"
+        fi
+        if [[ "${LOCALOCR_TEST_SMOKE_FAIL:-}" == "1" ]]; then
+            exit 74
+        fi
         printf '{"text":"controlled fixture output"}\\n'
         ;;
     *)
@@ -1609,6 +1657,9 @@ download_sysctl="$tool_dir/sysctl"
 download_uname="$tool_dir/uname"
 download_date="$tool_dir/date"
 download_sleep="$tool_dir/sleep"
+download_evidence_awk="$tool_dir/evidence-awk"
+download_evidence_mv="$tool_dir/evidence-mv"
+download_cleanup_rm="$tool_dir/cleanup-rm"
 download_temp_parent="$LOCALOCR_TEST_TEMP_PARENT"
 download_main "$@"
 """
@@ -1835,6 +1886,146 @@ def test_downloaded_release_optional_smoke_records_type_not_content_or_paths(
         "PRIVATE-DOCUMENT-CONTENT-DO-NOT-RECORD",
     ):
         assert forbidden not in evidence
+
+
+@pytest.mark.parametrize(
+    ("extra_env", "expected_error", "expect_mutation"),
+    (
+        (
+            {
+                "LOCALOCR_TEST_SMOKE_MUTATE": "1",
+                "LOCALOCR_TEST_SMOKE_FAIL": "1",
+            },
+            "OCR smoke input changed during verification",
+            True,
+        ),
+        (
+            {"LOCALOCR_TEST_SMOKE_FAIL": "1"},
+            "OCR smoke command failed",
+            False,
+        ),
+    ),
+)
+def test_downloaded_release_smoke_failure_always_checks_input_immutability(
+    tmp_path: Path,
+    extra_env: dict[str, str],
+    expected_error: str,
+    expect_mutation: bool,
+) -> None:
+    archive, checksum = _create_download_release_fixture(tmp_path)
+    smoke_input = tmp_path / "controlled-smoke.png"
+    smoke_input.write_text("original")
+    before = hashlib.sha256(smoke_input.read_bytes()).hexdigest()
+    extra_env = {
+        **extra_env,
+        "LOCALOCR_SMOKE_INPUT": str(smoke_input),
+    }
+
+    result, _, _ = _run_download_release_fixture(
+        tmp_path,
+        archive,
+        checksum,
+        extra_env=extra_env,
+    )
+
+    assert result.returncode != 0
+    after = hashlib.sha256(smoke_input.read_bytes()).hexdigest()
+    assert (after != before) is expect_mutation
+    assert expected_error in result.stderr
+    evidence = _download_evidence_files(checksum)[0].read_text()
+    assert "OCR smoke result: FAIL" in evidence
+    assert "Overall result: FAIL" in evidence
+    assert "Overall result: PASS" not in evidence
+    immutability_result = "FAIL" if expect_mutation else "PASS"
+    immutability_line = (
+        f"OCR smoke input immutability: {immutability_result}"
+    )
+    command_line = "OCR smoke command result: FAIL"
+    assert immutability_line in evidence
+    assert command_line in evidence
+    assert evidence.index(immutability_line) < evidence.index(command_line)
+
+
+@pytest.mark.parametrize(
+    "extra_env",
+    (
+        {"LOCALOCR_TEST_FAIL_EVIDENCE_AWK": "1"},
+        {"LOCALOCR_TEST_FAIL_EVIDENCE_MV": "1"},
+    ),
+)
+def test_downloaded_release_checksum_evidence_update_failures_fail_closed(
+    tmp_path: Path,
+    extra_env: dict[str, str],
+) -> None:
+    archive, checksum = _create_download_release_fixture(tmp_path)
+
+    result, _, _ = _run_download_release_fixture(
+        tmp_path,
+        archive,
+        checksum,
+        extra_env=extra_env,
+    )
+
+    assert result.returncode != 0
+    evidence = _download_evidence_files(checksum)[0].read_text()
+    assert "Checksum verification: FAIL" in evidence
+    assert "Overall result: FAIL" in evidence
+    assert "Overall result: PASS" not in evidence
+
+
+@pytest.mark.parametrize(
+    "release_version",
+    (
+        "",
+        "1",
+        "v1.2.3",
+        "../1.2.3",
+        "/tmp/1.2.3",
+        "1.2.3/path",
+        "1.2.3 beta",
+        "1.2.3\nPRIVATE-INJECTED-EVIDENCE",
+    ),
+)
+def test_downloaded_release_rejects_invalid_version_before_writing_evidence(
+    tmp_path: Path,
+    release_version: str,
+) -> None:
+    archive, checksum = _create_download_release_fixture(tmp_path)
+
+    result, _, _ = _run_download_release_fixture(
+        tmp_path,
+        archive,
+        checksum,
+        extra_env={"LOCALOCR_RELEASE_VERSION": release_version},
+    )
+
+    assert result.returncode != 0
+    assert _download_evidence_files(checksum) == []
+
+
+def test_downloaded_release_cleanup_removal_failure_is_overall_failure(
+    tmp_path: Path,
+) -> None:
+    archive, checksum = _create_download_release_fixture(tmp_path)
+    outside = tmp_path / "outside-cleanup"
+    outside.mkdir()
+    sentinel = outside / "must-survive.txt"
+    sentinel.write_text("keep")
+
+    result, _, _ = _run_download_release_fixture(
+        tmp_path,
+        archive,
+        checksum,
+        extra_env={"LOCALOCR_TEST_FAIL_CLEANUP_RM": "1"},
+    )
+
+    assert result.returncode != 0
+    assert sentinel.read_text() == "keep"
+    evidence = _download_evidence_files(checksum)[0].read_text()
+    assert "Temporary cleanup: FAIL" in evidence
+    assert "Overall result: FAIL" in evidence
+    assert "Temporary cleanup: PASS" not in evidence
+    assert "Overall result: PASS" not in evidence
 
 
 def test_downloaded_release_cleanup_refuses_unconfined_temp_path(
