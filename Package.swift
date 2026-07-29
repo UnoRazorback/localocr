@@ -78,7 +78,12 @@ let package = Package(
         ),
         .testTarget(
             name: "LocalOCRMCPTests",
-            dependencies: ["LocalOCRMCP"],
+            dependencies: [
+                "LocalOCRMCP",
+                "LocalOCRService",
+                "LocalOCRCore",
+                .product(name: "MCP", package: "swift-sdk")
+            ],
             path: "tests/LocalOCRMCPTests",
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         )
