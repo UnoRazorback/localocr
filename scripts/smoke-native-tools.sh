@@ -8,13 +8,25 @@ artifact_dir="$repo_root/dist/native-tools"
 cli="$artifact_dir/localocr"
 mcp="$artifact_dir/localocr-mcp"
 fixture="$repo_root/tests/LocalOCRCoreTests/Fixtures/mixed.pdf"
+system_swift_rpath="/usr/lib/swift"
+compatibility_span="@rpath/libswiftCompatibilitySpan.dylib"
 stderr_file="$(mktemp -t localocr-mcp-smoke.XXXXXX)"
 
 trap 'rm -f -- "$stderr_file"' EXIT
 
+release_rpaths() {
+    otool -l "$1" | awk '
+        $1 == "cmd" && $2 == "LC_RPATH" { expect_path = 1; next }
+        expect_path && $1 == "path" { print $2; expect_path = 0 }
+    '
+}
+
 reject_binary_content() {
     local binary="$1"
     local dependencies
+    local install_name
+    local rpath
+    local has_compatibility_span=false
     local urls
 
     if [[ ! -f "$binary" || ! -x "$binary" ]]; then
@@ -30,12 +42,35 @@ reject_binary_content() {
 
     otool -L "$binary"
     dependencies="$(otool -L "$binary" | sed '1d')"
-    for forbidden in '.venv' 'python' 'ruby' '/opt/homebrew' '/usr/local' "$repo_root"; do
-        if printf '%s\n' "$dependencies" | grep -Fqi -- "$forbidden"; then
-            echo "forbidden runtime dependency in $binary: $forbidden" >&2
+    while IFS= read -r install_name; do
+        [[ -n "$install_name" ]] || continue
+        case "$install_name" in
+            /System/Library/*|/usr/lib/*) ;;
+            "$compatibility_span") has_compatibility_span=true ;;
+            *)
+                echo "unapproved dylib install name in $binary: $install_name" >&2
+                exit 1
+                ;;
+        esac
+    done < <(printf '%s\n' "$dependencies" | awk '{ print $1 }')
+
+    while IFS= read -r rpath; do
+        [[ -n "$rpath" ]] || continue
+        if [[ "$rpath" != "$system_swift_rpath" ]]; then
+            echo "unapproved dylib RPATH in $binary: $rpath" >&2
             exit 1
         fi
-    done
+    done < <(release_rpaths "$binary")
+
+    if [[ "$has_compatibility_span" == true ]]; then
+        if ! release_rpaths "$binary" | grep -Fxq "$system_swift_rpath"; then
+            echo "$compatibility_span is missing its system Swift RPATH" >&2
+            exit 1
+        fi
+        # The real CLI and MCP executions below prove dynamic-loader resolution.
+        # macOS may serve this system library from the shared cache rather than
+        # an ordinary on-disk file.
+    fi
 
     if urls="$(strings "$binary" | grep -E 'https?://')"; then
         # These two loopback-origin prefixes are retained by the pinned MCP
