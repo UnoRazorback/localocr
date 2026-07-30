@@ -7,6 +7,7 @@ release_repo_root="$(cd "$release_toolchain_script_dir/.." && pwd)"
 release_developer_dir="/Applications/Xcode.app/Contents/Developer"
 release_signing_identity="Developer ID Application: John Scott Ray (DZ8B5454ZN)"
 release_plist_buddy="/usr/libexec/PlistBuddy"
+release_xcodebuild_path=""
 
 release_evidence_dir() {
     printf '%s\n' "$release_repo_root/dist/direct-release/evidence"
@@ -30,41 +31,86 @@ validate_release_developer_dir() {
     esac
 }
 
-configure_release_developer_dir() {
+select_release_developer_dir() {
     local resolved_developer_dir
-    local xcodebuild_path
-    local evidence_dir
-    local version_file
-    local version_file_partial
 
     DEVELOPER_DIR="$release_developer_dir"
     export DEVELOPER_DIR
     validate_release_developer_dir "$DEVELOPER_DIR"
 
-    [[ -d "$DEVELOPER_DIR" ]] || {
-        echo "stable Xcode developer directory not found: $DEVELOPER_DIR" >&2
+    [[ -d "$DEVELOPER_DIR" && ! -L "$DEVELOPER_DIR" ]] || {
+        echo "stable Xcode developer directory is missing or symlinked: $DEVELOPER_DIR" >&2
         return 1
     }
     resolved_developer_dir="$(cd "$DEVELOPER_DIR" && pwd -P)"
     validate_release_developer_dir "$resolved_developer_dir"
 
-    xcodebuild_path="$DEVELOPER_DIR/usr/bin/xcodebuild"
-    [[ -x "$xcodebuild_path" ]] || {
-        echo "xcodebuild not found in stable Xcode: $xcodebuild_path" >&2
+    release_xcodebuild_path="$DEVELOPER_DIR/usr/bin/xcodebuild"
+    [[ -x "$release_xcodebuild_path" && ! -L "$release_xcodebuild_path" ]] || {
+        echo "xcodebuild not found as a physical stable-Xcode executable: $release_xcodebuild_path" >&2
         return 1
     }
+}
 
-    evidence_dir="$(release_evidence_dir)"
+prepare_release_evidence_directory() {
+    local requested_repo_root="${1:-$release_repo_root}"
+    local physical_repo
+    local dist_dir
+    local release_dir
+    local evidence_dir
+    local directory
+    local label
+
+    [[ -d "$requested_repo_root" && ! -L "$requested_repo_root" ]] || {
+        echo "release repository root must be a physical directory" >&2
+        return 1
+    }
+    physical_repo="$(cd "$requested_repo_root" && pwd -P)"
+    [[ "$physical_repo" == "$requested_repo_root" ]] || {
+        echo "release repository root must not escape through a symlink" >&2
+        return 1
+    }
+    dist_dir="$physical_repo/dist"
+    release_dir="$dist_dir/direct-release"
+    evidence_dir="$release_dir/evidence"
+
+    for directory in "$dist_dir" "$release_dir" "$evidence_dir"; do
+        case "$directory" in
+            "$dist_dir") label="dist" ;;
+            "$release_dir") label="dist/direct-release" ;;
+            "$evidence_dir") label="dist/direct-release/evidence" ;;
+        esac
+        [[ ! -L "$directory" ]] || {
+            echo "$label must not be a symlink" >&2
+            return 1
+        }
+        if [[ -e "$directory" ]]; then
+            [[ -d "$directory" ]] || {
+                echo "$label must be a directory" >&2
+                return 1
+            }
+            [[ "$(cd "$directory" && pwd -P)" == "$directory" ]] || {
+                echo "$label must remain physically inside the release repository" >&2
+                return 1
+            }
+        else
+            /bin/mkdir "$directory" || return 1
+        fi
+    done
+    printf '%s\n' "$evidence_dir"
+}
+
+record_release_toolchain_evidence() {
+    local evidence_dir
+    local version_file
+    local version_file_partial
+
+    [[ -n "$release_xcodebuild_path" ]] || {
+        echo "stable Xcode must be selected before recording evidence" >&2
+        return 1
+    }
+    evidence_dir="$(prepare_release_evidence_directory)" || return
     version_file="$evidence_dir/xcode-version.txt"
-    [[ ! -L "$release_repo_root/dist" ]] || {
-        echo "release dist directory must not be a symlink" >&2
-        return 1
-    }
-    /bin/mkdir -p "$evidence_dir"
-    [[ "$(cd "$evidence_dir" && pwd -P)" == "$evidence_dir" ]] || {
-        echo "release evidence directory must be physical" >&2
-        return 1
-    }
     [[ ! -L "$version_file" ]] || {
         echo "Xcode evidence leaf must not be a symlink" >&2
         return 1
@@ -74,7 +120,7 @@ configure_release_developer_dir() {
         return 1
     }
     version_file_partial="$(/usr/bin/mktemp "$evidence_dir/.xcode-version.XXXXXX")"
-    "$xcodebuild_path" -version > "$version_file_partial" || {
+    "$release_xcodebuild_path" -version > "$version_file_partial" || {
         /bin/rm -f -- "$version_file_partial"
         return 1
     }
@@ -84,6 +130,11 @@ configure_release_developer_dir() {
         return 1
     }
     /bin/mv -f -- "$version_file_partial" "$version_file"
+}
+
+configure_release_developer_dir() {
+    select_release_developer_dir
+    record_release_toolchain_evidence
 }
 
 validate_release_inputs() {
@@ -102,6 +153,42 @@ validate_release_inputs() {
     done
 }
 
+validate_release_metadata_inputs() {
+    local variable_name
+    local bundle_component
+    local -a bundle_components
+
+    for variable_name in \
+        LOCALOCR_EXPECTED_BUNDLE_ID \
+        LOCALOCR_RELEASE_VERSION \
+        LOCALOCR_RELEASE_BUILD
+    do
+        [[ -n "${!variable_name:-}" ]] || {
+            echo "required release metadata input is missing: $variable_name" >&2
+            return 1
+        }
+    done
+    IFS=. read -r -a bundle_components <<< "$LOCALOCR_EXPECTED_BUNDLE_ID"
+    [[ "${#bundle_components[@]}" -ge 2 ]] || {
+        echo "LOCALOCR_EXPECTED_BUNDLE_ID has an invalid format" >&2
+        return 1
+    }
+    for bundle_component in "${bundle_components[@]}"; do
+        [[ "$bundle_component" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || {
+            echo "LOCALOCR_EXPECTED_BUNDLE_ID has an invalid format" >&2
+            return 1
+        }
+    done
+    [[ "$LOCALOCR_RELEASE_VERSION" =~ ^[0-9]+([.][0-9]+){1,3}([+-][0-9A-Za-z.-]+)?$ ]] || {
+        echo "LOCALOCR_RELEASE_VERSION has an invalid format" >&2
+        return 1
+    }
+    [[ "$LOCALOCR_RELEASE_BUILD" =~ ^[0-9]+$ ]] || {
+        echo "LOCALOCR_RELEASE_BUILD has an invalid format" >&2
+        return 1
+    }
+}
+
 validate_release_bundle_metadata() {
     local app_path="$1"
     local info_plist="$app_path/Contents/Info.plist"
@@ -109,9 +196,7 @@ validate_release_bundle_metadata() {
     local expected
     local actual
 
-    : "${LOCALOCR_EXPECTED_BUNDLE_ID:?LOCALOCR_EXPECTED_BUNDLE_ID is required}"
-    : "${LOCALOCR_RELEASE_VERSION:?LOCALOCR_RELEASE_VERSION is required}"
-    : "${LOCALOCR_RELEASE_BUILD:?LOCALOCR_RELEASE_BUILD is required}"
+    validate_release_metadata_inputs || return
     [[ -d "$app_path" && ! -L "$app_path" ]] || {
         echo "release app is missing or symlinked: $app_path" >&2
         return 1
@@ -173,6 +258,11 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         --test-bundle-metadata)
             [[ "$#" -eq 2 ]] || exit 2
             validate_release_bundle_metadata "$2"
+            ;;
+        --test-evidence-directory)
+            [[ "$#" -eq 2 ]] || exit 2
+            release_repo_root="$2"
+            prepare_release_evidence_directory
             ;;
         "")
             configure_release_developer_dir

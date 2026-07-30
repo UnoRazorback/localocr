@@ -229,10 +229,11 @@ reject_tree_symlinks() {
 
 clear_staged_app_xattrs() {
     local app_path="$1"
+    local controlled_trace_file="${2:-}"
 
     reject_tree_symlinks "$app_path"
-    if [[ -n "${LOCALOCR_TEST_XATTR_TRACE:-}" ]]; then
-        printf '%s\n' "$app_path" >> "$LOCALOCR_TEST_XATTR_TRACE"
+    if [[ -n "$controlled_trace_file" ]]; then
+        printf '%s\n' "$app_path" >> "$controlled_trace_file"
         return 0
     fi
     /usr/bin/xattr -cr "$app_path"
@@ -344,6 +345,10 @@ case "${1:-}" in
     --test-tree-before-xattr)
         [[ "$#" -eq 2 ]] || exit 2
         reject_tree_symlinks "$2"
+        clear_staged_app_xattrs "$2" "${LOCALOCR_TEST_XATTR_TRACE:-}"
+        ;;
+    --test-production-xattr)
+        [[ "$#" -eq 2 ]] || exit 2
         clear_staged_app_xattrs "$2"
         ;;
     "")

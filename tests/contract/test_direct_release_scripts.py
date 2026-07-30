@@ -94,6 +94,7 @@ PREPUBLICATION_SCRIPTS = (
     *RELEASE_SCRIPTS.values(),
 )
 SECOND_MAC_RECORD = ROOT / "docs" / "release" / "second-mac-acceptance.md"
+README = ROOT / "README.md"
 FORBIDDEN_BETA_RECORDS = (
     "MCP-MacVision-Beta-Metrics.csv",
     "MCP-MacVision-Feedback-Log.csv",
@@ -1311,6 +1312,57 @@ def test_shared_bundle_metadata_validator_rejects_post_stage_mutation(
     assert "CFBundleShortVersionString" in rejected.stderr
 
 
+def test_shared_bundle_metadata_validator_missing_inputs_return_normally(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "LocalOCR Studio.app"
+    (app / "Contents").mkdir(parents=True)
+    (app / "Contents" / "Info.plist").write_text(
+        "<plist version='1.0'><dict/></plist>\n"
+    )
+    env = os.environ.copy()
+    for name in (
+        "LOCALOCR_EXPECTED_BUNDLE_ID",
+        "LOCALOCR_RELEASE_VERSION",
+        "LOCALOCR_RELEASE_BUILD",
+    ):
+        env.pop(name, None)
+    harness = """
+source "$1"
+if validate_release_bundle_metadata "$2"; then
+    exit 99
+fi
+printf 'returned normally\\n'
+"""
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            harness,
+            "metadata-test",
+            str(RELEASE_SCRIPTS["toolchain"]),
+            str(app),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "returned normally\n"
+
+
+def test_readme_download_verifier_exports_all_metadata_inputs() -> None:
+    readme = README.read_text()
+    verifier_section = readme[
+        readme.index("Release operators and second-Mac testers") :
+        readme.index("The private release notes")
+    ]
+    assert 'export LOCALOCR_EXPECTED_BUNDLE_ID="<approved-bundle-id>"' in verifier_section
+    assert 'export LOCALOCR_RELEASE_VERSION="<approved-version>"' in verifier_section
+    assert 'export LOCALOCR_RELEASE_BUILD="<approved-build>"' in verifier_section
+
+
 def test_all_release_boundaries_revalidate_bundle_metadata() -> None:
     sign_script = _script("sign")
     notarize_script = _script("notarize")
@@ -1350,6 +1402,61 @@ def test_stage_rejects_source_symlink_before_recursive_xattr(
     assert result.returncode != 0
     assert not trace.exists()
     assert sentinel.read_text() == "keep"
+
+
+def test_stage_production_xattr_path_ignores_hostile_test_trace_env(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "Staged.app"
+    app.mkdir()
+    trace = tmp_path / "must-not-exist.txt"
+    env = os.environ.copy()
+    env["LOCALOCR_TEST_XATTR_TRACE"] = str(trace)
+    result = _run_script_test(
+        "stage",
+        "--test-production-xattr",
+        str(app),
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not trace.exists()
+
+
+@pytest.mark.parametrize("unsafe_component", ("dist", "direct-release", "evidence"))
+def test_toolchain_evidence_path_rejects_symlink_without_outside_creation(
+    tmp_path: Path,
+    unsafe_component: str,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "must-survive.txt"
+    sentinel.write_text("keep")
+    dist = repo / "dist"
+    direct = dist / "direct-release"
+    if unsafe_component == "dist":
+        dist.symlink_to(outside, target_is_directory=True)
+    elif unsafe_component == "direct-release":
+        dist.mkdir()
+        direct.symlink_to(outside, target_is_directory=True)
+    else:
+        direct.mkdir(parents=True)
+        (direct / "evidence").symlink_to(outside, target_is_directory=True)
+
+    result = _run_script_test(
+        "toolchain",
+        "--test-evidence-directory",
+        str(repo),
+    )
+
+    assert result.returncode != 0
+    assert "symlink" in result.stderr.lower()
+    assert "unknown release-toolchain mode" not in result.stderr
+    assert sentinel.read_text() == "keep"
+    assert sorted(path.name for path in outside.iterdir()) == ["must-survive.txt"]
+    assert not (outside / "xcode-version.txt").exists()
+    assert not any(outside.glob(".xcode-version.*"))
 
 
 def test_production_xcrun_entrypoints_configure_stable_xcode_first() -> None:
@@ -1762,12 +1869,20 @@ def _run_download_release_fixture(
         }
     )
     if extra_env:
-        env.update(extra_env)
+        for name, value in extra_env.items():
+            if value == "__UNSET__":
+                env.pop(name, None)
+            else:
+                env[name] = value
     harness = """
 source "$1"
 tool_dir="$2"
 shift 2
-configure_release_developer_dir() { :; }
+select_release_developer_dir() {
+    if [[ -n "${LOCALOCR_TEST_CONFIGURE_TRACE:-}" ]]; then
+        printf 'configure\\n' > "$LOCALOCR_TEST_CONFIGURE_TRACE"
+    fi
+}
 download_shasum="$tool_dir/shasum"
 download_zipinfo="$tool_dir/zipinfo"
 download_ditto="$tool_dir/ditto"
@@ -2130,6 +2245,50 @@ def test_downloaded_release_rejects_invalid_version_before_writing_evidence(
 
     assert result.returncode != 0
     assert _download_evidence_files(checksum) == []
+
+
+@pytest.mark.parametrize(
+    "extra_env",
+    (
+        {"LOCALOCR_EXPECTED_BUNDLE_ID": "__UNSET__"},
+        {"LOCALOCR_EXPECTED_BUNDLE_ID": ""},
+        {"LOCALOCR_EXPECTED_BUNDLE_ID": "../com.example.bad"},
+        {"LOCALOCR_EXPECTED_BUNDLE_ID": "com..example"},
+        {"LOCALOCR_EXPECTED_BUNDLE_ID": "com.-example"},
+        {"LOCALOCR_EXPECTED_BUNDLE_ID": "com.example-"},
+        {"LOCALOCR_RELEASE_VERSION": "__UNSET__"},
+        {"LOCALOCR_RELEASE_BUILD": "__UNSET__"},
+        {"LOCALOCR_RELEASE_BUILD": ""},
+        {"LOCALOCR_RELEASE_BUILD": "../42"},
+        {"LOCALOCR_RELEASE_BUILD": "42 beta"},
+    ),
+)
+def test_downloaded_release_rejects_invalid_metadata_inputs_before_mutation(
+    tmp_path: Path,
+    extra_env: dict[str, str],
+) -> None:
+    archive, checksum = _create_download_release_fixture(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "must-survive.txt"
+    sentinel.write_text("keep")
+    mutation_trace = tmp_path / "configure-called.txt"
+    controlled_env = dict(extra_env)
+    controlled_env["LOCALOCR_TEST_CONFIGURE_TRACE"] = str(mutation_trace)
+
+    result, trace, _ = _run_download_release_fixture(
+        tmp_path,
+        archive,
+        checksum,
+        extra_env=controlled_env,
+    )
+
+    assert result.returncode != 0
+    assert _download_evidence_files(checksum) == []
+    assert not trace.exists()
+    assert not mutation_trace.exists()
+    assert not any((tmp_path / "fresh-extractions").iterdir())
+    assert sentinel.read_text() == "keep"
 
 
 def test_downloaded_release_cleanup_removal_failure_is_overall_failure(

@@ -102,7 +102,9 @@ beta is published or promoted:
 
 ```bash
 cd /path/to/localocr
+export LOCALOCR_EXPECTED_BUNDLE_ID="<approved-bundle-id>"
 export LOCALOCR_RELEASE_VERSION="<approved-version>"
+export LOCALOCR_RELEASE_BUILD="<approved-build>"
 scripts/test-downloaded-release.sh \
   "/absolute/path/to/LocalOCR-Studio-<version>-<build>.zip" \
   "/absolute/path/to/LocalOCR-Studio-<version>-<build>.sha256"

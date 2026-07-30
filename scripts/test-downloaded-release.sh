@@ -585,14 +585,7 @@ download_require_gatekeeper_acceptance() {
 }
 
 download_verify_release_version_input() {
-    [[ -n "${LOCALOCR_RELEASE_VERSION:-}" ]] || {
-        echo "LOCALOCR_RELEASE_VERSION is required" >&2
-        return 1
-    }
-    [[ "$LOCALOCR_RELEASE_VERSION" =~ ^[0-9]+([.][0-9]+){1,3}([+-][0-9A-Za-z.-]+)?$ ]] || {
-        echo "LOCALOCR_RELEASE_VERSION has an invalid format" >&2
-        return 1
-    }
+    validate_release_metadata_inputs
 }
 
 download_verify_cli_version() {
@@ -861,7 +854,7 @@ download_main() {
     download_checksum_file="$2"
     download_read_expected_checksum
     download_verify_release_version_input
-    configure_release_developer_dir
+    select_release_developer_dir
     download_initialize_evidence
     download_record_result "Release version input" "PASS"
     if ! download_run_gate "Checksum verification" download_verify_checksum; then
