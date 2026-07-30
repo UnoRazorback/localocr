@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.egg-info/
 .worktrees/
+.superpowers/
 
 # SwiftPM builds and test artifacts
 /.build/
