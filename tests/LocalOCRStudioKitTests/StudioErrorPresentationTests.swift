@@ -28,18 +28,29 @@ import Testing
         }
     }
 
-    @Test func unknownErrorsUseASanitizedTechnicalDetail() {
-        let presentation = StudioErrorPresentation.present(LeakyError())
+    @Test func unknownErrorsReplaceUntrustedDetailsWithAPrivacySafeMessage() {
+        let untrustedDescriptions = [
+            "Unable to inspect /Users/scott/Documents/Private Files/tax return.pdf",
+            "Unable to write /Volumes/Archive Drive/client records.pdf",
+            "Could not open file:///tmp/Private%20Notes/meeting.txt",
+            "Authorization: Bearer top-secret-token",
+            "Document content: Client SSN 123-45-6789"
+        ]
 
-        #expect(presentation.title == "Couldn’t Process Document")
-        #expect(presentation.details != nil)
-        #expect(!presentation.details!.contains("\n"))
-        #expect(!presentation.details!.contains("/Users/"))
+        for description in untrustedDescriptions {
+            let presentation = StudioErrorPresentation.present(
+                UntrustedLocalizedError(description: description)
+            )
+
+            #expect(presentation.title == "Couldn’t Process Document")
+            #expect(presentation.details == "Technical details are hidden to protect your privacy.")
+            #expect(presentation.details != description)
+        }
     }
 }
 
-private struct LeakyError: LocalizedError {
-    var errorDescription: String? {
-        "Unable to inspect /Users/scott/Documents/private.pdf\nFirst page source content"
-    }
+private struct UntrustedLocalizedError: LocalizedError {
+    let description: String
+
+    var errorDescription: String? { description }
 }

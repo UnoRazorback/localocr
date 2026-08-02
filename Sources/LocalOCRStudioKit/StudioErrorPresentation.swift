@@ -33,7 +33,7 @@ public enum StudioErrorPresentation {
         return StudioPresentedError(
             title: "Couldn’t Process Document",
             message: "The document could not be processed. Please try again.",
-            details: sanitizedDetails(from: error.localizedDescription)
+            details: "Technical details are hidden to protect your privacy."
         )
     }
 
@@ -96,18 +96,4 @@ public enum StudioErrorPresentation {
         }
     }
 
-    private static func sanitizedDetails(from description: String) -> String? {
-        var details = description
-            .split(whereSeparator: { $0.isNewline })
-            .first
-            .map(String.init)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        while let start = details.range(of: "/Users/")?.lowerBound {
-            let end = details[start...].firstIndex(where: { $0.isWhitespace }) ?? details.endIndex
-            details.replaceSubrange(start..<end, with: "<path>")
-        }
-
-        return details.isEmpty ? nil : details
-    }
 }
