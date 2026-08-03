@@ -1,0 +1,52 @@
+name: LocalOCR Studio
+options:
+  deploymentTarget:
+    macOS: "14.0"
+packages:
+  LocalOCR:
+    path: .
+targets:
+  LocalOCR Studio:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+    dependencies:
+      - package: LocalOCR
+        product: LocalOCRStudioKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rayconsulting.localocr
+        PRODUCT_NAME: LocalOCR Studio
+        MARKETING_VERSION: 0.2.0
+        CURRENT_PROJECT_VERSION: 1
+        MACOSX_DEPLOYMENT_TARGET: 14.0
+        ARCHS: arm64
+        SWIFT_VERSION: 6.0
+        ENABLE_HARDENED_RUNTIME: YES
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: LocalOCR Studio
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+  LocalOCR StudioUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: AppUITests
+    dependencies:
+      - target: LocalOCR Studio
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  LocalOCR Studio:
+    build:
+      targets:
+        LocalOCR Studio: all
+        LocalOCR StudioUITests:
+          - test
+    test:
+      config: Debug
+      targets:
+        - name: LocalOCR StudioUITests
+          parallelizable: false
+          randomExecutionOrder: false
