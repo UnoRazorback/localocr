@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import plistlib
 import re
+import shutil
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
@@ -23,6 +25,7 @@ APP_ENTRY_POINT = ROOT / "App" / "LocalOCRStudioApp.swift"
 UI_TEST_SUPPORT = ROOT / "App" / "LocalOCRStudioUITestSupport.swift"
 UI_TESTS = ROOT / "AppUITests" / "LocalOCRStudioUITests.swift"
 BUILD_SCRIPT = ROOT / "scripts" / "build-unsigned-studio-app.sh"
+RELEASE_TOOLCHAIN = ROOT / "scripts" / "release-toolchain.sh"
 
 EXPECTED_SETTINGS = {
     "PRODUCT_BUNDLE_IDENTIFIER": "com.rayconsulting.localocr",
@@ -178,7 +181,6 @@ def test_unsigned_build_script_has_stable_toolchain_and_confined_paths() -> None
     )
     assert set(re.findall(r"\brm\s+-rf\s+--\s+([^\s]+)", script)) == {
         '"$build_root"',
-        '"$output_app"',
     }
 
 
@@ -202,3 +204,108 @@ def test_unsigned_build_root_validation_accepts_physical_macos_tmp_only() -> Non
 
     assert accepted.returncode == 0, accepted.stderr
     assert rejected.returncode != 0
+
+
+def test_wrong_minimum_os_fails_before_creating_canonical_output(
+    tmp_path: Path,
+) -> None:
+    script, fake_repo = _copy_build_scripts_to_isolated_repo(tmp_path)
+    canonical_app = fake_repo / "dist" / "unsigned-app" / "LocalOCR Studio.app"
+
+    with tempfile.TemporaryDirectory(
+        prefix="localocr-studio-build.",
+        dir="/tmp",
+    ) as temporary_root:
+        _write_staged_app(
+            Path(temporary_root),
+            bundle_identifier="com.rayconsulting.localocr",
+            minimum_os="13.0",
+        )
+        result = subprocess.run(
+            [str(script), "--test-publish-staged-app", temporary_root],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    assert result.returncode != 0
+    assert (
+        "LSMinimumSystemVersion mismatch: expected '14.0', found '13.0'"
+        in result.stderr
+    )
+    assert not canonical_app.exists()
+
+
+def test_failed_staged_validation_preserves_existing_canonical_output(
+    tmp_path: Path,
+) -> None:
+    script, fake_repo = _copy_build_scripts_to_isolated_repo(tmp_path)
+    canonical_app = fake_repo / "dist" / "unsigned-app" / "LocalOCR Studio.app"
+    canonical_app.mkdir(parents=True)
+    known_good_marker = canonical_app / "known-good.txt"
+    known_good_marker.write_bytes(b"preserve this release")
+
+    with tempfile.TemporaryDirectory(
+        prefix="localocr-studio-build.",
+        dir="/tmp",
+    ) as temporary_root:
+        _write_staged_app(
+            Path(temporary_root),
+            bundle_identifier="com.example.invalid",
+            minimum_os="14.0",
+        )
+        result = subprocess.run(
+            [str(script), "--test-publish-staged-app", temporary_root],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    assert result.returncode != 0
+    assert "CFBundleIdentifier mismatch" in result.stderr
+    assert known_good_marker.read_bytes() == b"preserve this release"
+    assert sorted(
+        path.relative_to(canonical_app)
+        for path in canonical_app.rglob("*")
+        if path.is_file()
+    ) == [Path("known-good.txt")]
+
+
+def _copy_build_scripts_to_isolated_repo(
+    tmp_path: Path,
+) -> tuple[Path, Path]:
+    fake_repo = tmp_path / "isolated-repo"
+    scripts_directory = fake_repo / "scripts"
+    scripts_directory.mkdir(parents=True)
+    copied_build_script = scripts_directory / BUILD_SCRIPT.name
+    shutil.copy2(BUILD_SCRIPT, copied_build_script)
+    shutil.copy2(
+        RELEASE_TOOLCHAIN,
+        scripts_directory / RELEASE_TOOLCHAIN.name,
+    )
+    return copied_build_script, fake_repo
+
+
+def _write_staged_app(
+    build_root: Path,
+    *,
+    bundle_identifier: str,
+    minimum_os: str,
+) -> Path:
+    staged_app = build_root / "Staged" / "LocalOCR Studio.app"
+    contents = staged_app / "Contents"
+    executable = contents / "MacOS" / "LocalOCR Studio"
+    executable.parent.mkdir(parents=True)
+    with (contents / "Info.plist").open("wb") as plist:
+        plistlib.dump(
+            {
+                "CFBundleIdentifier": bundle_identifier,
+                "CFBundleShortVersionString": "0.2.0",
+                "CFBundleVersion": "1",
+                "LSMinimumSystemVersion": minimum_os,
+            },
+            plist,
+        )
+    executable.write_bytes(b"validation must stop before architecture checks")
+    executable.chmod(0o755)
+    return staged_app
