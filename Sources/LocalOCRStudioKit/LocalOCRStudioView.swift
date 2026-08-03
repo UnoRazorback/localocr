@@ -12,7 +12,8 @@ public struct LocalOCRStudioView: View {
     @State private var isCreatingSearchablePDF = false
     @State private var searchableProgress: StudioProgress?
     @State private var searchablePDFTask: Task<Void, Never>?
-    @State private var searchableGeneration = UUID()
+    @State private var lifecycle = StudioViewLifecycle()
+    @State private var pendingDropLoad: Progress?
     @State private var isDropTargeted = false
 
     public init(model: StudioViewModel, actions: StudioDocumentActions) {
@@ -79,7 +80,15 @@ public struct LocalOCRStudioView: View {
             }
         }
         .onDisappear {
-            searchablePDFTask?.cancel()
+            lifecycle.invalidateForDisappearance()
+            pendingDropLoad?.cancel()
+            pendingDropLoad = nil
+            actionError = nil
+            isCreatingSearchablePDF = false
+            searchableProgress = nil
+            let task = searchablePDFTask
+            searchablePDFTask = nil
+            task?.cancel()
             model.clear()
         }
     }
@@ -118,6 +127,10 @@ public struct LocalOCRStudioView: View {
     }
 
     private func showOpenPanel() {
+        lifecycle.invalidatePendingInput()
+        pendingDropLoad?.cancel()
+        pendingDropLoad = nil
+
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
@@ -138,7 +151,11 @@ public struct LocalOCRStudioView: View {
             return false
         }
 
-        provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+        pendingDropLoad?.cancel()
+        let inputGeneration = lifecycle.beginPendingInput()
+        pendingDropLoad = provider.loadDataRepresentation(
+            forTypeIdentifier: UTType.fileURL.identifier
+        ) { data, _ in
             guard let data,
                   let sourceURL = URL(dataRepresentation: data, relativeTo: nil),
                   sourceURL.isFileURL
@@ -147,7 +164,10 @@ public struct LocalOCRStudioView: View {
             }
 
             Task { @MainActor in
-                open(sourceURL)
+                lifecycle.resolveInput(sourceURL, for: inputGeneration) { resolvedURL in
+                    pendingDropLoad = nil
+                    open(resolvedURL)
+                }
             }
         }
 
@@ -155,12 +175,15 @@ public struct LocalOCRStudioView: View {
     }
 
     private func open(_ sourceURL: URL) {
-        searchablePDFTask?.cancel()
-        searchablePDFTask = nil
-        searchableGeneration = UUID()
-        searchableProgress = nil
-        isCreatingSearchablePDF = false
+        lifecycle.invalidateForOpen()
+        pendingDropLoad?.cancel()
+        pendingDropLoad = nil
         actionError = nil
+        isCreatingSearchablePDF = false
+        searchableProgress = nil
+        let task = searchablePDFTask
+        searchablePDFTask = nil
+        task?.cancel()
         model.open(sourceURL)
     }
 
@@ -199,14 +222,13 @@ public struct LocalOCRStudioView: View {
             return
         }
 
-        let generation = UUID()
-        searchableGeneration = generation
+        let searchableAction = lifecycle.beginSearchableAction()
         isCreatingSearchablePDF = true
         searchableProgress = .inspecting
 
         searchablePDFTask = Task {
             defer {
-                if searchableGeneration == generation {
+                lifecycle.finishSearchableAction(searchableAction) {
                     isCreatingSearchablePDF = false
                     searchableProgress = nil
                     searchablePDFTask = nil
@@ -219,15 +241,20 @@ public struct LocalOCRStudioView: View {
                     at: destinationURL
                 ) { progress in
                     Task { @MainActor in
-                        guard searchableGeneration == generation else { return }
-                        searchableProgress = progress
+                        lifecycle.publishSearchableProgress(
+                            progress,
+                            for: searchableAction
+                        ) {
+                            searchableProgress = $0
+                        }
                     }
                 }
             } catch is CancellationError {
                 return
             } catch {
-                guard searchableGeneration == generation else { return }
-                actionError = StudioErrorPresentation.present(error)
+                lifecycle.publishSearchableError(error, for: searchableAction) {
+                    actionError = $0
+                }
             }
         }
     }
