@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import plistlib
 import re
 import shlex
 import shutil
@@ -95,6 +96,11 @@ PREPUBLICATION_SCRIPTS = (
 )
 SECOND_MAC_RECORD = ROOT / "docs" / "release" / "second-mac-acceptance.md"
 README = ROOT / "README.md"
+UNSIGNED_STUDIO_APP = ROOT / "dist" / "unsigned-app" / "LocalOCR Studio.app"
+STAGED_STUDIO_APP = (
+    ROOT / "dist" / "direct-release" / "staged" / "LocalOCR Studio.app"
+)
+BUILD_UNSIGNED_STUDIO_APP = SCRIPTS / "build-unsigned-studio-app.sh"
 FORBIDDEN_BETA_RECORDS = (
     "MCP-MacVision-Beta-Metrics.csv",
     "MCP-MacVision-Feedback-Log.csv",
@@ -1146,6 +1152,343 @@ def test_stage_uses_confined_native_artifact_directory() -> None:
         text=True,
     )
     assert build_result.returncode == 0, build_result.stderr
+
+
+@pytest.fixture(scope="module")
+def real_unsigned_studio_app():
+    result = subprocess.run(
+        [str(BUILD_UNSIGNED_STUDIO_APP)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert UNSIGNED_STUDIO_APP.is_dir()
+    try:
+        yield UNSIGNED_STUDIO_APP
+    finally:
+        restore_debug_mcp = subprocess.run(
+            ["swift", "build", "--product", "localocr-mcp"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert restore_debug_mcp.returncode == 0, (
+            restore_debug_mcp.stdout + restore_debug_mcp.stderr
+        )
+
+
+def _copy_real_unsigned_studio_app(
+    source_app: Path,
+    destination_app: Path,
+) -> Path:
+    result = subprocess.run(
+        ["/usr/bin/ditto", str(source_app), str(destination_app)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return destination_app
+
+
+def _real_app_stage_environment(unsigned_app: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env.update(
+        {
+            "LOCALOCR_UNSIGNED_APP": str(unsigned_app),
+            "LOCALOCR_RELEASE_VERSION": "0.2.0",
+            "LOCALOCR_RELEASE_BUILD": "1",
+            "LOCALOCR_EXPECTED_BUNDLE_ID": "com.rayconsulting.localocr",
+        }
+    )
+    return env
+
+
+def _run_real_app_stage(unsigned_app: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(RELEASE_SCRIPTS["stage"])],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_real_app_stage_environment(unsigned_app),
+    )
+
+
+def _read_bundle_plist(app: Path) -> dict[str, object]:
+    with (app / "Contents" / "Info.plist").open("rb") as plist_file:
+        return plistlib.load(plist_file)
+
+
+def _write_bundle_plist(app: Path, values: dict[str, object]) -> None:
+    with (app / "Contents" / "Info.plist").open("wb") as plist_file:
+        plistlib.dump(values, plist_file)
+
+
+def _compile_macos_fixture(
+    output: Path,
+    *,
+    architecture: str,
+    minimum_macos: str,
+) -> None:
+    source = output.parent / "fixture-main.c"
+    source.write_text("int main(void) { return 0; }\n")
+    result = subprocess.run(
+        [
+            "/usr/bin/xcrun",
+            "clang",
+            "-arch",
+            architecture,
+            f"-mmacosx-version-min={minimum_macos}",
+            str(source),
+            "-o",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _binary_minimum_macos(binary: Path) -> str:
+    result = subprocess.run(
+        ["/usr/bin/otool", "-l", str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    match = re.search(
+        r"(?m)^\s*cmd LC_BUILD_VERSION\s*$.*?^\s*minos (\S+)\s*$",
+        result.stdout,
+        flags=re.DOTALL,
+    )
+    assert match, f"missing LC_BUILD_VERSION minos in {binary}"
+    return match.group(1)
+
+
+def _binary_rpaths(binary: Path) -> tuple[str, ...]:
+    result = subprocess.run(
+        ["/usr/bin/otool", "-l", str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return tuple(
+        re.findall(
+            r"(?m)^\s*cmd LC_RPATH\s*$.*?^\s*path (\S+) \(offset \d+\)\s*$",
+            result.stdout,
+            flags=re.DOTALL,
+        )
+    )
+
+
+def _binary_dependencies(binary: Path) -> tuple[str, ...]:
+    result = subprocess.run(
+        ["/usr/bin/otool", "-L", str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return tuple(
+        line.strip().split(maxsplit=1)[0]
+        for line in result.stdout.splitlines()[1:]
+        if line.strip()
+    )
+
+
+def _snapshot_app_files(app: Path) -> dict[Path, tuple[int, str]]:
+    return {
+        path.relative_to(app): (
+            path.stat().st_mode,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        for path in app.rglob("*")
+        if path.is_file()
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    (
+        ("bundle_identifier", "CFBundleIdentifier mismatch"),
+        ("release_version", "CFBundleShortVersionString mismatch"),
+        ("release_build", "CFBundleVersion mismatch"),
+        ("executable_name", "CFBundleExecutable mismatch"),
+        ("x86_64_main", "arm64 Mach-O executable"),
+        ("macos_13_main", "macOS 14 or later"),
+        ("private_dependency", "unapproved dynamic-library install name"),
+        ("private_rpath", "unapproved LC_RPATH"),
+        ("unexpected_helper", "unexpected helper"),
+        ("unexpected_nested_code", "unexpected nested code"),
+        ("private_resource", "private /Users/ path"),
+    ),
+)
+def test_real_app_staging_rejects_altered_release_input_before_cleanup(
+    tmp_path: Path,
+    real_unsigned_studio_app: Path,
+    mutation: str,
+    expected_error: str,
+) -> None:
+    candidate = _copy_real_unsigned_studio_app(
+        real_unsigned_studio_app,
+        tmp_path / "Altered LocalOCR Studio.app",
+    )
+    plist = _read_bundle_plist(candidate)
+    main = candidate / "Contents" / "MacOS" / "LocalOCR Studio"
+
+    if mutation == "bundle_identifier":
+        plist["CFBundleIdentifier"] = "com.example.altered"
+        _write_bundle_plist(candidate, plist)
+    elif mutation == "release_version":
+        plist["CFBundleShortVersionString"] = "9.9.9"
+        _write_bundle_plist(candidate, plist)
+    elif mutation == "release_build":
+        plist["CFBundleVersion"] = "999"
+        _write_bundle_plist(candidate, plist)
+    elif mutation == "executable_name":
+        altered_main = main.with_name("Altered Studio")
+        main.rename(altered_main)
+        plist["CFBundleExecutable"] = altered_main.name
+        _write_bundle_plist(candidate, plist)
+    elif mutation == "x86_64_main":
+        _compile_macos_fixture(
+            main,
+            architecture="x86_64",
+            minimum_macos="14.0",
+        )
+    elif mutation == "macos_13_main":
+        _compile_macos_fixture(
+            main,
+            architecture="arm64",
+            minimum_macos="13.0",
+        )
+    elif mutation == "private_dependency":
+        result = subprocess.run(
+            [
+                "/usr/bin/install_name_tool",
+                "-change",
+                "/usr/lib/libSystem.B.dylib",
+                "/Users/example/private/libSystem.B.dylib",
+                str(main),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+    elif mutation == "private_rpath":
+        result = subprocess.run(
+            [
+                "/usr/bin/install_name_tool",
+                "-add_rpath",
+                "/Users/example/private",
+                str(main),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+    elif mutation == "unexpected_helper":
+        unexpected = candidate / "Contents" / "Helpers" / "unexpected-tool"
+        unexpected.parent.mkdir()
+        unexpected.write_bytes(main.read_bytes())
+        unexpected.chmod(0o755)
+    elif mutation == "unexpected_nested_code":
+        unexpected = candidate / "Contents" / "Resources" / "hidden-tool"
+        unexpected.parent.mkdir()
+        unexpected.write_bytes(main.read_bytes())
+        unexpected.chmod(0o755)
+    elif mutation == "private_resource":
+        resource = candidate / "Contents" / "Resources" / "build-path.txt"
+        resource.parent.mkdir()
+        resource.write_text("/Users/example/private/source.swift\n")
+    else:
+        raise AssertionError(f"unhandled mutation: {mutation}")
+
+    release_root = ROOT / "dist" / "direct-release"
+    release_root.mkdir(parents=True, exist_ok=True)
+    cleanup_sentinel = release_root / "must-survive-rejected-input.txt"
+    cleanup_sentinel.write_text("known-good staged release")
+
+    result = _run_real_app_stage(candidate)
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
+    assert cleanup_sentinel.read_text() == "known-good staged release"
+
+
+def test_real_unsigned_studio_app_stages_under_exact_release_policy(
+    real_unsigned_studio_app: Path,
+) -> None:
+    unsigned_physical = real_unsigned_studio_app.resolve()
+    release_physical = (ROOT / "dist" / "direct-release").resolve()
+    assert unsigned_physical.is_relative_to((ROOT / "dist").resolve())
+    assert not unsigned_physical.is_relative_to(release_physical)
+    unsigned_before = _snapshot_app_files(real_unsigned_studio_app)
+
+    result = _run_real_app_stage(real_unsigned_studio_app)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _snapshot_app_files(real_unsigned_studio_app) == unsigned_before
+    staged_plist = _read_bundle_plist(STAGED_STUDIO_APP)
+    assert staged_plist["CFBundleExecutable"] == "LocalOCR Studio"
+    assert staged_plist["CFBundleIdentifier"] == "com.rayconsulting.localocr"
+    assert staged_plist["CFBundleShortVersionString"] == "0.2.0"
+    assert staged_plist["CFBundleVersion"] == "1"
+
+    helpers = STAGED_STUDIO_APP / "Contents" / "Helpers"
+    assert sorted(path.name for path in helpers.iterdir()) == [
+        "localocr",
+        "localocr-mcp",
+    ]
+    expected_code = {
+        Path("Contents/MacOS/LocalOCR Studio"),
+        Path("Contents/Helpers/localocr"),
+        Path("Contents/Helpers/localocr-mcp"),
+    }
+    actual_code = {
+        path.relative_to(STAGED_STUDIO_APP)
+        for path in (STAGED_STUDIO_APP / "Contents").rglob("*")
+        if path.is_file()
+        and "Mach-O" in subprocess.run(
+            ["/usr/bin/file", "-b", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    }
+    assert actual_code == expected_code
+
+    for relative_binary in expected_code:
+        binary = STAGED_STUDIO_APP / relative_binary
+        architecture = subprocess.run(
+            ["/usr/bin/lipo", "-archs", str(binary)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert architecture == "arm64"
+        assert _binary_minimum_macos(binary) == "14.0"
+
+    main = STAGED_STUDIO_APP / "Contents" / "MacOS" / "LocalOCR Studio"
+    assert _binary_rpaths(main) == ("/usr/lib/swift",)
+    for dependency in _binary_dependencies(main):
+        assert dependency.startswith(("/System/Library/", "/usr/lib/"))
+
+    resource_files = {
+        path
+        for path in (STAGED_STUDIO_APP / "Contents").rglob("*")
+        if path.is_file()
+        and path.relative_to(STAGED_STUDIO_APP) not in expected_code
+    }
+    assert resource_files
+    for resource in resource_files:
+        assert b"/Users/" not in resource.read_bytes()
 
 
 @pytest.mark.parametrize("use_explicit_artifact_dir", (False, True))

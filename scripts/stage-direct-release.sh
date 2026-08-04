@@ -13,6 +13,7 @@ staged_app="$release_root/staged/LocalOCR Studio.app"
 native_tools_dir="$release_root/native-tools"
 plist_buddy="/usr/libexec/PlistBuddy"
 physical_unsigned_app=""
+expected_main_executable_name="LocalOCR Studio"
 
 validate_arm64_architecture() {
     [[ "${1:-}" == "arm64" ]] || {
@@ -189,28 +190,263 @@ binary_minimum_macos() {
                 in_build_version = 1
                 next
             }
-            in_build_version && $1 == "minos" {
+            in_build_version && $1 == "minos" && !printed {
                 print $2
-                exit
+                printed = 1
+                in_build_version = 0
             }
         '
 }
 
-validate_release_helper() {
-    local helper="$1"
+validate_canonical_system_install_name() {
+    local install_name="$1"
+    local relative_path
+    local component
+    local -a components
+
+    case "$install_name" in
+        /System/Library/?*)
+            relative_path="${install_name#/System/Library/}"
+            ;;
+        /usr/lib/?*)
+            relative_path="${install_name#/usr/lib/}"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    [[ "$install_name" != *//* && "$install_name" != */ ]] || return 1
+    IFS=/ read -r -a components <<< "$relative_path"
+    for component in "${components[@]}"; do
+        [[ -n "$component" && "$component" != "." && "$component" != ".." ]] || {
+            return 1
+        }
+    done
+}
+
+validate_install_name() {
+    local install_name="${1:-}"
+
+    if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
+        return 0
+    fi
+    validate_canonical_system_install_name "$install_name" || {
+        echo "unapproved dynamic-library install name: ${install_name:-<empty>}" >&2
+        return 1
+    }
+}
+
+validate_rpath() {
+    [[ "${1:-}" == "/usr/lib/swift" ]] || {
+        echo "unapproved LC_RPATH: ${1:-<empty>}" >&2
+        return 1
+    }
+}
+
+validate_release_binary() {
+    local binary="$1"
     local file_description
     local architectures
     local minimum_macos
 
-    file_description="$(/usr/bin/file -b "$helper")"
-    [[ "$file_description" == *"Mach-O 64-bit executable arm64"* ]] || {
-        echo "release helper is not an arm64 Mach-O executable: $helper" >&2
+    [[ -f "$binary" && ! -L "$binary" ]] || {
+        echo "release binary is missing or symlinked: $binary" >&2
         return 1
     }
-    architectures="$(/usr/bin/lipo -archs "$helper")"
+    file_description="$(/usr/bin/file -b "$binary")"
+    [[ "$file_description" == *"Mach-O 64-bit executable arm64"* ]] || {
+        echo "release binary is not an arm64 Mach-O executable: $binary" >&2
+        return 1
+    }
+    architectures="$(/usr/bin/lipo -archs "$binary")"
     validate_arm64_architecture "$architectures"
-    minimum_macos="$(binary_minimum_macos "$helper")"
+    minimum_macos="$(binary_minimum_macos "$binary")"
     validate_minimum_macos "$minimum_macos"
+}
+
+validate_binary_dependencies() {
+    local binary="$1"
+    local dependency_output
+    local dependency_line
+    local install_name
+
+    dependency_output="$(/usr/bin/otool -L "$binary")"
+    while IFS= read -r dependency_line; do
+        [[ -n "$dependency_line" ]] || continue
+        install_name="$(
+            printf '%s\n' "$dependency_line" |
+                /usr/bin/awk '{ print $1 }'
+        )"
+        validate_install_name "$install_name"
+        if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
+            [[ "$dependency_line" == *", weak)" ]] || {
+                echo "libswiftCompatibilitySpan.dylib must be weak-linked" >&2
+                return 1
+            }
+        fi
+    done < <(
+        printf '%s\n' "$dependency_output" |
+            /usr/bin/awk 'NR > 1 { sub(/^[[:space:]]+/, ""); print }'
+    )
+}
+
+binary_rpaths() {
+    local binary="$1"
+    local load_commands
+
+    load_commands="$(/usr/bin/otool -l "$binary")"
+    printf '%s\n' "$load_commands" |
+        /usr/bin/awk '
+            $1 == "cmd" {
+                if (awaiting_path) {
+                    exit 65
+                }
+                awaiting_path = ($2 == "LC_RPATH")
+                next
+            }
+            awaiting_path && $1 == "path" {
+                print $2
+                awaiting_path = 0
+            }
+            END {
+                if (awaiting_path) {
+                    exit 65
+                }
+            }
+        '
+}
+
+validate_binary_rpaths() {
+    local binary="$1"
+    local allow_removable_framework_rpath="${2:-false}"
+    local rpath_output
+    local rpath
+
+    rpath_output="$(binary_rpaths "$binary")" || {
+        echo "could not parse every LC_RPATH in: $binary" >&2
+        return 1
+    }
+    while IFS= read -r rpath; do
+        [[ -n "$rpath" ]] || continue
+        if [[
+            "$allow_removable_framework_rpath" == true &&
+            "$rpath" == "@executable_path/../Frameworks"
+        ]]; then
+            continue
+        fi
+        validate_rpath "$rpath"
+    done <<< "$rpath_output"
+}
+
+remove_removable_framework_rpath() {
+    local binary="$1"
+    local rpath_output
+
+    rpath_output="$(binary_rpaths "$binary")" || {
+        echo "could not parse every LC_RPATH in: $binary" >&2
+        return 1
+    }
+    if /usr/bin/grep -F -x -q \
+        "@executable_path/../Frameworks" <<< "$rpath_output"
+    then
+        /usr/bin/install_name_tool \
+            -delete_rpath "@executable_path/../Frameworks" \
+            "$binary"
+    fi
+}
+
+reject_private_user_paths() {
+    local app_path="$1"
+    local private_path_file
+
+    private_path_file="$(
+        /usr/bin/find "$app_path/Contents" -type f \
+            ! -path "$app_path/Contents/MacOS/*" \
+            ! -path "$app_path/Contents/Helpers/*" \
+            -exec /usr/bin/grep -a -F -l -- "/Users/" {} \;
+    )" || {
+        echo "could not inspect app resources for private paths" >&2
+        return 1
+    }
+    [[ -z "$private_path_file" ]] || {
+        echo "app resource contains a private /Users/ path: $private_path_file" >&2
+        return 1
+    }
+}
+
+reject_unsigned_app_helpers() {
+    local app_path="$1"
+    local unexpected_helper=""
+
+    if [[ -d "$app_path/Contents/Helpers" ]]; then
+        unexpected_helper="$(
+            /usr/bin/find "$app_path/Contents/Helpers" \
+                -mindepth 1 -maxdepth 1 -print -quit
+        )" || {
+            echo "could not inspect unsigned app helpers" >&2
+            return 1
+        }
+    fi
+    [[ -z "$unexpected_helper" ]] || {
+        echo "unsigned app contains an unexpected helper: $unexpected_helper" >&2
+        return 1
+    }
+}
+
+validate_exact_staged_helpers() {
+    local app_path="$1"
+    local helpers_dir="$app_path/Contents/Helpers"
+    local unexpected_helper
+
+    [[ -d "$helpers_dir" && ! -L "$helpers_dir" ]] || {
+        echo "staged Helpers directory is missing or symlinked" >&2
+        return 1
+    }
+    unexpected_helper="$(
+        /usr/bin/find "$helpers_dir" -mindepth 1 -maxdepth 1 \
+            ! -name localocr ! -name localocr-mcp -print -quit
+    )" || {
+        echo "could not inspect staged helpers" >&2
+        return 1
+    }
+    [[ -z "$unexpected_helper" ]] || {
+        echo "unexpected staged helper: $unexpected_helper" >&2
+        return 1
+    }
+    validate_release_binary "$helpers_dir/localocr"
+    validate_release_binary "$helpers_dir/localocr-mcp"
+}
+
+validate_nested_code_allowlist() {
+    local app_path="$1"
+    local include_helpers="${2:-false}"
+    local candidate
+    local file_description
+    local relative_candidate
+
+    /usr/bin/find "$app_path/Contents" -type f -print -quit >/dev/null || {
+        echo "could not enumerate app code candidates" >&2
+        return 1
+    }
+    while IFS= read -r -d '' candidate; do
+        file_description="$(/usr/bin/file -b "$candidate")"
+        [[ "$file_description" == *"Mach-O"* ]] || continue
+        relative_candidate="${candidate#"$app_path"/}"
+        case "$relative_candidate" in
+            "Contents/MacOS/$expected_main_executable_name")
+                ;;
+            Contents/Helpers/localocr|Contents/Helpers/localocr-mcp)
+                [[ "$include_helpers" == true ]] || {
+                    echo "unexpected nested code: $relative_candidate" >&2
+                    return 1
+                }
+                ;;
+            *)
+                echo "unexpected nested code: $relative_candidate" >&2
+                return 1
+                ;;
+        esac
+    done < <(/usr/bin/find "$app_path/Contents" -type f -print0)
 }
 
 reject_tree_symlinks() {
@@ -272,10 +508,21 @@ stage_direct_release() {
         return 1
     }
     reject_tree_symlinks "$physical_unsigned_app"
+    validate_release_bundle_metadata "$physical_unsigned_app"
     main_executable_name="$(plist_value "$source_info_plist" CFBundleExecutable)"
+    require_expected_plist_value \
+        CFBundleExecutable \
+        "$main_executable_name" \
+        "$expected_main_executable_name"
     unsigned_main_executable="$(
         resolve_main_executable "$physical_unsigned_app" "$main_executable_name"
     )"
+    validate_release_binary "$unsigned_main_executable"
+    validate_binary_dependencies "$unsigned_main_executable"
+    validate_binary_rpaths "$unsigned_main_executable" true
+    reject_unsigned_app_helpers "$physical_unsigned_app"
+    validate_nested_code_allowlist "$physical_unsigned_app"
+    reject_private_user_paths "$physical_unsigned_app"
 
     clean_release_root
     /bin/mkdir -p "$evidence_dir"
@@ -287,7 +534,7 @@ stage_direct_release() {
             echo "native helper not found after build: $helper" >&2
             return 1
         }
-        validate_release_helper "$native_tools_dir/$helper"
+        validate_release_binary "$native_tools_dir/$helper"
     done
     record_pre_signing_hashes "$unsigned_main_executable"
 
@@ -299,6 +546,8 @@ stage_direct_release() {
     /bin/chmod 0755 \
         "$staged_app/Contents/Helpers/localocr" \
         "$staged_app/Contents/Helpers/localocr-mcp"
+    remove_removable_framework_rpath \
+        "$staged_app/Contents/MacOS/$expected_main_executable_name"
     reject_tree_symlinks "$staged_app"
     clear_staged_app_xattrs "$staged_app"
 
@@ -316,8 +565,19 @@ stage_direct_release() {
         "$(plist_value "$staged_info_plist" CFBundleVersion)" \
         "$LOCALOCR_RELEASE_BUILD"
 
-    validate_release_helper "$staged_app/Contents/Helpers/localocr"
-    validate_release_helper "$staged_app/Contents/Helpers/localocr-mcp"
+    require_expected_plist_value \
+        CFBundleExecutable \
+        "$(plist_value "$staged_info_plist" CFBundleExecutable)" \
+        "$expected_main_executable_name"
+    validate_release_binary \
+        "$staged_app/Contents/MacOS/$expected_main_executable_name"
+    validate_binary_dependencies \
+        "$staged_app/Contents/MacOS/$expected_main_executable_name"
+    validate_binary_rpaths \
+        "$staged_app/Contents/MacOS/$expected_main_executable_name"
+    validate_exact_staged_helpers "$staged_app"
+    validate_nested_code_allowlist "$staged_app" true
+    reject_private_user_paths "$staged_app"
 }
 
 case "${1:-}" in

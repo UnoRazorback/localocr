@@ -23,6 +23,17 @@ PDF OCR preserves pages that already have usable native text unless
 `--force-ocr` (or `force_ocr`) is selected. Original input files are never
 overwritten. A searchable-PDF operation writes a new output file.
 
+## LocalOCR Studio
+
+LocalOCR Studio is the one-document-at-a-time Mac interface. Drop or open one
+PDF or image and processing starts automatically on the Mac; there is no
+configuration wizard or batch queue. After recognition, the app can copy the
+text, save it as a text file, or create a new searchable PDF from a PDF source.
+
+Batch PDF OCR remains available through the local MCP server rather than the
+Studio interface. See [the Studio guide](docs/studio.md) for the exact GUI/MCP
+boundary, installed helper path, supported inputs, and current beta status.
+
 ## Quick start from source
 
 Install a current Swift toolchain on macOS 14+, then build the package:
