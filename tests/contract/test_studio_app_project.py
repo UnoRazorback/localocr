@@ -181,6 +181,7 @@ def test_unsigned_build_script_has_stable_toolchain_and_confined_paths() -> None
     )
     assert set(re.findall(r"\brm\s+-rf\s+--\s+([^\s]+)", script)) == {
         '"$build_root"',
+        '"$studio_output_candidate"',
     }
 
 
@@ -221,11 +222,10 @@ def test_wrong_minimum_os_fails_before_creating_canonical_output(
             bundle_identifier="com.rayconsulting.localocr",
             minimum_os="13.0",
         )
-        result = subprocess.run(
-            [str(script), "--test-publish-staged-app", temporary_root],
-            check=False,
-            capture_output=True,
-            text=True,
+        result = _run_sourced_build_function(
+            script,
+            Path(temporary_root),
+            'validate_and_publish_staged_app "$build_root/Staged/LocalOCR Studio.app"',
         )
 
     assert result.returncode != 0
@@ -254,11 +254,10 @@ def test_failed_staged_validation_preserves_existing_canonical_output(
             bundle_identifier="com.example.invalid",
             minimum_os="14.0",
         )
-        result = subprocess.run(
-            [str(script), "--test-publish-staged-app", temporary_root],
-            check=False,
-            capture_output=True,
-            text=True,
+        result = _run_sourced_build_function(
+            script,
+            Path(temporary_root),
+            'validate_and_publish_staged_app "$build_root/Staged/LocalOCR Studio.app"',
         )
 
     assert result.returncode != 0
@@ -269,6 +268,128 @@ def test_failed_staged_validation_preserves_existing_canonical_output(
         for path in canonical_app.rglob("*")
         if path.is_file()
     ) == [Path("known-good.txt")]
+
+
+def test_staged_app_symlink_is_rejected_before_bundle_inspection(
+    tmp_path: Path,
+) -> None:
+    script, fake_repo = _copy_build_scripts_to_isolated_repo(tmp_path)
+    canonical_app = fake_repo / "dist" / "unsigned-app" / "LocalOCR Studio.app"
+
+    with tempfile.TemporaryDirectory(
+        prefix="localocr-studio-build.",
+        dir="/tmp",
+    ) as temporary_root:
+        build_root = Path(temporary_root)
+        staged_app = _write_staged_app(
+            build_root,
+            bundle_identifier="com.rayconsulting.localocr",
+            minimum_os="14.0",
+        )
+        symlink_target = build_root / "Symlink Target.app"
+        staged_app.rename(symlink_target)
+        staged_app.symlink_to(symlink_target, target_is_directory=True)
+        result = _run_sourced_build_function(
+            script,
+            build_root,
+            'validate_and_publish_staged_app "$build_root/Staged/LocalOCR Studio.app"',
+        )
+
+    assert result.returncode != 0
+    assert "Studio staged app is missing or symlinked" in result.stderr
+    assert not canonical_app.exists()
+
+
+def test_publication_failure_preserves_existing_canonical_app(
+    tmp_path: Path,
+) -> None:
+    script, fake_repo = _copy_build_scripts_to_isolated_repo(tmp_path)
+    output_root = fake_repo / "dist" / "unsigned-app"
+    canonical_app = output_root / "LocalOCR Studio.app"
+    (canonical_app / "Contents" / "Resources").mkdir(parents=True)
+    (canonical_app / "Contents" / "Info.plist").write_bytes(b"known-good-plist")
+    (canonical_app / "Contents" / "Resources" / "receipt.txt").write_bytes(
+        b"preserve this known-good release exactly",
+    )
+    known_good_bytes = _snapshot_file_bytes(canonical_app)
+
+    with tempfile.TemporaryDirectory(
+        prefix="localocr-studio-build.",
+        dir="/tmp",
+    ) as temporary_root:
+        build_root = Path(temporary_root)
+        _write_staged_app(
+            build_root,
+            bundle_identifier="com.rayconsulting.localocr",
+            minimum_os="14.0",
+            compile_arm64_executable=True,
+        )
+        result = _run_sourced_build_function(
+            script,
+            build_root,
+            """
+atomically_exchange_apps() {
+    case "$1" in
+        "$output_root"/.LocalOCR\\ Studio.app.candidate.*) ;;
+        *) return 99 ;;
+    esac
+    [[ -d "$1" && ! -L "$1" && "$2" == "$output_app" ]] || return 99
+    return 75
+}
+validate_and_publish_staged_app "$build_root/Staged/LocalOCR Studio.app"
+""",
+        )
+
+    assert result.returncode != 0
+    assert _snapshot_file_bytes(canonical_app) == known_good_bytes
+    assert not list(output_root.glob(".LocalOCR Studio.app.candidate.*"))
+
+
+def test_publish_test_option_is_not_a_production_command(tmp_path: Path) -> None:
+    script, fake_repo = _copy_build_scripts_to_isolated_repo(tmp_path)
+    canonical_app = fake_repo / "dist" / "unsigned-app" / "LocalOCR Studio.app"
+
+    with tempfile.TemporaryDirectory(
+        prefix="localocr-studio-build.",
+        dir="/tmp",
+    ) as temporary_root:
+        _write_staged_app(
+            Path(temporary_root),
+            bundle_identifier="com.rayconsulting.localocr",
+            minimum_os="13.0",
+        )
+        result = subprocess.run(
+            [str(script), "--test-publish-staged-app", temporary_root],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    assert result.returncode == 2
+    assert (
+        "unknown unsigned Studio build option: --test-publish-staged-app"
+        in result.stderr
+    )
+    assert not canonical_app.exists()
+
+
+def _run_sourced_build_function(
+    script: Path,
+    build_root: Path,
+    function_body: str,
+) -> subprocess.CompletedProcess[str]:
+    source_and_run = f"""
+set -euo pipefail
+source "$1"
+set_validated_build_root "$2"
+{function_body}
+"""
+    return subprocess.run(
+        ["/bin/bash", "-c", source_and_run, "_", str(script), str(build_root)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _copy_build_scripts_to_isolated_repo(
@@ -291,6 +412,7 @@ def _write_staged_app(
     *,
     bundle_identifier: str,
     minimum_os: str,
+    compile_arm64_executable: bool = False,
 ) -> Path:
     staged_app = build_root / "Staged" / "LocalOCR Studio.app"
     contents = staged_app / "Contents"
@@ -306,6 +428,32 @@ def _write_staged_app(
             },
             plist,
         )
-    executable.write_bytes(b"validation must stop before architecture checks")
-    executable.chmod(0o755)
+    if compile_arm64_executable:
+        subprocess.run(
+            [
+                "/usr/bin/clang",
+                "-arch",
+                "arm64",
+                "-x",
+                "c",
+                "-o",
+                str(executable),
+                "-",
+            ],
+            input="int main(void) { return 0; }\n",
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    else:
+        executable.write_bytes(b"validation must stop before architecture checks")
+        executable.chmod(0o755)
     return staged_app
+
+
+def _snapshot_file_bytes(root: Path) -> dict[Path, bytes]:
+    return {
+        path.relative_to(root): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }

@@ -17,6 +17,7 @@ studio_bundle_identifier="com.rayconsulting.localocr"
 studio_release_version="0.2.0"
 studio_release_build="1"
 studio_minimum_os="14.0"
+studio_output_candidate=""
 
 set_validated_build_root() {
     local candidate="${1:-}"
@@ -59,6 +60,41 @@ cleanup_build_root() {
         echo "refusing to clean an unvalidated Studio build root: $build_root" >&2
         return 1
     fi
+}
+
+validate_output_candidate_path() {
+    local candidate="${1:-}"
+
+    case "$candidate" in
+        "$output_root"/.LocalOCR\ Studio.app.candidate.*) ;;
+        *) return 1 ;;
+    esac
+    [[ "$(/usr/bin/dirname "$candidate")" == "$output_root" ]] || return 1
+    [[ -d "$candidate" && ! -L "$candidate" ]] || return 1
+    [[ "$(cd "$candidate" && pwd -P)" == "$candidate" ]]
+}
+
+cleanup_output_candidate() {
+    [[ -n "$studio_output_candidate" ]] || return 0
+    if [[ ! -e "$studio_output_candidate" && ! -L "$studio_output_candidate" ]]; then
+        studio_output_candidate=""
+        return 0
+    fi
+    if validate_output_candidate_path "$studio_output_candidate"; then
+        /bin/rm -rf -- "$studio_output_candidate"
+        studio_output_candidate=""
+    else
+        echo "refusing to clean an unvalidated Studio output candidate: $studio_output_candidate" >&2
+        return 1
+    fi
+}
+
+cleanup_studio_build_artifacts() {
+    local cleanup_failed=false
+
+    cleanup_output_candidate || cleanup_failed=true
+    cleanup_build_root || cleanup_failed=true
+    [[ "$cleanup_failed" == false ]]
 }
 
 prepare_output_root() {
@@ -107,11 +143,35 @@ validate_studio_minimum_os() {
     }
 }
 
+validate_studio_app_bundle() {
+    local app_path="$1"
+    local executable="$app_path/Contents/MacOS/LocalOCR Studio"
+
+    export LOCALOCR_EXPECTED_BUNDLE_ID="$studio_bundle_identifier"
+    export LOCALOCR_RELEASE_VERSION="$studio_release_version"
+    export LOCALOCR_RELEASE_BUILD="$studio_release_build"
+    validate_release_bundle_metadata "$app_path"
+    validate_studio_minimum_os "$app_path"
+
+    [[ -f "$executable" && -x "$executable" && ! -L "$executable" ]] || {
+        echo "unsigned Studio executable is missing or invalid" >&2
+        return 1
+    }
+    /usr/bin/lipo "$executable" -verify_arch arm64
+    [[ "$(/usr/bin/lipo -archs "$executable")" == "arm64" ]] || {
+        echo "unsigned Studio executable is not arm64-only" >&2
+        return 1
+    }
+    [[ ! -e "$app_path/Contents/_CodeSignature" ]] || {
+        echo "Studio app unexpectedly contains a code signature" >&2
+        return 1
+    }
+}
+
 validate_staged_app() {
     local staged_app="$1"
     local staged_parent="$build_root/Staged"
     local expected_staged_app="$staged_parent/LocalOCR Studio.app"
-    local executable="$staged_app/Contents/MacOS/LocalOCR Studio"
 
     validate_build_root
     [[ "$staged_app" == "$expected_staged_app" ]] || {
@@ -126,61 +186,85 @@ validate_staged_app() {
         echo "Studio staging directory escaped the validated build root" >&2
         return 1
     }
+    [[ -d "$staged_app" && ! -L "$staged_app" ]] || {
+        echo "Studio staged app is missing or symlinked" >&2
+        return 1
+    }
+    [[ "$(cd "$staged_app" && pwd -P)" == "$staged_app" ]] || {
+        echo "Studio staged app is not a physical directory" >&2
+        return 1
+    }
 
-    export LOCALOCR_EXPECTED_BUNDLE_ID="$studio_bundle_identifier"
-    export LOCALOCR_RELEASE_VERSION="$studio_release_version"
-    export LOCALOCR_RELEASE_BUILD="$studio_release_build"
-    validate_release_bundle_metadata "$staged_app"
-    validate_studio_minimum_os "$staged_app"
-
-    [[ -f "$executable" && -x "$executable" && ! -L "$executable" ]] || {
-        echo "unsigned Studio executable is missing or invalid" >&2
-        return 1
-    }
-    /usr/bin/lipo "$executable" -verify_arch arm64
-    [[ "$(/usr/bin/lipo -archs "$executable")" == "arm64" ]] || {
-        echo "unsigned Studio executable is not arm64-only" >&2
-        return 1
-    }
-    [[ ! -e "$staged_app/Contents/_CodeSignature" ]] || {
-        echo "Studio app unexpectedly contains a code signature" >&2
-        return 1
-    }
+    validate_studio_app_bundle "$staged_app"
 }
 
-validate_and_publish_staged_app() {
-    local staged_app="$1"
-    local previous_app="$build_root/Previous LocalOCR Studio.app"
-    local had_previous_app=false
+atomically_exchange_apps() {
+    local candidate_app="$1"
+    local canonical_app="$2"
 
-    validate_staged_app "$staged_app"
-    prepare_output_root
-    [[ ! -e "$previous_app" ]] || {
-        echo "validated build root unexpectedly contains a previous Studio app" >&2
-        return 1
-    }
+    /usr/bin/swift - "$candidate_app" "$canonical_app" <<'SWIFT'
+import Darwin
 
-    if [[ -e "$output_app" ]]; then
+let paths = CommandLine.arguments
+guard paths.count == 3 else {
+    exit(64)
+}
+guard renamex_np(paths[1], paths[2], UInt32(RENAME_SWAP)) == 0 else {
+    perror("renamex_np")
+    exit(1)
+}
+SWIFT
+}
+
+publish_output_candidate() {
+    local candidate_app="$1"
+
+    validate_output_candidate_path "$candidate_app"
+    validate_studio_app_bundle "$candidate_app"
+
+    if [[ -e "$output_app" || -L "$output_app" ]]; then
         [[ -d "$output_app" && ! -L "$output_app" ]] || {
             echo "existing unsigned Studio app is not a physical directory" >&2
             return 1
         }
-        /bin/mv "$output_app" "$previous_app"
-        had_previous_app=true
+        if ! atomically_exchange_apps "$candidate_app" "$output_app"; then
+            echo "could not atomically publish the validated unsigned Studio app" >&2
+            cleanup_output_candidate
+            return 1
+        fi
+        cleanup_output_candidate
+        return 0
     fi
 
-    if /bin/mv "$staged_app" "$output_app"; then
+    if /bin/mv "$candidate_app" "$output_app"; then
+        studio_output_candidate=""
         return 0
     fi
 
     echo "could not publish the validated unsigned Studio app" >&2
-    if [[ "$had_previous_app" == true ]]; then
-        /bin/mv "$previous_app" "$output_app" || {
-            echo "could not restore the previous unsigned Studio app" >&2
-            return 1
-        }
-    fi
+    cleanup_output_candidate
     return 1
+}
+
+validate_and_publish_staged_app() {
+    local staged_app="$1"
+
+    validate_staged_app "$staged_app"
+    prepare_output_root
+    studio_output_candidate="$(
+        /usr/bin/mktemp -d \
+            "$output_root/.LocalOCR Studio.app.candidate.XXXXXX"
+    )"
+    validate_output_candidate_path "$studio_output_candidate"
+    /usr/bin/ditto "$staged_app" "$studio_output_candidate" || {
+        cleanup_output_candidate
+        return 1
+    }
+    validate_studio_app_bundle "$studio_output_candidate" || {
+        cleanup_output_candidate
+        return 1
+    }
+    publish_output_candidate "$studio_output_candidate"
 }
 
 run_studio_build() {
@@ -195,7 +279,10 @@ run_studio_build() {
     temporary_build_root="$(/usr/bin/mktemp -d /tmp/localocr-studio-build.XXXXXX)"
     set_validated_build_root "$temporary_build_root"
     validate_build_root
-    trap cleanup_build_root EXIT
+    trap cleanup_studio_build_artifacts EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
 
     derived_data="$build_root/DerivedData"
     /bin/mkdir "$derived_data"
@@ -231,23 +318,19 @@ run_studio_build() {
     printf 'Built unsigned Studio app: %s\n' "$output_app"
 }
 
-case "${1:-}" in
-    --test-build-root)
-        [[ "$#" -eq 2 ]] || exit 2
-        set_validated_build_root "$2"
-        validate_build_root
-        ;;
-    --test-publish-staged-app)
-        [[ "$#" -eq 2 ]] || exit 2
-        set_validated_build_root "$2"
-        validate_and_publish_staged_app \
-            "$build_root/Staged/LocalOCR Studio.app"
-        ;;
-    "")
-        run_studio_build
-        ;;
-    *)
-        echo "unknown unsigned Studio build option: $1" >&2
-        exit 2
-        ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    case "${1:-}" in
+        --test-build-root)
+            [[ "$#" -eq 2 ]] || exit 2
+            set_validated_build_root "$2"
+            validate_build_root
+            ;;
+        "")
+            run_studio_build
+            ;;
+        *)
+            echo "unknown unsigned Studio build option: $1" >&2
+            exit 2
+            ;;
+    esac
+fi
