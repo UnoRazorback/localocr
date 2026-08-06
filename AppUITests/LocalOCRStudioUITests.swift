@@ -60,6 +60,29 @@ final class LocalOCRStudioUITests: XCTestCase {
         XCTAssertTrue(app.buttons["studio.copy"].isEnabled)
         XCTAssertTrue(app.buttons["studio.save-text"].isEnabled)
         XCTAssertTrue(app.buttons["studio.create-searchable"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.process-another"].isEnabled)
+    }
+
+    func testProcessAnotherDocumentReturnsToTheEmptyDropScreen() {
+        let app = launch(state: "result")
+        let processAnother = app.buttons["studio.process-another"]
+        let result = element("studio.result-text", in: app)
+
+        XCTAssertTrue(result.waitForExistence(timeout: 5))
+        XCTAssertTrue(processAnother.waitForExistence(timeout: 5))
+        processAnother.click()
+
+        XCTAssertTrue(element("studio.drop-zone", in: app).waitForExistence(timeout: 5))
+        XCTAssertFalse(result.exists)
+    }
+
+    func testSearchablePDFBusyStateDisablesProcessAnotherDocument() {
+        let app = launch(state: "resultBusy")
+        let processAnother = app.buttons["studio.process-another"]
+
+        XCTAssertTrue(processAnother.waitForExistence(timeout: 5))
+        XCTAssertTrue(element("studio.progress", in: app).waitForExistence(timeout: 5))
+        XCTAssertFalse(processAnother.isEnabled)
     }
 
     func testCopyUsesTheRealPasteboardAction() {

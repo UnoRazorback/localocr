@@ -1,15 +1,30 @@
 import SwiftUI
 
+struct StudioResultActionAvailability {
+    let footerActionsAreEnabled: Bool
+
+    init(isCreatingSearchablePDF: Bool) {
+        footerActionsAreEnabled = !isCreatingSearchablePDF
+    }
+}
+
 struct StudioResultView: View {
     let result: StudioDocumentResult
     let isCreatingSearchablePDF: Bool
     let searchableProgress: StudioProgress?
+    let onProcessAnother: () -> Void
     let onCopy: () -> Void
     let onSaveText: () -> Void
     let onCreateSearchablePDF: () -> Void
 
     private var contract: StudioViewContract {
         StudioViewContract(state: .result(result))
+    }
+
+    private var actionAvailability: StudioResultActionAvailability {
+        StudioResultActionAvailability(
+            isCreatingSearchablePDF: isCreatingSearchablePDF
+        )
     }
 
     var body: some View {
@@ -68,6 +83,11 @@ struct StudioResultView: View {
                         .monospacedDigit()
                 }
 
+                if contract.canProcessAnotherDocument {
+                    Button("Process Another Document", action: onProcessAnother)
+                        .accessibilityIdentifier("studio.process-another")
+                }
+
                 Spacer()
 
                 Button("Copy", action: onCopy)
@@ -82,7 +102,7 @@ struct StudioResultView: View {
                         .accessibilityIdentifier("studio.create-searchable")
                 }
             }
-            .disabled(isCreatingSearchablePDF)
+            .disabled(!actionAvailability.footerActionsAreEnabled)
         }
         .padding(24)
         .background {

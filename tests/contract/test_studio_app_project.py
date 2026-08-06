@@ -12,6 +12,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).parents[2]
+ROOT_VIEW = ROOT / "Sources" / "LocalOCRStudioKit" / "LocalOCRStudioView.swift"
+RESULT_VIEW = ROOT / "Sources" / "LocalOCRStudioKit" / "StudioResultView.swift"
 PROJECT_SPEC = ROOT / "project.yml"
 XCODE_PROJECT = ROOT / "LocalOCR Studio.xcodeproj"
 PROJECT_FILE = XCODE_PROJECT / "project.pbxproj"
@@ -57,6 +59,64 @@ def _yaml_scalar(source: str, key: str) -> str:
     )
     assert len(matches) == 1, f"expected one {key} setting, found {matches}"
     return matches[0].strip()
+
+
+def _swift_function_body(source: str, signature: str) -> str:
+    signature_start = source.index(signature)
+    opening_brace = source.index("{", signature_start)
+    depth = 0
+    for index in range(opening_brace, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[opening_brace + 1 : index]
+    raise AssertionError(f"unterminated Swift function: {signature}")
+
+
+def _assert_fragments_in_order(source: str, fragments: tuple[str, ...]) -> None:
+    cursor = 0
+    for fragment in fragments:
+        position = source.find(fragment, cursor)
+        assert position >= 0, f"missing or out-of-order source fragment: {fragment}"
+        cursor = position + len(fragment)
+
+
+def test_result_screen_has_a_visible_process_another_reset_action() -> None:
+    root_view = _read(ROOT_VIEW)
+    result_view = _read(RESULT_VIEW)
+
+    assert "let onProcessAnother: () -> Void" in result_view
+    assert 'Button("Process Another Document", action: onProcessAnother)' in result_view
+    assert '.accessibilityIdentifier("studio.process-another")' in result_view
+    assert "if contract.canProcessAnotherDocument" in result_view
+    assert "onProcessAnother: resetToEmpty" in root_view
+
+
+def test_reset_to_empty_cleans_all_view_state_before_model_clear() -> None:
+    reset_body = _swift_function_body(
+        _read(ROOT_VIEW),
+        "private func resetToEmpty()",
+    )
+
+    _assert_fragments_in_order(
+        reset_body,
+        (
+            "lifecycle.performReset {",
+            "pendingDropLoad?.cancel()",
+            "pendingDropLoad = nil",
+            "isDropTargeted = false",
+            "actionError = nil",
+            "isCreatingSearchablePDF = false",
+            "searchableProgress = nil",
+            "let task = searchablePDFTask",
+            "searchablePDFTask = nil",
+            "task?.cancel()",
+            "} clearModel: {",
+            "model.clear()",
+        ),
+    )
 
 
 def test_required_app_project_files_exist() -> None:
@@ -161,6 +221,7 @@ def test_ui_fixtures_are_debug_only_and_require_a_test_session_marker() -> None:
     assert set(re.findall(r"\bcase ([A-Za-z][A-Za-z0-9_]*)", state_definition["body"])) == {
         "empty",
         "result",
+        "resultBusy",
         "error",
     }
 

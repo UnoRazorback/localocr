@@ -1,8 +1,16 @@
 import Foundation
-import LocalOCRStudioKit
+@testable import LocalOCRStudioKit
 import Testing
 
 @Suite struct StudioViewContractTests {
+    @Test func searchablePDFBusyStateDisablesResultFooterActions() {
+        let availability = StudioResultActionAvailability(
+            isCreatingSearchablePDF: true
+        )
+
+        #expect(availability.footerActionsAreEnabled == false)
+    }
+
     @Test func emptyInvitesOneLocalDocumentWithoutOfferingActions() {
         let contract = StudioViewContract(state: .empty)
 
@@ -11,6 +19,7 @@ import Testing
         #expect(contract.canCopy == false)
         #expect(contract.canSaveText == false)
         #expect(contract.canCreateSearchablePDF == false)
+        #expect(contract.canProcessAnotherDocument == false)
         #expect(contract.canCancel == false)
         #expect(contract.canRetry == false)
     }
@@ -29,6 +38,7 @@ import Testing
         #expect(contract.canCopy == false)
         #expect(contract.canSaveText == false)
         #expect(contract.canCreateSearchablePDF == false)
+        #expect(contract.canProcessAnotherDocument == false)
         #expect(contract.canCancel == true)
         #expect(contract.canRetry == false)
     }
@@ -43,6 +53,7 @@ import Testing
         #expect(contract.canCopy == true)
         #expect(contract.canSaveText == true)
         #expect(contract.canCreateSearchablePDF == true)
+        #expect(contract.canProcessAnotherDocument == true)
         #expect(contract.canCancel == false)
         #expect(contract.canRetry == false)
     }
@@ -64,6 +75,7 @@ import Testing
         #expect(contract.canCopy == true)
         #expect(contract.canSaveText == true)
         #expect(contract.canCreateSearchablePDF == false)
+        #expect(contract.canProcessAnotherDocument == true)
         #expect(contract.canCancel == false)
         #expect(contract.canRetry == false)
     }
@@ -82,6 +94,7 @@ import Testing
         #expect(contract.canCopy == false)
         #expect(contract.canSaveText == false)
         #expect(contract.canCreateSearchablePDF == false)
+        #expect(contract.canProcessAnotherDocument == false)
         #expect(contract.canCancel == false)
         #expect(contract.canRetry == true)
     }
