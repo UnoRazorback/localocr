@@ -21,6 +21,23 @@ public struct LocalOCRStudioView: View {
         self.actions = actions
     }
 
+    #if DEBUG
+    @_spi(UITesting)
+    public init(
+        model: StudioViewModel,
+        actions: StudioDocumentActions,
+        isCreatingSearchablePDF: Bool,
+        searchableProgress: StudioProgress?
+    ) {
+        self._model = State(initialValue: model)
+        self.actions = actions
+        self._isCreatingSearchablePDF = State(
+            initialValue: isCreatingSearchablePDF
+        )
+        self._searchableProgress = State(initialValue: searchableProgress)
+    }
+    #endif
+
     public var body: some View {
         VStack(spacing: 18) {
             header
@@ -189,16 +206,19 @@ public struct LocalOCRStudioView: View {
     }
 
     private func resetToEmpty() {
-        lifecycle.invalidateForReset()
-        pendingDropLoad?.cancel()
-        pendingDropLoad = nil
-        actionError = nil
-        isCreatingSearchablePDF = false
-        searchableProgress = nil
-        let task = searchablePDFTask
-        searchablePDFTask = nil
-        task?.cancel()
-        model.clear()
+        lifecycle.performReset {
+            pendingDropLoad?.cancel()
+            pendingDropLoad = nil
+            isDropTargeted = false
+            actionError = nil
+            isCreatingSearchablePDF = false
+            searchableProgress = nil
+            let task = searchablePDFTask
+            searchablePDFTask = nil
+            task?.cancel()
+        } clearModel: {
+            model.clear()
+        }
     }
 
     private func showTextSavePanel(for result: StudioDocumentResult) {

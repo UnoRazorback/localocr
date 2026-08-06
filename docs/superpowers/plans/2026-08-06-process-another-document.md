@@ -475,12 +475,19 @@ published to `dist/native-tools` and pass their smoke checks.
 Run pytest only after Step 3 has produced both reusable artifact sets:
 
 ```bash
+LOCALOCR_PYTHON="${LOCALOCR_PYTHON:-$PWD/.venv/bin/python}"
+if [[ ! -x "$LOCALOCR_PYTHON" ]]; then
+  echo "LOCALOCR_PYTHON is not executable: $LOCALOCR_PYTHON" >&2
+  exit 1
+fi
 env LOCALOCR_TEST_REUSE_UNSIGNED_STUDIO_APP=1 \
-  .venv/bin/python -m pytest -q
+  "$LOCALOCR_PYTHON" -m pytest -q
 ```
 
 Expected: all Python/contract tests pass; the five known SWIG deprecation
-warnings may remain.
+warnings may remain. Worktrees without a local `.venv` must explicitly set
+`LOCALOCR_PYTHON` to a validated executable interpreter before running the
+gate.
 
 - [ ] **Step 5: Request independent review**
 
@@ -560,7 +567,7 @@ Expected: Developer ID identity found, notary profile valid, Xcode 26.6 build
 
 - [ ] **Step 3: Build the exact-commit unsigned app**
 
-From `$release_worktree`, run the Release-only contingency from Task 3 Step 4.
+From `$release_worktree`, run the Release-only contingency from Task 3 Step 3.
 
 Expected: fresh unsigned app built from the merge commit; record its executable
 SHA-256.

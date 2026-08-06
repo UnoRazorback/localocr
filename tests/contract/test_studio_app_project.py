@@ -61,18 +61,34 @@ def _yaml_scalar(source: str, key: str) -> str:
     return matches[0].strip()
 
 
+def _swift_function_body(source: str, signature: str) -> str:
+    signature_start = source.index(signature)
+    opening_brace = source.index("{", signature_start)
+    depth = 0
+    for index in range(opening_brace, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[opening_brace + 1 : index]
+    raise AssertionError(f"unterminated Swift function: {signature}")
+
+
 def test_result_screen_has_a_visible_process_another_reset_action() -> None:
     root_view = _read(ROOT_VIEW)
     result_view = _read(RESULT_VIEW)
+    reset_body = _swift_function_body(root_view, "private func resetToEmpty()")
 
     assert "let onProcessAnother: () -> Void" in result_view
     assert 'Button("Process Another Document", action: onProcessAnother)' in result_view
     assert '.accessibilityIdentifier("studio.process-another")' in result_view
     assert "if contract.canProcessAnotherDocument" in result_view
     assert "onProcessAnother: resetToEmpty" in root_view
-    assert "private func resetToEmpty()" in root_view
-    assert "lifecycle.invalidateForReset()" in root_view
-    assert "model.clear()" in root_view
+    assert "lifecycle.performReset" in reset_body
+    assert "isDropTargeted = false" in reset_body
+    assert reset_body.index("isDropTargeted = false") < reset_body.index("model.clear()")
+    assert reset_body.index("task?.cancel()") < reset_body.index("model.clear()")
 
 
 def test_required_app_project_files_exist() -> None:
@@ -177,6 +193,7 @@ def test_ui_fixtures_are_debug_only_and_require_a_test_session_marker() -> None:
     assert set(re.findall(r"\bcase ([A-Za-z][A-Za-z0-9_]*)", state_definition["body"])) == {
         "empty",
         "result",
+        "resultBusy",
         "error",
     }
 

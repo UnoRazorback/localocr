@@ -1,5 +1,13 @@
 import SwiftUI
 
+struct StudioResultActionAvailability {
+    let footerActionsAreEnabled: Bool
+
+    init(isCreatingSearchablePDF: Bool) {
+        footerActionsAreEnabled = !isCreatingSearchablePDF
+    }
+}
+
 struct StudioResultView: View {
     let result: StudioDocumentResult
     let isCreatingSearchablePDF: Bool
@@ -11,6 +19,12 @@ struct StudioResultView: View {
 
     private var contract: StudioViewContract {
         StudioViewContract(state: .result(result))
+    }
+
+    private var actionAvailability: StudioResultActionAvailability {
+        StudioResultActionAvailability(
+            isCreatingSearchablePDF: isCreatingSearchablePDF
+        )
     }
 
     var body: some View {
@@ -88,7 +102,7 @@ struct StudioResultView: View {
                         .accessibilityIdentifier("studio.create-searchable")
                 }
             }
-            .disabled(isCreatingSearchablePDF)
+            .disabled(!actionAvailability.footerActionsAreEnabled)
         }
         .padding(24)
         .background {

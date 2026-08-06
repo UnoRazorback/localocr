@@ -1,8 +1,16 @@
 import Foundation
-import LocalOCRStudioKit
+@testable import LocalOCRStudioKit
 import Testing
 
 @Suite struct StudioViewContractTests {
+    @Test func searchablePDFBusyStateDisablesResultFooterActions() {
+        let availability = StudioResultActionAvailability(
+            isCreatingSearchablePDF: true
+        )
+
+        #expect(availability.footerActionsAreEnabled == false)
+    }
+
     @Test func emptyInvitesOneLocalDocumentWithoutOfferingActions() {
         let contract = StudioViewContract(state: .empty)
 

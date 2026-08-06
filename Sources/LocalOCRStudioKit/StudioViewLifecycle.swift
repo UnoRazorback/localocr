@@ -26,6 +26,15 @@ final class StudioViewLifecycle {
         searchableGeneration = UUID()
     }
 
+    func performReset(
+        cleanup: () -> Void,
+        clearModel: () -> Void
+    ) {
+        invalidateForReset()
+        cleanup()
+        clearModel()
+    }
+
     func invalidateForDisappearance() {
         inputGeneration = UUID()
         searchableGeneration = UUID()

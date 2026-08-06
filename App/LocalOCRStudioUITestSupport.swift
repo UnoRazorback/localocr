@@ -1,12 +1,13 @@
 #if DEBUG
 import Foundation
-import LocalOCRStudioKit
+@_spi(UITesting) import LocalOCRStudioKit
 
 @MainActor
 enum LocalOCRStudioUITestSupport {
     private enum FixtureState: String, Sendable {
         case empty
         case result
+        case resultBusy
         case error
     }
 
@@ -32,8 +33,17 @@ enum LocalOCRStudioUITestSupport {
         switch state {
         case .empty:
             break
-        case .result, .error:
+        case .result, .resultBusy, .error:
             model.open(fixtureSourceURL)
+        }
+
+        if state == .resultBusy {
+            return LocalOCRStudioView(
+                model: model,
+                actions: actions,
+                isCreatingSearchablePDF: true,
+                searchableProgress: .assembling
+            )
         }
 
         return LocalOCRStudioView(model: model, actions: actions)
@@ -53,7 +63,7 @@ enum LocalOCRStudioUITestSupport {
             switch state {
             case .empty:
                 throw FixtureError.unavailable
-            case .result:
+            case .result, .resultBusy:
                 progress(.recognizing(page: 2, total: 2))
                 return StudioDocumentResult(
                     sourceURL: sourceURL,
