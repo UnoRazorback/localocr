@@ -413,7 +413,7 @@ git commit -m "feat: return Studio results to document drop"
 ```bash
 for script in scripts/*.sh; do
   /bin/bash -n "$script"
-  /opt/homebrew/bin/shellcheck -x "$script"
+  /opt/homebrew/bin/shellcheck -x -P scripts "$script"
 done
 git diff --check main...HEAD
 ```
@@ -428,17 +428,7 @@ swift test
 
 Expected: all Swift tests pass, including the new contract and lifecycle tests.
 
-- [ ] **Step 3: Run the complete Python/contract suite**
-
-```bash
-env LOCALOCR_TEST_REUSE_UNSIGNED_STUDIO_APP=1 \
-  .venv/bin/python -m pytest -q
-```
-
-Expected: all Python/contract tests pass; the five known SWIG deprecation
-warnings may remain.
-
-- [ ] **Step 4: Build the Release app with stable Xcode**
+- [ ] **Step 3: Build the reusable Release artifacts**
 
 Because the standard wrapper’s UI-test phase is known to hang on macOS 27 beta
 build `26A5388g`, run the approved Release-only contingency while reusing the
@@ -472,10 +462,25 @@ staged_app="$staging_root/LocalOCR Studio.app"
 /usr/bin/ditto "$built_app" "$staged_app"
 validate_and_publish_staged_app "$staged_app"
 '
+scripts/build-native-tools.sh
+scripts/smoke-native-tools.sh
 ```
 
 Expected: the unsigned Release app is atomically published to
-`dist/unsigned-app/LocalOCR Studio.app`.
+`dist/unsigned-app/LocalOCR Studio.app`; the native CLI and MCP executables are
+published to `dist/native-tools` and pass their smoke checks.
+
+- [ ] **Step 4: Run the complete Python/contract suite**
+
+Run pytest only after Step 3 has produced both reusable artifact sets:
+
+```bash
+env LOCALOCR_TEST_REUSE_UNSIGNED_STUDIO_APP=1 \
+  .venv/bin/python -m pytest -q
+```
+
+Expected: all Python/contract tests pass; the five known SWIG deprecation
+warnings may remain.
 
 - [ ] **Step 5: Request independent review**
 

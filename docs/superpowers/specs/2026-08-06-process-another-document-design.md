@@ -1,7 +1,7 @@
 # LocalOCR Studio process-another-document design
 
-**Date:** 2026-08-06  
-**Status:** Owner-approved design  
+**Date:** 2026-08-06
+**Status:** Owner-approved design
 **Scope:** LocalOCR Studio desktop results workflow only
 
 ## Problem
