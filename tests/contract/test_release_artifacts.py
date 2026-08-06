@@ -13,6 +13,7 @@ from mcp.client.stdio import stdio_client
 
 ROOT = Path(__file__).parents[2]
 ARTIFACTS = ROOT / "dist" / "native-tools"
+SMOKE_SCRIPT = ROOT / "scripts" / "smoke-native-tools.sh"
 VERSION = "0.2.0"
 SYSTEM_LIBRARY_PREFIXES = ("/System/Library/", "/usr/lib/")
 COMPATIBILITY_SPAN_INSTALL_NAME = "@rpath/libswiftCompatibilitySpan.dylib"
@@ -119,6 +120,20 @@ def test_release_artifacts_are_native_standalone_executables() -> None:
 
     assert _run(str(cli), "--version").strip() == VERSION
     assert asyncio.run(_negotiated_server_version(mcp)) == VERSION
+
+
+def test_native_smoke_script_handles_repository_paths_with_spaces() -> None:
+    assert " " in str(ROOT), "this regression requires a space-bearing repo path"
+
+    result = subprocess.run(
+        [str(SMOKE_SCRIPT)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_release_artifacts_expose_only_system_dylibs_and_safe_rpaths() -> None:

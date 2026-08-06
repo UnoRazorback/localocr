@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .library(name: "LocalOCRCore", targets: ["LocalOCRCore"]),
         .library(name: "LocalOCRService", targets: ["LocalOCRService"]),
+        .library(name: "LocalOCRStudioKit", targets: ["LocalOCRStudioKit"]),
         .executable(name: "localocr", targets: ["LocalOCRCLIExecutable"]),
         .executable(name: "localocr-mcp", targets: ["LocalOCRMCPExecutable"])
     ],
@@ -28,6 +29,11 @@ let package = Package(
         .target(
             name: "LocalOCRService",
             dependencies: ["LocalOCRCore"],
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
+        .target(
+            name: "LocalOCRStudioKit",
+            dependencies: ["LocalOCRService", "LocalOCRCore"],
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
         .target(
@@ -68,6 +74,12 @@ let package = Package(
             dependencies: ["LocalOCRService"],
             path: "tests/LocalOCRServiceTests",
             resources: [.copy("Fixtures")],
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
+        .testTarget(
+            name: "LocalOCRStudioKitTests",
+            dependencies: ["LocalOCRStudioKit", "LocalOCRService", "LocalOCRCore"],
+            path: "tests/LocalOCRStudioKitTests",
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
         .testTarget(

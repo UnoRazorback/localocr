@@ -111,7 +111,7 @@ reject_binary_content() {
 reject_binary_content "$cli"
 reject_binary_content "$mcp"
 
-inspection="$($cli inspect "$fixture" --json)"
+inspection="$("$cli" inspect "$fixture" --json)"
 if ! printf '%s\n' "$inspection" | grep -q '"pages":2'; then
     echo "native CLI inspection did not return the fixture page count" >&2
     exit 1
