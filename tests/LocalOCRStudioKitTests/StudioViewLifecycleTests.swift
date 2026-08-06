@@ -69,51 +69,16 @@ import Testing
         #expect(didFinish == false)
     }
 
-    @Test @MainActor func resetCleansViewStateBeforeClearingTheModel() {
+    @Test @MainActor func resetPerformsCleanupBeforeClearingTheModel() {
         let lifecycle = StudioViewLifecycle()
-        let pendingInput = lifecycle.beginPendingInput()
-        let searchableAction = lifecycle.beginSearchableAction()
-        var pendingDropLoad = true
-        var isDropTargeted = true
-        var actionError = true
-        var isCreatingSearchablePDF = true
-        var searchableProgress = true
-        var searchablePDFTask = true
         var events: [String] = []
-        var staleCallbacks: [String] = []
-        var cleanupWasCompleteWhenModelCleared = false
 
         lifecycle.performReset {
-            lifecycle.resolveInput(
-                URL(fileURLWithPath: "/tmp/stale.pdf"),
-                for: pendingInput
-            ) { _ in
-                staleCallbacks.append("input")
-            }
-            lifecycle.publishSearchableProgress(.assembling, for: searchableAction) { _ in
-                staleCallbacks.append("searchable")
-            }
-            pendingDropLoad = false
-            isDropTargeted = false
-            actionError = false
-            isCreatingSearchablePDF = false
-            searchableProgress = false
-            searchablePDFTask = false
             events.append("cleanup")
         } clearModel: {
-            cleanupWasCompleteWhenModelCleared = [
-                pendingDropLoad,
-                isDropTargeted,
-                actionError,
-                isCreatingSearchablePDF,
-                searchableProgress,
-                searchablePDFTask,
-            ].allSatisfy { $0 == false }
             events.append("model.clear")
         }
 
-        #expect(staleCallbacks.isEmpty)
-        #expect(cleanupWasCompleteWhenModelCleared)
         #expect(events == ["cleanup", "model.clear"])
     }
 

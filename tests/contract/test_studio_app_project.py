@@ -75,20 +75,48 @@ def _swift_function_body(source: str, signature: str) -> str:
     raise AssertionError(f"unterminated Swift function: {signature}")
 
 
+def _assert_fragments_in_order(source: str, fragments: tuple[str, ...]) -> None:
+    cursor = 0
+    for fragment in fragments:
+        position = source.find(fragment, cursor)
+        assert position >= 0, f"missing or out-of-order source fragment: {fragment}"
+        cursor = position + len(fragment)
+
+
 def test_result_screen_has_a_visible_process_another_reset_action() -> None:
     root_view = _read(ROOT_VIEW)
     result_view = _read(RESULT_VIEW)
-    reset_body = _swift_function_body(root_view, "private func resetToEmpty()")
 
     assert "let onProcessAnother: () -> Void" in result_view
     assert 'Button("Process Another Document", action: onProcessAnother)' in result_view
     assert '.accessibilityIdentifier("studio.process-another")' in result_view
     assert "if contract.canProcessAnotherDocument" in result_view
     assert "onProcessAnother: resetToEmpty" in root_view
-    assert "lifecycle.performReset" in reset_body
-    assert "isDropTargeted = false" in reset_body
-    assert reset_body.index("isDropTargeted = false") < reset_body.index("model.clear()")
-    assert reset_body.index("task?.cancel()") < reset_body.index("model.clear()")
+
+
+def test_reset_to_empty_cleans_all_view_state_before_model_clear() -> None:
+    reset_body = _swift_function_body(
+        _read(ROOT_VIEW),
+        "private func resetToEmpty()",
+    )
+
+    _assert_fragments_in_order(
+        reset_body,
+        (
+            "lifecycle.performReset {",
+            "pendingDropLoad?.cancel()",
+            "pendingDropLoad = nil",
+            "isDropTargeted = false",
+            "actionError = nil",
+            "isCreatingSearchablePDF = false",
+            "searchableProgress = nil",
+            "let task = searchablePDFTask",
+            "searchablePDFTask = nil",
+            "task?.cancel()",
+            "} clearModel: {",
+            "model.clear()",
+        ),
+    )
 
 
 def test_required_app_project_files_exist() -> None:
