@@ -22,6 +22,31 @@ final class LocalOCRStudioUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Processed locally on this Mac."].exists)
     }
 
+    func testSingleWindowLaunchAndReopenNeverCreatesASecondDocumentWindow() {
+        let app = launch(state: "empty")
+        let dropZone = element("studio.drop-zone", in: app)
+
+        XCTAssertEqual(app.state, .runningForeground)
+        XCTAssertTrue(dropZone.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.windows.count, 1)
+
+        app.typeKey("n", modifierFlags: .command)
+        XCTAssertFalse(app.windows.element(boundBy: 1).waitForExistence(timeout: 1))
+        XCTAssertEqual(app.windows.count, 1)
+
+        app.typeKey("w", modifierFlags: .command)
+        let windowClosed = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in app.windows.count == 0 },
+            object: nil
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [windowClosed], timeout: 5), .completed)
+
+        app.activate()
+        XCTAssertTrue(dropZone.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.state, .runningForeground)
+        XCTAssertEqual(app.windows.count, 1)
+    }
+
     func testResultStateExposesReadableTextAndDocumentActions() {
         let app = launch(state: "result")
 
@@ -101,11 +126,10 @@ final class LocalOCRStudioUITests: XCTestCase {
 
     private func launch(state: String) -> XCUIApplication {
         let app = XCUIApplication()
-        let inheritedConfigurationPath = ProcessInfo.processInfo
-            .environment["XCTestConfigurationFilePath"]
-            .flatMap { $0.isEmpty ? nil : $0 }
-        app.launchEnvironment["XCTestConfigurationFilePath"] =
-            inheritedConfigurationPath ?? Bundle(for: Self.self).bundlePath
+        let testSession = ProcessInfo.processInfo
+            .environment["XCTestSessionIdentifier"]
+            .flatMap { $0.isEmpty ? nil : $0 } ?? UUID().uuidString
+        app.launchEnvironment["LOCALOCR_STUDIO_UI_TEST_SESSION"] = testSession
         app.launchEnvironment["LOCALOCR_STUDIO_UI_STATE"] = state
         app.launchArguments += [
             "-ApplePersistenceIgnoreState", "YES",

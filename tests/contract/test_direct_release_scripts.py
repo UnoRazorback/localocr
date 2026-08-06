@@ -1662,6 +1662,40 @@ def test_real_unsigned_studio_app_stages_under_exact_release_policy(
         assert b"/Users/" not in resource.read_bytes()
 
 
+def test_pre_signing_evidence_hashes_exact_staged_binaries(
+    real_staged_studio_app: Path,
+) -> None:
+    evidence_file = (
+        ROOT
+        / "dist"
+        / "direct-release"
+        / "evidence"
+        / "pre-signing-sha256.txt"
+    )
+    evidence = {
+        label: digest
+        for digest, label in (
+            line.split(maxsplit=1)
+            for line in evidence_file.read_text().splitlines()
+        )
+    }
+    expected_paths = {
+        "staged/LocalOCR Studio.app/Contents/MacOS/LocalOCR Studio": (
+            real_staged_studio_app / "Contents" / "MacOS" / "LocalOCR Studio"
+        ),
+        "staged/LocalOCR Studio.app/Contents/Helpers/localocr": (
+            real_staged_studio_app / "Contents" / "Helpers" / "localocr"
+        ),
+        "staged/LocalOCR Studio.app/Contents/Helpers/localocr-mcp": (
+            real_staged_studio_app / "Contents" / "Helpers" / "localocr-mcp"
+        ),
+    }
+
+    assert evidence.keys() == expected_paths.keys()
+    for label, binary in expected_paths.items():
+        assert evidence[label] == hashlib.sha256(binary.read_bytes()).hexdigest()
+
+
 @pytest.mark.parametrize("helper_name", EXPECTED_HELPERS)
 @pytest.mark.parametrize("mutation", ("private_dependency", "private_rpath"))
 def test_stage_rejects_unapproved_dependencies_and_rpaths_in_each_staged_helper(

@@ -512,21 +512,21 @@ clear_staged_app_xattrs() {
     /usr/bin/xattr -cr "$app_path"
 }
 
-record_pre_signing_hashes() {
-    local unsigned_main_executable="$1"
-    local localocr_binary="$native_tools_dir/localocr"
-    local localocr_mcp_binary="$native_tools_dir/localocr-mcp"
-    local unsigned_hash
+record_staged_pre_signing_hashes() {
+    local staged_main_executable="$staged_app/Contents/MacOS/$expected_main_executable_name"
+    local localocr_binary="$staged_app/Contents/Helpers/localocr"
+    local localocr_mcp_binary="$staged_app/Contents/Helpers/localocr-mcp"
+    local staged_main_hash
     local localocr_hash
     local localocr_mcp_hash
 
-    unsigned_hash="$(/usr/bin/shasum -a 256 "$unsigned_main_executable" | /usr/bin/awk '{ print $1 }')"
+    staged_main_hash="$(/usr/bin/shasum -a 256 "$staged_main_executable" | /usr/bin/awk '{ print $1 }')"
     localocr_hash="$(/usr/bin/shasum -a 256 "$localocr_binary" | /usr/bin/awk '{ print $1 }')"
     localocr_mcp_hash="$(/usr/bin/shasum -a 256 "$localocr_mcp_binary" | /usr/bin/awk '{ print $1 }')"
     {
-        printf '%s  %s\n' "$unsigned_hash" "unsigned-app/Contents/MacOS/$(/usr/bin/basename "$unsigned_main_executable")"
-        printf '%s  %s\n' "$localocr_hash" "native-tools/localocr"
-        printf '%s  %s\n' "$localocr_mcp_hash" "native-tools/localocr-mcp"
+        printf '%s  %s\n' "$staged_main_hash" "staged/LocalOCR Studio.app/Contents/MacOS/$expected_main_executable_name"
+        printf '%s  %s\n' "$localocr_hash" "staged/LocalOCR Studio.app/Contents/Helpers/localocr"
+        printf '%s  %s\n' "$localocr_mcp_hash" "staged/LocalOCR Studio.app/Contents/Helpers/localocr-mcp"
     } > "$evidence_dir/pre-signing-sha256.txt"
 }
 
@@ -573,8 +573,6 @@ stage_direct_release() {
         }
         validate_release_binary "$native_tools_dir/$helper"
     done
-    record_pre_signing_hashes "$unsigned_main_executable"
-
     /bin/mkdir -p "$(/usr/bin/dirname "$staged_app")"
     /usr/bin/ditto "$physical_unsigned_app" "$staged_app"
     /bin/mkdir -p "$staged_app/Contents/Helpers"
@@ -615,6 +613,7 @@ stage_direct_release() {
     validate_exact_staged_helpers "$staged_app"
     validate_nested_code_allowlist "$staged_app" true
     reject_private_user_paths "$staged_app"
+    record_staged_pre_signing_hashes
 }
 
 case "${1:-}" in

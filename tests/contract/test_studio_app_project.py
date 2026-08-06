@@ -133,7 +133,16 @@ def test_shared_scheme_builds_app_and_runs_ui_tests() -> None:
     assert test_names == {"LocalOCR StudioUITests"}
 
 
-def test_ui_fixtures_are_debug_only_and_require_the_xctest_marker() -> None:
+def test_app_uses_one_app_delegate_managed_window_instead_of_a_window_group() -> None:
+    entry_point = _read(APP_ENTRY_POINT)
+
+    assert "WindowGroup" not in entry_point
+    assert "@NSApplicationDelegateAdaptor" in entry_point
+    assert "applicationShouldHandleReopen" in entry_point
+    assert "isReleasedWhenClosed = false" in entry_point
+
+
+def test_ui_fixtures_are_debug_only_and_require_a_test_session_marker() -> None:
     entry_point = _read(APP_ENTRY_POINT)
     support = _read(UI_TEST_SUPPORT)
 
@@ -141,7 +150,7 @@ def test_ui_fixtures_are_debug_only_and_require_the_xctest_marker() -> None:
     assert "LocalOCRStudioUITestSupport.makeViewIfRequested()" in entry_point
     assert support.startswith("#if DEBUG\n")
     assert support.rstrip().endswith("#endif")
-    assert "XCTestConfigurationFilePath" in support
+    assert "LOCALOCR_STUDIO_UI_TEST_SESSION" in support
     assert "LOCALOCR_STUDIO_UI_STATE" in support
     state_definition = re.search(
         r"^    private enum FixtureState:[^{]+\{\n(?P<body>.*?)^    \}",

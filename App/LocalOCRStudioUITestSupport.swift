@@ -13,8 +13,8 @@ enum LocalOCRStudioUITestSupport {
     static func makeViewIfRequested(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> LocalOCRStudioView? {
-        guard let configurationPath = environment["XCTestConfigurationFilePath"],
-              !configurationPath.isEmpty,
+        guard let testSession = environment["LOCALOCR_STUDIO_UI_TEST_SESSION"],
+              !testSession.isEmpty,
               let rawState = environment["LOCALOCR_STUDIO_UI_STATE"],
               let state = FixtureState(rawValue: rawState)
         else {
