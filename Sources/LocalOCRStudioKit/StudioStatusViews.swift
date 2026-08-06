@@ -6,6 +6,7 @@ public struct StudioViewContract: Equatable {
     public let canCopy: Bool
     public let canSaveText: Bool
     public let canCreateSearchablePDF: Bool
+    public let canProcessAnotherDocument: Bool
     public let canCancel: Bool
     public let canRetry: Bool
 
@@ -17,6 +18,7 @@ public struct StudioViewContract: Equatable {
             canCopy = false
             canSaveText = false
             canCreateSearchablePDF = false
+            canProcessAnotherDocument = false
             canCancel = false
             canRetry = false
 
@@ -26,6 +28,7 @@ public struct StudioViewContract: Equatable {
             canCopy = false
             canSaveText = false
             canCreateSearchablePDF = false
+            canProcessAnotherDocument = false
             canCancel = true
             canRetry = false
 
@@ -35,6 +38,7 @@ public struct StudioViewContract: Equatable {
             canCopy = true
             canSaveText = true
             canCreateSearchablePDF = result.kind == .pdf
+            canProcessAnotherDocument = true
             canCancel = false
             canRetry = false
 
@@ -44,6 +48,7 @@ public struct StudioViewContract: Equatable {
             canCopy = false
             canSaveText = false
             canCreateSearchablePDF = false
+            canProcessAnotherDocument = false
             canCancel = false
             canRetry = true
         }
