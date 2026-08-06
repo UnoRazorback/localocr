@@ -101,6 +101,8 @@ STAGED_STUDIO_APP = (
     ROOT / "dist" / "direct-release" / "staged" / "LocalOCR Studio.app"
 )
 BUILD_UNSIGNED_STUDIO_APP = SCRIPTS / "build-unsigned-studio-app.sh"
+SOURCE_XATTR_SENTINEL_NAME = "com.rayconsulting.localocr.source-test"
+SOURCE_XATTR_SENTINEL_VALUE = "must-survive-staging"
 FORBIDDEN_BETA_RECORDS = (
     "MCP-MacVision-Beta-Metrics.csv",
     "MCP-MacVision-Feedback-Log.csv",
@@ -1156,14 +1158,15 @@ def test_stage_uses_confined_native_artifact_directory() -> None:
 
 @pytest.fixture(scope="module")
 def real_unsigned_studio_app():
-    result = subprocess.run(
-        [str(BUILD_UNSIGNED_STUDIO_APP)],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
+    if os.environ.get("LOCALOCR_TEST_REUSE_UNSIGNED_STUDIO_APP") != "1":
+        result = subprocess.run(
+            [str(BUILD_UNSIGNED_STUDIO_APP)],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
     assert UNSIGNED_STUDIO_APP.is_dir()
     try:
         yield UNSIGNED_STUDIO_APP
@@ -1218,6 +1221,32 @@ def _run_real_app_stage(unsigned_app: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _run_stage_function(
+    function_call: str,
+    *arguments: Path,
+    stage_script: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    selected_stage_script = stage_script or RELEASE_SCRIPTS["stage"]
+    return subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            (
+                'source "$1" --test-minimum-macos 14.0\n'
+                "shift\n"
+                f"{function_call}\n"
+            ),
+            "stage-function-test",
+            str(selected_stage_script),
+            *(str(argument) for argument in arguments),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 def _read_bundle_plist(app: Path) -> dict[str, object]:
     with (app / "Contents" / "Info.plist").open("rb") as plist_file:
         return plistlib.load(plist_file)
@@ -1243,6 +1272,7 @@ def _compile_macos_fixture(
             "-arch",
             architecture,
             f"-mmacosx-version-min={minimum_macos}",
+            "-Wl,-headerpad_max_install_names",
             str(source),
             "-o",
             str(output),
@@ -1309,6 +1339,55 @@ def _snapshot_app_files(app: Path) -> dict[Path, tuple[int, str]]:
         for path in app.rglob("*")
         if path.is_file()
     }
+
+
+def test_stage_nested_code_validation_propagates_actual_enumeration_failure(
+    tmp_path: Path,
+) -> None:
+    isolated_scripts = tmp_path / "scripts"
+    isolated_scripts.mkdir()
+    controlled_find = tmp_path / "controlled-find"
+    controlled_find.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+candidate_root="$1"
+case " $* " in
+    *" -print -quit "*)
+        printf '%s\\n' "$candidate_root/Info.plist"
+        ;;
+    *" -print0 "*)
+        printf '%s\\0' "$candidate_root/Info.plist"
+        exit 73
+        ;;
+    *)
+        exit 64
+        ;;
+esac
+"""
+    )
+    controlled_find.chmod(0o755)
+    isolated_stage_script = isolated_scripts / "stage-direct-release.sh"
+    isolated_stage_script.write_text(
+        (RELEASE_SCRIPTS["stage"]).read_text().replace(
+            "/usr/bin/find",
+            str(controlled_find),
+        )
+    )
+    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
+
+    candidate = tmp_path / "Enumeration Failure.app"
+    contents = candidate / "Contents"
+    contents.mkdir(parents=True)
+    (contents / "Info.plist").write_text("fixture")
+
+    result = _run_stage_function(
+        'validate_nested_code_allowlist "$1"',
+        candidate,
+        stage_script=isolated_stage_script,
+    )
+
+    assert result.returncode != 0
+    assert "could not enumerate app code candidates" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -1422,26 +1501,118 @@ def test_real_app_staging_rejects_altered_release_input_before_cleanup(
     assert cleanup_sentinel.read_text() == "known-good staged release"
 
 
+def test_real_app_staging_preserves_known_good_release_when_resource_scan_fails(
+    tmp_path: Path,
+    real_unsigned_studio_app: Path,
+) -> None:
+    candidate = _copy_real_unsigned_studio_app(
+        real_unsigned_studio_app,
+        tmp_path / "Unreadable Resource LocalOCR Studio.app",
+    )
+    resource = candidate / "Contents" / "Resources" / "unreadable-resource.dat"
+    resource.parent.mkdir()
+    resource.write_text("benign fixture")
+    resource.chmod(0)
+    release_root = ROOT / "dist" / "direct-release"
+    release_root.mkdir(parents=True, exist_ok=True)
+    cleanup_sentinel = release_root / "must-survive-resource-scan-error.txt"
+    cleanup_sentinel.write_text("known-good staged release")
+
+    try:
+        result = _run_real_app_stage(candidate)
+    finally:
+        resource.chmod(0o644)
+
+    assert result.returncode != 0
+    assert "could not inspect app resources for private paths" in result.stderr
+    assert cleanup_sentinel.read_text() == "known-good staged release"
+
+
+@pytest.fixture(scope="module")
+def real_staged_studio_app(
+    real_unsigned_studio_app: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
+    source_xattr_target = real_unsigned_studio_app / "Contents" / "Info.plist"
+    source_files_before = _snapshot_app_files(real_unsigned_studio_app)
+    subprocess.run(
+        [
+            "/usr/bin/xattr",
+            "-w",
+            SOURCE_XATTR_SENTINEL_NAME,
+            SOURCE_XATTR_SENTINEL_VALUE,
+            str(source_xattr_target),
+        ],
+        check=True,
+    )
+    try:
+        result = _run_real_app_stage(real_unsigned_studio_app)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert _snapshot_app_files(real_unsigned_studio_app) == source_files_before
+        retained_xattr = subprocess.run(
+            [
+                "/usr/bin/xattr",
+                "-p",
+                SOURCE_XATTR_SENTINEL_NAME,
+                str(source_xattr_target),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert (
+            retained_xattr.stdout.removesuffix("\n")
+            == SOURCE_XATTR_SENTINEL_VALUE
+        )
+        fixture_app = (
+            tmp_path_factory.mktemp("real-staged-app")
+            / "LocalOCR Studio.app"
+        )
+        _copy_real_unsigned_studio_app(STAGED_STUDIO_APP, fixture_app)
+        yield fixture_app
+    finally:
+        subprocess.run(
+            [
+                "/usr/bin/xattr",
+                "-d",
+                SOURCE_XATTR_SENTINEL_NAME,
+                str(source_xattr_target),
+            ],
+            check=False,
+        )
+
+
 def test_real_unsigned_studio_app_stages_under_exact_release_policy(
     real_unsigned_studio_app: Path,
+    real_staged_studio_app: Path,
 ) -> None:
     unsigned_physical = real_unsigned_studio_app.resolve()
     release_physical = (ROOT / "dist" / "direct-release").resolve()
     assert unsigned_physical.is_relative_to((ROOT / "dist").resolve())
     assert not unsigned_physical.is_relative_to(release_physical)
-    unsigned_before = _snapshot_app_files(real_unsigned_studio_app)
 
-    result = _run_real_app_stage(real_unsigned_studio_app)
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert _snapshot_app_files(real_unsigned_studio_app) == unsigned_before
-    staged_plist = _read_bundle_plist(STAGED_STUDIO_APP)
+    source_xattr = subprocess.run(
+        [
+            "/usr/bin/xattr",
+            "-p",
+            SOURCE_XATTR_SENTINEL_NAME,
+            str(real_unsigned_studio_app / "Contents" / "Info.plist"),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert (
+        source_xattr.stdout.removesuffix("\n")
+        == SOURCE_XATTR_SENTINEL_VALUE
+    )
+    staged_plist = _read_bundle_plist(real_staged_studio_app)
     assert staged_plist["CFBundleExecutable"] == "LocalOCR Studio"
     assert staged_plist["CFBundleIdentifier"] == "com.rayconsulting.localocr"
     assert staged_plist["CFBundleShortVersionString"] == "0.2.0"
     assert staged_plist["CFBundleVersion"] == "1"
 
-    helpers = STAGED_STUDIO_APP / "Contents" / "Helpers"
+    helpers = real_staged_studio_app / "Contents" / "Helpers"
     assert sorted(path.name for path in helpers.iterdir()) == [
         "localocr",
         "localocr-mcp",
@@ -1452,8 +1623,8 @@ def test_real_unsigned_studio_app_stages_under_exact_release_policy(
         Path("Contents/Helpers/localocr-mcp"),
     }
     actual_code = {
-        path.relative_to(STAGED_STUDIO_APP)
-        for path in (STAGED_STUDIO_APP / "Contents").rglob("*")
+        path.relative_to(real_staged_studio_app)
+        for path in (real_staged_studio_app / "Contents").rglob("*")
         if path.is_file()
         and "Mach-O" in subprocess.run(
             ["/usr/bin/file", "-b", str(path)],
@@ -1465,7 +1636,7 @@ def test_real_unsigned_studio_app_stages_under_exact_release_policy(
     assert actual_code == expected_code
 
     for relative_binary in expected_code:
-        binary = STAGED_STUDIO_APP / relative_binary
+        binary = real_staged_studio_app / relative_binary
         architecture = subprocess.run(
             ["/usr/bin/lipo", "-archs", str(binary)],
             check=True,
@@ -1474,21 +1645,74 @@ def test_real_unsigned_studio_app_stages_under_exact_release_policy(
         ).stdout.strip()
         assert architecture == "arm64"
         assert _binary_minimum_macos(binary) == "14.0"
-
-    main = STAGED_STUDIO_APP / "Contents" / "MacOS" / "LocalOCR Studio"
-    assert _binary_rpaths(main) == ("/usr/lib/swift",)
-    for dependency in _binary_dependencies(main):
-        assert dependency.startswith(("/System/Library/", "/usr/lib/"))
+        assert _binary_rpaths(binary) == ("/usr/lib/swift",)
+        for dependency in _binary_dependencies(binary):
+            assert dependency.startswith(("/System/Library/", "/usr/lib/")) or (
+                dependency == "@rpath/libswiftCompatibilitySpan.dylib"
+            )
 
     resource_files = {
         path
-        for path in (STAGED_STUDIO_APP / "Contents").rglob("*")
+        for path in (real_staged_studio_app / "Contents").rglob("*")
         if path.is_file()
-        and path.relative_to(STAGED_STUDIO_APP) not in expected_code
+        and path.relative_to(real_staged_studio_app) not in expected_code
     }
     assert resource_files
     for resource in resource_files:
         assert b"/Users/" not in resource.read_bytes()
+
+
+@pytest.mark.parametrize("helper_name", EXPECTED_HELPERS)
+@pytest.mark.parametrize("mutation", ("private_dependency", "private_rpath"))
+def test_stage_rejects_unapproved_dependencies_and_rpaths_in_each_staged_helper(
+    tmp_path: Path,
+    helper_name: str,
+    mutation: str,
+) -> None:
+    candidate = tmp_path / f"{helper_name}-{mutation}.app"
+    helpers = candidate / "Contents" / "Helpers"
+    helpers.mkdir(parents=True)
+    fixture_helper = tmp_path / "fixture-helper"
+    _compile_macos_fixture(
+        fixture_helper,
+        architecture="arm64",
+        minimum_macos="14.0",
+    )
+    shutil.copy2(fixture_helper, helpers / "localocr")
+    shutil.copy2(fixture_helper, helpers / "localocr-mcp")
+    helper = candidate / "Contents" / "Helpers" / helper_name
+    if mutation == "private_dependency":
+        command = [
+            "/usr/bin/install_name_tool",
+            "-change",
+            "/usr/lib/libSystem.B.dylib",
+            "/Users/example/private/libSystem.B.dylib",
+            str(helper),
+        ]
+        expected_error = "unapproved dynamic-library install name"
+    else:
+        command = [
+            "/usr/bin/install_name_tool",
+            "-add_rpath",
+            "/Users/example/private",
+            str(helper),
+        ]
+        expected_error = "unapproved LC_RPATH"
+    mutation_result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert mutation_result.returncode == 0, mutation_result.stderr
+
+    result = _run_stage_function(
+        'validate_exact_staged_helpers "$1"',
+        candidate,
+    )
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
 
 
 @pytest.mark.parametrize("use_explicit_artifact_dir", (False, True))

@@ -357,19 +357,39 @@ remove_removable_framework_rpath() {
 
 reject_private_user_paths() {
     local app_path="$1"
-    local private_path_file
+    local candidate
+    local grep_status
+    local scan_statuses
+    local enumeration_status
+    local inspection_status
 
-    private_path_file="$(
+    {
         /usr/bin/find "$app_path/Contents" -type f \
             ! -path "$app_path/Contents/MacOS/*" \
             ! -path "$app_path/Contents/Helpers/*" \
-            -exec /usr/bin/grep -a -F -l -- "/Users/" {} \;
-    )" || {
-        echo "could not inspect app resources for private paths" >&2
+            -print0 |
+            while IFS= read -r -d '' candidate; do
+                if /usr/bin/grep -a -F -q -- "/Users/" "$candidate"; then
+                    echo "app resource contains a private /Users/ path: $candidate" >&2
+                    exit 1
+                else
+                    grep_status=$?
+                    [[ "$grep_status" -eq 1 ]] || {
+                        echo "could not inspect app resources for private paths: $candidate" >&2
+                        exit 1
+                    }
+                fi
+            done
+        scan_statuses="${PIPESTATUS[*]}"
+    } || :
+    enumeration_status="${scan_statuses%% *}"
+    inspection_status="${scan_statuses#* }"
+    [[ "$enumeration_status" -eq 0 ]] || {
+        echo "could not enumerate app resources for private paths" >&2
         return 1
     }
-    [[ -z "$private_path_file" ]] || {
-        echo "app resource contains a private /Users/ path: $private_path_file" >&2
+    [[ "$inspection_status" -eq 0 ]] || {
+        echo "could not inspect app resources for private paths" >&2
         return 1
     }
 }
@@ -396,6 +416,7 @@ reject_unsigned_app_helpers() {
 validate_exact_staged_helpers() {
     local app_path="$1"
     local helpers_dir="$app_path/Contents/Helpers"
+    local helper
     local unexpected_helper
 
     [[ -d "$helpers_dir" && ! -L "$helpers_dir" ]] || {
@@ -413,8 +434,11 @@ validate_exact_staged_helpers() {
         echo "unexpected staged helper: $unexpected_helper" >&2
         return 1
     }
-    validate_release_binary "$helpers_dir/localocr"
-    validate_release_binary "$helpers_dir/localocr-mcp"
+    for helper in localocr localocr-mcp; do
+        validate_release_binary "$helpers_dir/$helper"
+        validate_binary_dependencies "$helpers_dir/$helper"
+        validate_binary_rpaths "$helpers_dir/$helper"
+    done
 }
 
 validate_nested_code_allowlist() {
@@ -423,30 +447,43 @@ validate_nested_code_allowlist() {
     local candidate
     local file_description
     local relative_candidate
+    local scan_statuses
+    local enumeration_status
+    local inspection_status
 
-    /usr/bin/find "$app_path/Contents" -type f -print -quit >/dev/null || {
+    {
+        /usr/bin/find "$app_path/Contents" -type f -print0 |
+            while IFS= read -r -d '' candidate; do
+                file_description="$(/usr/bin/file -b "$candidate")" || {
+                    echo "could not inspect app code candidate: $candidate" >&2
+                    exit 1
+                }
+                [[ "$file_description" == *"Mach-O"* ]] || continue
+                relative_candidate="${candidate#"$app_path"/}"
+                case "$relative_candidate" in
+                    "Contents/MacOS/$expected_main_executable_name")
+                        ;;
+                    Contents/Helpers/localocr|Contents/Helpers/localocr-mcp)
+                        [[ "$include_helpers" == true ]] || {
+                            echo "unexpected nested code: $relative_candidate" >&2
+                            exit 1
+                        }
+                        ;;
+                    *)
+                        echo "unexpected nested code: $relative_candidate" >&2
+                        exit 1
+                        ;;
+                esac
+            done
+        scan_statuses="${PIPESTATUS[*]}"
+    } || :
+    enumeration_status="${scan_statuses%% *}"
+    inspection_status="${scan_statuses#* }"
+    [[ "$enumeration_status" -eq 0 ]] || {
         echo "could not enumerate app code candidates" >&2
         return 1
     }
-    while IFS= read -r -d '' candidate; do
-        file_description="$(/usr/bin/file -b "$candidate")"
-        [[ "$file_description" == *"Mach-O"* ]] || continue
-        relative_candidate="${candidate#"$app_path"/}"
-        case "$relative_candidate" in
-            "Contents/MacOS/$expected_main_executable_name")
-                ;;
-            Contents/Helpers/localocr|Contents/Helpers/localocr-mcp)
-                [[ "$include_helpers" == true ]] || {
-                    echo "unexpected nested code: $relative_candidate" >&2
-                    return 1
-                }
-                ;;
-            *)
-                echo "unexpected nested code: $relative_candidate" >&2
-                return 1
-                ;;
-        esac
-    done < <(/usr/bin/find "$app_path/Contents" -type f -print0)
+    [[ "$inspection_status" -eq 0 ]] || return 1
 }
 
 reject_tree_symlinks() {
