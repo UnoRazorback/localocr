@@ -45,6 +45,7 @@ public struct LocalOCRStudioView: View {
                         result: result,
                         isCreatingSearchablePDF: isCreatingSearchablePDF,
                         searchableProgress: searchableProgress,
+                        onProcessAnother: resetToEmpty,
                         onCopy: { actions.copy(result) },
                         onSaveText: { showTextSavePanel(for: result) },
                         onCreateSearchablePDF: { showSearchablePDFSavePanel(for: result) }
@@ -185,6 +186,19 @@ public struct LocalOCRStudioView: View {
         searchablePDFTask = nil
         task?.cancel()
         model.open(sourceURL)
+    }
+
+    private func resetToEmpty() {
+        lifecycle.invalidateForReset()
+        pendingDropLoad?.cancel()
+        pendingDropLoad = nil
+        actionError = nil
+        isCreatingSearchablePDF = false
+        searchableProgress = nil
+        let task = searchablePDFTask
+        searchablePDFTask = nil
+        task?.cancel()
+        model.clear()
     }
 
     private func showTextSavePanel(for result: StudioDocumentResult) {

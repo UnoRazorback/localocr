@@ -12,6 +12,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).parents[2]
+ROOT_VIEW = ROOT / "Sources" / "LocalOCRStudioKit" / "LocalOCRStudioView.swift"
+RESULT_VIEW = ROOT / "Sources" / "LocalOCRStudioKit" / "StudioResultView.swift"
 PROJECT_SPEC = ROOT / "project.yml"
 XCODE_PROJECT = ROOT / "LocalOCR Studio.xcodeproj"
 PROJECT_FILE = XCODE_PROJECT / "project.pbxproj"
@@ -57,6 +59,20 @@ def _yaml_scalar(source: str, key: str) -> str:
     )
     assert len(matches) == 1, f"expected one {key} setting, found {matches}"
     return matches[0].strip()
+
+
+def test_result_screen_has_a_visible_process_another_reset_action() -> None:
+    root_view = _read(ROOT_VIEW)
+    result_view = _read(RESULT_VIEW)
+
+    assert "let onProcessAnother: () -> Void" in result_view
+    assert 'Button("Process Another Document", action: onProcessAnother)' in result_view
+    assert '.accessibilityIdentifier("studio.process-another")' in result_view
+    assert "if contract.canProcessAnotherDocument" in result_view
+    assert "onProcessAnother: resetToEmpty" in root_view
+    assert "private func resetToEmpty()" in root_view
+    assert "lifecycle.invalidateForReset()" in root_view
+    assert "model.clear()" in root_view
 
 
 def test_required_app_project_files_exist() -> None:

@@ -39,6 +39,36 @@ import Testing
         #expect(openedURLs.isEmpty)
     }
 
+    @Test @MainActor func resetInvalidatesInputAndSearchableCallbacks() {
+        let lifecycle = StudioViewLifecycle()
+        let pendingInput = lifecycle.beginPendingInput()
+        let searchableAction = lifecycle.beginSearchableAction()
+        let sourceURL = URL(fileURLWithPath: "/tmp/stale.pdf")
+        var openedURLs: [URL] = []
+        var progresses: [StudioProgress] = []
+        var errors: [StudioPresentedError] = []
+        var didFinish = false
+
+        lifecycle.invalidateForReset()
+        lifecycle.resolveInput(sourceURL, for: pendingInput) {
+            openedURLs.append($0)
+        }
+        lifecycle.publishSearchableProgress(.assembling, for: searchableAction) {
+            progresses.append($0)
+        }
+        lifecycle.publishSearchableError(FixtureError.failed, for: searchableAction) {
+            errors.append($0)
+        }
+        lifecycle.finishSearchableAction(searchableAction) {
+            didFinish = true
+        }
+
+        #expect(openedURLs.isEmpty)
+        #expect(progresses.isEmpty)
+        #expect(errors.isEmpty)
+        #expect(didFinish == false)
+    }
+
     @Test @MainActor func activeSearchableCallbacksAreDelivered() {
         let lifecycle = StudioViewLifecycle()
         let searchableAction = lifecycle.beginSearchableAction()

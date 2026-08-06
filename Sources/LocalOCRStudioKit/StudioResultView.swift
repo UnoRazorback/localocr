@@ -4,6 +4,7 @@ struct StudioResultView: View {
     let result: StudioDocumentResult
     let isCreatingSearchablePDF: Bool
     let searchableProgress: StudioProgress?
+    let onProcessAnother: () -> Void
     let onCopy: () -> Void
     let onSaveText: () -> Void
     let onCreateSearchablePDF: () -> Void
@@ -66,6 +67,11 @@ struct StudioResultView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
+                }
+
+                if contract.canProcessAnotherDocument {
+                    Button("Process Another Document", action: onProcessAnother)
+                        .accessibilityIdentifier("studio.process-another")
                 }
 
                 Spacer()
