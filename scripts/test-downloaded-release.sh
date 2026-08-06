@@ -612,7 +612,10 @@ download_verify_mcp_initialization() {
     printf '%s\n' \
         '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"downloaded-release-verifier","version":"1.0"}}}' \
         > "$request_file"
-    "$mcp_binary" < "$request_file" > "$response_file" 2> "$stderr_file" &
+    {
+        /bin/cat "$request_file"
+        "$download_sleep" 1
+    } | "$mcp_binary" > "$response_file" 2> "$stderr_file" &
     mcp_pid=$!
     for _ in {1..50}; do
         if ! /bin/kill -0 "$mcp_pid" 2>/dev/null; then

@@ -2422,6 +2422,24 @@ esac
     mcp.write_text(
         """#!/bin/bash
 set -euo pipefail
+if [[ "${LOCALOCR_TEST_MCP_REQUIRES_HELD_STDIN:-}" == "1" ]]; then
+    IFS= read -r request
+    (
+        /bin/sleep 0.1
+        version="${LOCALOCR_TEST_MCP_VERSION:-${LOCALOCR_RELEASE_VERSION:?}}"
+        printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"localocr-mcp","version":"%s"}}}\\n' "$version"
+    ) &
+    responder_pid=$!
+    if ! IFS= read -r _ && /bin/kill -0 "$responder_pid" 2>/dev/null; then
+        /bin/kill "$responder_pid" 2>/dev/null || true
+        wait "$responder_pid" 2>/dev/null || true
+        exit 0
+    fi
+    wait "$responder_pid"
+    printf '%s\\n' "$request" > "${LOCALOCR_TEST_MCP_REQUEST:?}"
+    printf 'localocr-mcp initialize\\n' >> "${LOCALOCR_TEST_TRACE:?}"
+    exit 0
+fi
 request="$(/bin/cat)"
 printf '%s\\n' "$request" > "${LOCALOCR_TEST_MCP_REQUEST:?}"
 printf 'localocr-mcp initialize\\n' >> "${LOCALOCR_TEST_TRACE:?}"
@@ -2500,7 +2518,11 @@ download_sw_vers="$tool_dir/sw_vers"
 download_sysctl="$tool_dir/sysctl"
 download_uname="$tool_dir/uname"
 download_date="$tool_dir/date"
-download_sleep="$tool_dir/sleep"
+if [[ "${LOCALOCR_TEST_MCP_REQUIRES_HELD_STDIN:-}" == "1" ]]; then
+    download_sleep="/bin/sleep"
+else
+    download_sleep="$tool_dir/sleep"
+fi
 download_evidence_awk="$tool_dir/evidence-awk"
 download_evidence_mv="$tool_dir/evidence-mv"
 download_cleanup_rm="$tool_dir/cleanup-rm"
@@ -2618,6 +2640,24 @@ def test_downloaded_release_verifies_checksum_before_fresh_extraction_and_runs_a
     assert "OCR smoke result: SKIPPED" in evidence
     assert "Overall result: PASS" in evidence
     assert list((tmp_path / "fresh-extractions").iterdir()) == []
+
+
+def test_downloaded_release_keeps_mcp_stdin_open_until_initialize_response(
+    tmp_path: Path,
+) -> None:
+    archive, checksum = _create_download_release_fixture(tmp_path)
+
+    result, _, _ = _run_download_release_fixture(
+        tmp_path,
+        archive,
+        checksum,
+        extra_env={"LOCALOCR_TEST_MCP_REQUIRES_HELD_STDIN": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    evidence = _download_evidence_files(checksum)[0].read_text()
+    assert "MCP initialization: PASS" in evidence
+    assert "Overall result: PASS" in evidence
 
 
 def test_downloaded_release_checksum_failure_never_extracts(
