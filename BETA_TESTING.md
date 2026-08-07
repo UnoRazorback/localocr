@@ -35,12 +35,11 @@ Recognition uses Apple Vision and PDFKit locally. LocalOCR does not upload docum
 
 ## Compatibility and build provenance
 
-This build was made with stable Xcode 26.6 (`17F113`), Swift 6, and arm64, with a macOS 14 deployment target. It is Developer ID signed with Hardened Runtime, Apple notarized, stapled, and Gatekeeper accepted. Complete downloaded-package and GUI acceptance passed on Apple M5 and Apple M4 Macs tested on macOS 27 beta build `26A5388g`.
+This build was made with stable Xcode 26.6 (`17F113`), Swift 6, and arm64, with deployment target macOS 14.0. It is Developer ID signed with Hardened Runtime, Apple notarized, stapled, and Gatekeeper accepted. Complete downloaded-package and GUI acceptance passed on Apple M5 and Apple M4 Macs tested on macOS 27 beta build `26A5388g`.
 
 Release provenance: version `0.2.0` build `1` comes from source commit `2cb03cc9684ed9bb4b449a0f7d79f0588fb7ae38`; the verified ZIP SHA-256 is `3a6a1c754ee369ab9a8ffe01bcc96e7f4927ac44eb1f82b410f538aee901c0d5`.
 
 Later Apple beta builds may introduce regressions; report the exact macOS version and build number.
-For support triage, say that later Apple beta builds may introduce regressions and include the exact macOS version and build number in every report.
 
 ## Known Beta 1 limitations
 

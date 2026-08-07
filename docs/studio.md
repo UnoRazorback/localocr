@@ -77,8 +77,6 @@ copy or bypass Gatekeeper.
 
 ## Compatibility and build provenance
 
-Beta 1 was built with Xcode 26.6 (`17F113`), Swift 6, and arm64, with a macOS
-14 deployment target. Downloaded-package and GUI acceptance passed on Apple
-M5 and Apple M4 Macs running macOS 27 beta build `26A5388g`. Later Apple beta
+Beta 1 was built with Xcode 26.6 (`17F113`), Swift 6, and arm64, with deployment target macOS 14.0. Downloaded-package and GUI acceptance passed on Apple M5 and Apple M4 Macs tested on macOS 27 beta build `26A5388g`. Later Apple beta
 builds may introduce regressions; include the exact macOS version and build
 number in feedback.

@@ -7,6 +7,12 @@ RELEASE_NOTES = ROOT / "docs/release/v0.2.0-beta.1-notes.md"
 
 RELEASE_COMMIT = "2cb03cc9684ed9bb4b449a0f7d79f0588fb7ae38"
 ZIP_SHA256 = "3a6a1c754ee369ab9a8ffe01bcc96e7f4927ac44eb1f82b410f538aee901c0d5"
+DEPLOYMENT_TARGET = "deployment target macOS 14.0"
+TESTED_ON_BUILD = "tested on macOS 27 beta build `26A5388g`"
+LATER_BETA_WARNING = (
+    "Later Apple beta builds may introduce regressions; report the exact macOS version "
+    "and build number."
+)
 STALE_VALUES = (
     "67c09271c1aa6dbf23e671cc8c8ebbe7b3b3657d",
     "0b1ea1abcf7528e0ed20665571224d02b4532e693453be0c47b847db276b3ad6",
@@ -56,7 +62,8 @@ def test_guide_and_release_notes_use_exact_candidate_identity():
         assert ZIP_SHA256 in text
         assert "Xcode 26.6" in text
         assert "17F113" in text
-        assert "26A5388g" in text
-        assert "later Apple beta builds may introduce regressions" in text
+        assert DEPLOYMENT_TARGET in text
+        assert TESTED_ON_BUILD in text
+        assert text.count(LATER_BETA_WARNING) == 1
         for stale in STALE_VALUES:
             assert stale not in text

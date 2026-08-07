@@ -79,9 +79,7 @@ It is available only to invited testers with private-repository access. Its
 release identity is version `0.2.0`, build `1`, source commit
 `2cb03cc9684ed9bb4b449a0f7d79f0588fb7ae38`, and verified ZIP SHA-256
 `3a6a1c754ee369ab9a8ffe01bcc96e7f4927ac44eb1f82b410f538aee901c0d5`.
-It was built with Xcode 26.6 (`17F113`), Swift 6, and arm64, with a macOS 14
-deployment target; acceptance covered Apple M5 and Apple M4 Macs on macOS 27
-beta build `26A5388g`.
+It was built with Xcode 26.6 (`17F113`), Swift 6, and arm64, with deployment target macOS 14.0; acceptance covered Apple M5 and Apple M4 Macs tested on macOS 27 beta build `26A5388g`.
 
 Download `LocalOCR-Studio-0.2.0-1.zip` and
 `LocalOCR-Studio-0.2.0-1.sha256` into the same directory and verify them before
