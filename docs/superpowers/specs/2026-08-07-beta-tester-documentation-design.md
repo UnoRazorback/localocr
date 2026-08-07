@@ -233,4 +233,3 @@ re-notarize, or make the repository public.
 - After merge, the live release body is updated and fetched back through the
   GitHub API; release ID, tag, target commit, prerelease state, assets, and
   digests remain unchanged.
-
