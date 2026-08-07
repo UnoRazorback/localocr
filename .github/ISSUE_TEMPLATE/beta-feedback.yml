@@ -1,0 +1,112 @@
+name: LocalOCR Studio Beta feedback
+description: Report a Beta 1 bug, usability issue, question, or feature request.
+title: "[Beta 1] "
+labels: []
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing LocalOCR Studio. Do not attach the source document or recognized text. Use a non-sensitive sample if an example is necessary.
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Product surface
+      options:
+        - Desktop app
+        - MCP server
+        - Command-line tool
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: LocalOCR version and build
+      value: v0.2.0-beta.1 (0.2.0 build 1)
+    validations:
+      required: true
+  - type: input
+    id: mac_model
+    attributes:
+      label: Mac model and Apple chip
+      placeholder: MacBook Pro, Apple M4 Pro
+    validations:
+      required: true
+  - type: input
+    id: macos_build
+    attributes:
+      label: macOS version and build number
+      placeholder: macOS 27.0 beta, build 26A5388g
+    validations:
+      required: true
+  - type: input
+    id: input_profile
+    attributes:
+      label: Input type and approximate size
+      description: Describe only the format and approximate page count, not its content or filename.
+      placeholder: Image-only PDF, about 12 pages
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Use non-sensitive descriptions and omit document text, filenames, and paths.
+    validations:
+      required: true
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: Frequency
+      options:
+        - Every time
+        - Often
+        - Sometimes
+        - Once
+    validations:
+      required: true
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - Bug
+        - Usability issue
+        - Privacy concern
+        - Feature request
+        - Setup question
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Blocking
+        - Major
+        - Minor
+        - Suggestion
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy_confirmation
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I have not attached or pasted a sensitive source document, recognized text, filename, path, thumbnail, or document hash.
+          required: true
+    validations:
+      required: true

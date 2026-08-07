@@ -7,7 +7,55 @@ or change client configuration by itself.
 
 ## Start and configure it
 
-Build a local artifact first:
+For the installed Studio beta, configure this absolute helper path:
+
+```text
+/Applications/LocalOCR Studio.app/Contents/Helpers/localocr-mcp
+```
+
+### Codex
+
+```bash
+codex mcp add localocr -- \
+  "/Applications/LocalOCR Studio.app/Contents/Helpers/localocr-mcp"
+codex mcp list
+```
+
+Use `/mcp` in Codex to inspect the connected server. The Codex CLI, IDE
+extension, and desktop app share MCP configuration on the same Codex host. See
+the current [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp).
+
+### Claude Code
+
+```bash
+claude mcp add --transport stdio localocr -- \
+  "/Applications/LocalOCR Studio.app/Contents/Helpers/localocr-mcp"
+claude mcp list
+```
+
+Use `/mcp` in Claude Code to inspect status. Claude Code defaults to
+local/project scope; add `--scope user` only when you intentionally want
+LocalOCR available across projects. See the current [Claude Code MCP
+documentation](https://code.claude.com/docs/en/mcp).
+
+### Other MCP clients
+
+Use your client's current documentation to configure this generic stdio-server
+entry; LocalOCR does not edit client configuration:
+
+```json
+{
+  "command": "/Applications/LocalOCR Studio.app/Contents/Helpers/localocr-mcp",
+  "args": []
+}
+```
+
+See the [advanced MCP setup in the Beta 1 Tester Guide](../BETA_TESTING.md#advanced-mcp-setup)
+for the optional installed-app workflow and safe example prompts.
+
+### Source builds for developers
+
+To build local development artifacts, run:
 
 ```bash
 scripts/build-native-tools.sh
@@ -17,22 +65,6 @@ scripts/smoke-native-tools.sh
 The extension manifest invokes `localocr-mcp` by name. Put the built native
 executable on the client's `PATH` before enabling that extension; the
 extension does not bundle an executable or a runtime.
-
-Give an MCP client this generic stdio-server entry, replacing the placeholder
-with the absolute path to the locally built `localocr-mcp` executable:
-
-```json
-{
-  "command": "/absolute/path/to/localocr-mcp",
-  "args": []
-}
-```
-
-The exact place to enter that object is client-specific and can change. Use
-the current official setup guides for [Codex configuration](https://developers.openai.com/codex/config-basic)
-and [Claude Code MCP servers](https://code.claude.com/docs/en/mcp), rather
-than copying a client configuration location from this repository. LocalOCR
-does not edit either client's configuration.
 
 The server starts when the client invokes it, communicates through standard
 input/output for that session, and exits when the client closes the stdio

@@ -36,6 +36,8 @@ the source document.
 - **Create Searchable PDF** is available only for a PDF source. It creates a
   new local PDF with an invisible recognized-text layer while leaving the
   source unchanged. Choose a new output path rather than the source path.
+- **Process Another Document** immediately returns to the drop/open screen
+  without relaunching the app or deleting any saved output.
 
 ## Studio and MCP are separate surfaces
 
@@ -65,8 +67,16 @@ tools and client-configuration shape. The adjacent
 
 ## Beta status
 
-There is no supported LocalOCR Studio beta download yet. A real private beta
-is not available until the clean release commit, Developer ID signing,
-Hardened Runtime, notarization, stapling, Gatekeeper, downloaded-copy, and
-second-Mac acceptance gates all pass and the owner explicitly authorizes
-publication.
+The current private prerelease is
+[v0.2.0-beta.1](https://github.com/UnoRazorback/localocr/releases/tag/v0.2.0-beta.1).
+Invited testers need private-repository access to download it. Follow the
+[Beta 1 Tester Guide](../BETA_TESTING.md) to verify
+`LocalOCR-Studio-0.2.0-1.zip` with its matching `.sha256` file, then move the
+expanded app to `/Applications` and open it normally. Do not use a staging
+copy or bypass Gatekeeper.
+
+## Compatibility and build provenance
+
+Beta 1 was built with Xcode 26.6 (`17F113`), Swift 6, and arm64, with deployment target macOS 14.0. Downloaded-package and GUI acceptance passed on Apple M5 and Apple M4 Macs tested on macOS 27 beta build `26A5388g`. Later Apple beta
+builds may introduce regressions; include the exact macOS version and build
+number in feedback.

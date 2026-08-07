@@ -8,9 +8,10 @@ stored locally.
 LocalOCR is an open-core project for **macOS 14 or later**. The open-source
 core includes the Swift OCR engine, the `localocr` command-line tool, and the
 `localocr-mcp` stdio server. The repository also contains the release pipeline
-for a directly distributed LocalOCR Studio Mac app. No private beta has been
-published yet, and development or controlled-test artifacts must not be
-represented as signed, notarized releases.
+for a directly distributed LocalOCR Studio Mac app. The current private
+prerelease is [v0.2.0-beta.1](https://github.com/UnoRazorback/localocr/releases/tag/v0.2.0-beta.1)
+for invited testers with repository access. See the [Beta 1 Tester Guide](BETA_TESTING.md)
+for the verified download, installation, privacy, and optional MCP setup.
 
 ## What it does
 
@@ -28,7 +29,9 @@ overwritten. A searchable-PDF operation writes a new output file.
 LocalOCR Studio is the one-document-at-a-time Mac interface. Drop or open one
 PDF or image and processing starts automatically on the Mac; there is no
 configuration wizard or batch queue. After recognition, the app can copy the
-text, save it as a text file, or create a new searchable PDF from a PDF source.
+text, save it as a text file, create a new searchable PDF from a PDF source,
+or select **Process Another Document** to return immediately to the drop/open
+screen.
 
 Batch PDF OCR remains available through the local MCP server rather than the
 Studio interface. See [the Studio guide](docs/studio.md) for the exact GUI/MCP
@@ -70,61 +73,27 @@ artifacts only; it does not sign, notarize, install, or publish them.
 
 ## Private beta distribution
 
-**Status: not yet published.** The private beta remains blocked until one exact
-release commit and its final downloaded assets pass every release gate:
+The current private prerelease is
+[v0.2.0-beta.1](https://github.com/UnoRazorback/localocr/releases/tag/v0.2.0-beta.1).
+It is available only to invited testers with private-repository access. Its
+release identity is version `0.2.0`, build `1`, source commit
+`2cb03cc9684ed9bb4b449a0f7d79f0588fb7ae38`, and verified ZIP SHA-256
+`3a6a1c754ee369ab9a8ffe01bcc96e7f4927ac44eb1f82b410f538aee901c0d5`.
+It was built with Xcode 26.6 (`17F113`), Swift 6, and arm64, with deployment target macOS 14.0; acceptance covered Apple M5 and Apple M4 Macs tested on macOS 27 beta build `26A5388g`.
 
-- the exact clean release commit has been pushed to the private repository;
-- the complete Swift, Python, artifact-policy, and direct-release contract
-  suites pass;
-- the app and both nested helpers have timestamped Developer ID signatures
-  with Hardened Runtime;
-- Apple notarization is `Accepted`, the ticket is stapled and validates, and
-  Gatekeeper accepts the app extracted from the final ZIP;
-- the published SHA-256 matches a freshly downloaded ZIP;
-- the downloaded-copy workflow passes on the build Mac and a second Mac; and
-- the owner explicitly authorizes the private prerelease.
-
-Implementing or passing controlled release-script tests does not satisfy these
-gates. A private prerelease may contain only the final stapled ZIP and its
-SHA-256 file, targeted at the exact approved release commit.
-
-### Install a future authorized beta
-
-The owner will give approved testers access to a specific private prerelease.
-Download both the LocalOCR Studio ZIP and its matching `.sha256` file into the
-same directory. Do not use a ZIP copied from a build or staging directory.
-
-From Terminal, change to the download directory and verify the asset before
-opening it:
+Download `LocalOCR-Studio-0.2.0-1.zip` and
+`LocalOCR-Studio-0.2.0-1.sha256` into the same directory and verify them before
+expanding the ZIP:
 
 ```bash
-shasum -a 256 -c "LocalOCR-Studio-<version>-<build>.sha256"
+shasum -a 256 -c "LocalOCR-Studio-0.2.0-1.sha256"
 ```
 
-Continue only if the command reports `OK`. Double-click the verified ZIP, move
-`LocalOCR Studio.app` to Applications, and open the app normally. A valid
-authorized beta should open without bypassing Gatekeeper; testers should not
-use `xattr`, disable Gatekeeper, or choose an override for an unverified app.
-
-Release operators and second-Mac testers must also use a clean checkout at the
-exact approved release commit. From that checkout's repository root, run the
-downloaded-copy verifier with absolute paths to both downloaded assets before a
-beta is published or promoted:
-
-```bash
-cd /path/to/localocr
-export LOCALOCR_EXPECTED_BUNDLE_ID="<approved-bundle-id>"
-export LOCALOCR_RELEASE_VERSION="<approved-version>"
-export LOCALOCR_RELEASE_BUILD="<approved-build>"
-scripts/test-downloaded-release.sh \
-  "/absolute/path/to/LocalOCR-Studio-<version>-<build>.zip" \
-  "/absolute/path/to/LocalOCR-Studio-<version>-<build>.sha256"
-```
-
-The private release notes will identify the approved version, exact release
-commit, installation steps, known limitations, and the owner-approved feedback
-URL. Until those notes and assets exist, there is no supported beta download or
-feedback endpoint.
+Continue only if the command reports `OK`. Move the expanded `LocalOCR
+Studio.app` to `/Applications` and open it normally. Do not bypass Gatekeeper
+or use an unverified build or staging copy. The [Beta 1 Tester Guide](BETA_TESTING.md)
+contains the complete install, five-minute desktop test, compatibility, and
+feedback instructions.
 
 ### Beta limitations
 
@@ -182,10 +151,10 @@ The Python suite remains a behavioral compatibility check during the native
 Swift migration; the native executables do not require Python, PyObjC,
 PyMuPDF, Homebrew, or a network service at runtime.
 
-## Scope and next milestone
+## Scope and beta operations
 
 LocalOCR currently targets local, on-device PDF and image OCR. It does not
 provide cloud OCR, cloud document storage, automatic client configuration, or
-cross-platform support. The next milestone is to satisfy the real signing,
-notarization, downloaded-copy, and two-Mac gates and, only with owner
-authorization, publish the private LocalOCR Studio beta.
+cross-platform support. During Beta 1, collect desktop and advanced-MCP
+feedback, preserve local-only behavior, and use that evidence to choose the
+Beta 2 scope.
