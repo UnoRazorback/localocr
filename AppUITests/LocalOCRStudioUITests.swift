@@ -200,7 +200,12 @@ final class LocalOCRStudioUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter.wait(for: [windowClosed], timeout: 5), .completed)
 
+        let finder = XCUIApplication(bundleIdentifier: "com.apple.finder")
+        finder.activate()
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))
+
         app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
         XCTAssertTrue(dropZone.waitForExistence(timeout: 5))
         XCTAssertEqual(app.state, .runningForeground)
         XCTAssertEqual(app.windows.count, 1)
