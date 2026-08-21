@@ -147,12 +147,16 @@ public struct BatchViewContract: Equatable, Sendable {
         completedCount: Int = 0,
         failedCount: Int = 0,
         cancelledCount: Int = 0,
+        isPreparedToStart: Bool,
         hasOutputRoot: Bool
     ) {
         let hasAcceptedInputs = acceptedCount > 0
         let hasInspectableItems = acceptedCount + skippedCount > 0
+        let presentedPhase: StudioBatchPhase = phase == .empty && skippedCount > 0
+            ? .reviewing
+            : phase
 
-        switch phase {
+        switch presentedPhase {
         case .empty:
             primaryTitle = "Prepare Batch"
             summaryText = "Add files or folders to begin"
@@ -178,11 +182,14 @@ public struct BatchViewContract: Equatable, Sendable {
 
         canAddInputs = phase == .empty || phase == .reviewing
         canChooseOutput = canAddInputs
-        canStart = phase == .reviewing && hasAcceptedInputs && hasOutputRoot
+        canStart = phase == .reviewing
+            && hasAcceptedInputs
+            && hasOutputRoot
+            && isPreparedToStart
         canCancel = phase == .processing
         canRetryFailed = phase == .complete && failedCount > 0 && hasOutputRoot
         canRevealOutput = phase == .complete && hasOutputRoot
-        canCopyDiagnostics = phase != .empty && hasInspectableItems
+        canCopyDiagnostics = hasInspectableItems
         canStartNewBatch = phase == .complete
         canReturnToSingle = phase != .processing
     }
@@ -204,7 +211,61 @@ public struct BatchViewContract: Equatable, Sendable {
     }
 }
 
+struct BatchRowContract: Equatable, Identifiable {
+    let id: UUID
+    let accessibilityIdentifier: String
+    let accessibilityLabel: String
+
+    init(index: Int, item: StudioBatchItem) {
+        id = item.id
+        accessibilityIdentifier = "studio.batch.row.\(item.id.uuidString.lowercased())"
+
+        var labelParts = [
+            "Item \(index + 1)",
+            item.candidate.sourceURL.lastPathComponent,
+            item.candidate.kind.label,
+            item.state.label,
+        ]
+        switch item.state {
+        case let .processing(progress):
+            labelParts.append(progress.statusText)
+        case let .failed(issue), let .skipped(issue):
+            labelParts.append(issue.message)
+        case let .completed(outputURL):
+            labelParts.append("Output \(outputURL.path)")
+        case .queued, .cancelled:
+            break
+        }
+        accessibilityLabel = labelParts.joined(separator: ", ")
+    }
+}
+
+@MainActor
 struct BatchQueueRowView: View {
+    @Bindable private var coordinator: StudioBatchCoordinator
+    let index: Int
+    let itemID: UUID
+
+    init(
+        index: Int,
+        itemID: UUID,
+        coordinator: StudioBatchCoordinator
+    ) {
+        self.index = index
+        self.itemID = itemID
+        self._coordinator = Bindable(coordinator)
+    }
+
+    var body: some View {
+        Group {
+            if let item = coordinator.items.first(where: { $0.id == itemID }) {
+                BatchQueueRowContent(index: index, item: item)
+            }
+        }
+    }
+}
+
+private struct BatchQueueRowContent: View {
     let index: Int
     let item: StudioBatchItem
 
@@ -249,8 +310,12 @@ struct BatchQueueRowView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(item.accessibilityLabel(index: index))
-        .accessibilityIdentifier("studio.batch.row.\(item.id.uuidString.lowercased())")
+        .accessibilityLabel(contract.accessibilityLabel)
+        .accessibilityIdentifier(contract.accessibilityIdentifier)
+    }
+
+    private var contract: BatchRowContract {
+        BatchRowContract(index: index, item: item)
     }
 
     @ViewBuilder
@@ -410,28 +475,6 @@ private struct BatchIssueDetails: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private extension StudioBatchItem {
-    func accessibilityLabel(index: Int) -> String {
-        var parts = [
-            "Item \(index + 1)",
-            candidate.sourceURL.lastPathComponent,
-            candidate.kind.label,
-            state.label,
-        ]
-        switch state {
-        case let .processing(progress):
-            parts.append(progress.statusText)
-        case let .failed(issue), let .skipped(issue):
-            parts.append(issue.message)
-        case let .completed(outputURL):
-            parts.append("Output \(outputURL.path)")
-        case .queued, .cancelled:
-            break
-        }
-        return parts.joined(separator: ", ")
     }
 }
 

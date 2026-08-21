@@ -103,9 +103,11 @@ public final class StudioBatchCoordinator {
         let failedIndices = items.indices.filter { items[$0].state.isRetryable }
         guard !failedIndices.isEmpty else { return }
 
+        var retriedItems = items
         for index in failedIndices {
-            items[index].state = .queued
+            retriedItems[index].state = .queued
         }
+        items = retriedItems
         startProcessing(indices: failedIndices, refreshReservations: true)
     }
 
@@ -227,7 +229,9 @@ public final class StudioBatchCoordinator {
         discovery = discovered
         items = []
         actionError = nil
-        phase = discovered.candidates.isEmpty ? .empty : .reviewing
+        phase = discovered.candidates.isEmpty && discovered.skipped.isEmpty
+            ? .empty
+            : .reviewing
         return true
     }
 
@@ -381,8 +385,10 @@ public final class StudioBatchCoordinator {
         else {
             return nil
         }
-        items[index].reservation = reservation
-        return items[index]
+        var updatedItem = items[index]
+        updatedItem.reservation = reservation
+        replaceItem(updatedItem, at: index)
+        return updatedItem
     }
 
     private func beginExecution(
@@ -397,8 +403,10 @@ public final class StudioBatchCoordinator {
         else {
             return nil
         }
-        items[index].state = .processing(.inspecting)
-        return items[index]
+        var updatedItem = items[index]
+        updatedItem.state = .processing(.inspecting)
+        replaceItem(updatedItem, at: index)
+        return updatedItem
     }
 
     private func beginProgressDelivery(
@@ -440,7 +448,9 @@ public final class StudioBatchCoordinator {
         else {
             return false
         }
-        items[index].state = .completed(resultURL)
+        var updatedItem = items[index]
+        updatedItem.state = .completed(resultURL)
+        replaceItem(updatedItem, at: index)
         return true
     }
 
@@ -460,7 +470,9 @@ public final class StudioBatchCoordinator {
             finishExecutorCancellation()
             return .stop
         }
-        items[index].state = .failed(batchIssue(for: error))
+        var updatedItem = items[index]
+        updatedItem.state = .failed(batchIssue(for: error))
+        replaceItem(updatedItem, at: index)
         return .continueBatch
     }
 
@@ -482,7 +494,9 @@ public final class StudioBatchCoordinator {
         else {
             return
         }
-        items[index].state = .processing(progress)
+        var updatedItem = items[index]
+        updatedItem.state = .processing(progress)
+        replaceItem(updatedItem, at: index)
     }
 
     private func isCurrentProcessingGeneration(_ generation: UUID) -> Bool {
@@ -497,14 +511,22 @@ public final class StudioBatchCoordinator {
     }
 
     private func markPendingItemsCancelled() {
-        for index in items.indices {
-            switch items[index].state {
+        var cancelledItems = items
+        for index in cancelledItems.indices {
+            switch cancelledItems[index].state {
             case .queued, .processing:
-                items[index].state = .cancelled
+                cancelledItems[index].state = .cancelled
             case .completed, .skipped, .failed, .cancelled:
                 break
             }
         }
+        items = cancelledItems
+    }
+
+    private func replaceItem(_ item: StudioBatchItem, at index: Int) {
+        var updatedItems = items
+        updatedItems[index] = item
+        items = updatedItems
     }
 
     private func finishProcessingTask(_ id: UUID) {

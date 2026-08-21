@@ -228,6 +228,8 @@ def test_ui_fixtures_are_debug_only_and_require_a_test_session_marker() -> None:
         "batchReview",
         "batchProcessing",
         "batchComplete",
+        "batchSkippedOnly",
+        "batchPlanningFailure",
     }
 
 

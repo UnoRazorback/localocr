@@ -4,6 +4,123 @@ import Observation
 import Testing
 
 @Suite struct BatchViewContractTests {
+    @Test @MainActor func returningToSingleClearsReviewAndReentryStartsEmpty() async {
+        let candidate = observedCandidate()
+        let coordinator = StudioBatchCoordinator(
+            enumerator: ObservedEnumerator(discovery: discovery(candidate)),
+            planner: ObservedPlanner(),
+            executor: ObservedSuspendingExecutor()
+        )
+        coordinator.addSelections([candidate.sourceURL])
+        coordinator.chooseOutputRoot(URL(fileURLWithPath: "/tmp/observed-output"))
+        await coordinator.waitUntilPreparationIdleForTesting()
+        #expect(coordinator.canStart)
+
+        let session = StudioWorkspaceSession(
+            batchCoordinator: coordinator,
+            initialMode: .batch
+        )
+
+        #expect(session.returnToSingle())
+        #expect(session.mode == .single)
+        expectEmptyBatch(coordinator)
+
+        session.enterBatch()
+        #expect(session.mode == .batch)
+        expectEmptyBatch(coordinator)
+    }
+
+    @Test @MainActor func processingRequiresCancelBeforeReturningToSingle() async {
+        let candidate = observedCandidate()
+        let executor = ObservedSuspendingExecutor()
+        let coordinator = StudioBatchCoordinator(
+            enumerator: ObservedEnumerator(discovery: discovery(candidate)),
+            planner: ObservedPlanner(),
+            executor: executor
+        )
+        coordinator.addSelections([candidate.sourceURL])
+        coordinator.chooseOutputRoot(URL(fileURLWithPath: "/tmp/observed-output"))
+        await coordinator.waitUntilPreparationIdleForTesting()
+        let session = StudioWorkspaceSession(
+            batchCoordinator: coordinator,
+            initialMode: .batch
+        )
+        coordinator.start()
+        await executor.waitUntilStarted()
+
+        #expect(!session.returnToSingle())
+        #expect(session.mode == .batch)
+        #expect(coordinator.phase == .processing)
+
+        coordinator.cancel()
+        await coordinator.waitUntilIdleForTesting()
+    }
+
+    @Test @MainActor func disappearanceCancelsAndClearsBatchAndRestoresSingleMode() async {
+        let candidate = observedCandidate()
+        let executor = ObservedSuspendingExecutor()
+        let coordinator = StudioBatchCoordinator(
+            enumerator: ObservedEnumerator(discovery: discovery(candidate)),
+            planner: ObservedPlanner(),
+            executor: executor
+        )
+        coordinator.addSelections([candidate.sourceURL])
+        coordinator.chooseOutputRoot(URL(fileURLWithPath: "/tmp/observed-output"))
+        await coordinator.waitUntilPreparationIdleForTesting()
+        let session = StudioWorkspaceSession(
+            batchCoordinator: coordinator,
+            initialMode: .batch
+        )
+        coordinator.start()
+        await executor.waitUntilStarted()
+
+        session.handleDisappearance()
+        await coordinator.waitUntilIdleForTesting()
+
+        #expect(session.mode == .single)
+        expectEmptyBatch(coordinator)
+    }
+
+    @Test func rowIdentityStaysStableWhileWrittenStateAndProgressUpdate() {
+        let candidate = observedCandidate()
+        let outputRoot = URL(fileURLWithPath: "/tmp/observed-output")
+        let reservation = StudioBatchReservation(
+            finalURL: outputRoot.appendingPathComponent("observed.pdf"),
+            outputRoot: outputRoot
+        )
+        let queued = StudioBatchItem(
+            id: candidate.id,
+            candidate: candidate,
+            reservation: reservation,
+            state: .queued
+        )
+        let processing = StudioBatchItem(
+            id: candidate.id,
+            candidate: candidate,
+            reservation: reservation,
+            state: .processing(.recognizing(page: 1, total: 2))
+        )
+
+        let queuedContract = BatchRowContract(index: 0, item: queued)
+        let processingContract = BatchRowContract(index: 0, item: processing)
+
+        #expect(queuedContract.id == candidate.id)
+        #expect(processingContract.id == candidate.id)
+        #expect(
+            queuedContract.accessibilityIdentifier
+                == "studio.batch.row.00000000-0000-0000-0000-000000000099"
+        )
+        #expect(
+            processingContract.accessibilityIdentifier
+                == queuedContract.accessibilityIdentifier
+        )
+        #expect(queuedContract.accessibilityLabel == "Item 1, observed.pdf, PDF, Queued")
+        #expect(
+            processingContract.accessibilityLabel
+                == "Item 1, observed.pdf, PDF, Processing, Recognizing page 1 of 2"
+        )
+    }
+
     @Test @MainActor func coordinatorItemStateChangesNotifyObservationConsumers() async {
         let candidate = observedCandidate()
         let discovery = StudioBatchDiscovery(
@@ -126,6 +243,7 @@ import Testing
             phase: .empty,
             acceptedCount: 0,
             skippedCount: 0,
+            isPreparedToStart: false,
             hasOutputRoot: false
         )
 
@@ -142,11 +260,30 @@ import Testing
         #expect(contract.canReturnToSingle)
     }
 
+    @Test func skippedOnlyDiscoveryIsReviewContentWithDiagnosticsButNoStart() {
+        let contract = BatchViewContract(
+            phase: .empty,
+            acceptedCount: 0,
+            skippedCount: 2,
+            isPreparedToStart: false,
+            hasOutputRoot: false
+        )
+
+        #expect(contract.primaryTitle == "Review Batch")
+        #expect(contract.summaryText == "0 supported • 2 skipped")
+        #expect(contract.canAddInputs)
+        #expect(contract.canChooseOutput)
+        #expect(!contract.canStart)
+        #expect(contract.canCopyDiagnostics)
+        #expect(contract.canReturnToSingle)
+    }
+
     @Test func reviewRequiresOutputBeforeStart() {
         let contract = BatchViewContract(
             phase: .reviewing,
             acceptedCount: 3,
             skippedCount: 1,
+            isPreparedToStart: false,
             hasOutputRoot: false
         )
 
@@ -161,6 +298,7 @@ import Testing
             acceptedCount: 2,
             skippedCount: 0,
             duplicateCount: 1,
+            isPreparedToStart: true,
             hasOutputRoot: true
         )
 
@@ -172,6 +310,21 @@ import Testing
         #expect(contract.canReturnToSingle)
     }
 
+    @Test func staleDiscoveryAndOutputWithoutAPreparedPlanCannotStart() {
+        let contract = BatchViewContract(
+            phase: .reviewing,
+            acceptedCount: 2,
+            skippedCount: 0,
+            isPreparedToStart: false,
+            hasOutputRoot: true
+        )
+
+        #expect(contract.primaryTitle == "Review Batch")
+        #expect(contract.summaryText == "2 supported • 0 skipped")
+        #expect(!contract.canStart)
+        #expect(contract.canCopyDiagnostics)
+    }
+
     @Test func processingOffersOnlyCancellationAndDiagnostics() {
         let contract = BatchViewContract(
             phase: .processing,
@@ -180,6 +333,7 @@ import Testing
             completedCount: 1,
             failedCount: 0,
             cancelledCount: 0,
+            isPreparedToStart: false,
             hasOutputRoot: true
         )
 
@@ -201,6 +355,7 @@ import Testing
             completedCount: 2,
             failedCount: 1,
             cancelledCount: 1,
+            isPreparedToStart: false,
             hasOutputRoot: true
         )
 
@@ -225,6 +380,7 @@ import Testing
             completedCount: 2,
             failedCount: 0,
             cancelledCount: 0,
+            isPreparedToStart: false,
             hasOutputRoot: false
         )
 
@@ -232,6 +388,24 @@ import Testing
         #expect(!contract.canRevealOutput)
         #expect(contract.canStartNewBatch)
     }
+}
+
+@MainActor
+private func expectEmptyBatch(_ coordinator: StudioBatchCoordinator) {
+    #expect(coordinator.phase == .empty)
+    #expect(coordinator.discovery == nil)
+    #expect(coordinator.outputRoot == nil)
+    #expect(coordinator.items.isEmpty)
+    #expect(coordinator.actionError == nil)
+}
+
+private func discovery(_ candidate: StudioBatchCandidate) -> StudioBatchDiscovery {
+    StudioBatchDiscovery(
+        candidates: [candidate],
+        skipped: [],
+        duplicateCount: 0,
+        selectedFolderRoots: []
+    )
 }
 
 private final class ObservationChangeRecorder: @unchecked Sendable {

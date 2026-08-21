@@ -1,5 +1,6 @@
 import AppKit
 import LocalOCRCore
+import Observation
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -9,10 +10,48 @@ public enum StudioWorkspaceMode: Sendable, Equatable {
 }
 
 @MainActor
+@Observable
+final class StudioWorkspaceSession {
+    private(set) var mode: StudioWorkspaceMode
+    let batchCoordinator: StudioBatchCoordinator
+
+    init(
+        batchCoordinator: StudioBatchCoordinator,
+        initialMode: StudioWorkspaceMode = .single
+    ) {
+        self.batchCoordinator = batchCoordinator
+        self.mode = initialMode
+    }
+
+    func enterBatch() {
+        batchCoordinator.startNewBatch()
+        mode = .batch
+    }
+
+    @discardableResult
+    func returnToSingle() -> Bool {
+        departBatch(cancelProcessing: false)
+    }
+
+    func handleDisappearance() {
+        _ = departBatch(cancelProcessing: true)
+    }
+
+    private func departBatch(cancelProcessing: Bool) -> Bool {
+        if batchCoordinator.phase == .processing {
+            guard cancelProcessing else { return false }
+            batchCoordinator.cancel()
+        }
+        batchCoordinator.startNewBatch()
+        mode = .single
+        return true
+    }
+}
+
+@MainActor
 public struct LocalOCRStudioView: View {
     @State private var model: StudioViewModel
-    @State private var batchCoordinator: StudioBatchCoordinator
-    @State private var workspaceMode: StudioWorkspaceMode
+    @State private var workspaceSession: StudioWorkspaceSession
     private let actions: StudioDocumentActions
 
     @State private var actionError: StudioPresentedError?
@@ -29,8 +68,9 @@ public struct LocalOCRStudioView: View {
         batchCoordinator: StudioBatchCoordinator
     ) {
         self._model = State(initialValue: model)
-        self._batchCoordinator = State(initialValue: batchCoordinator)
-        self._workspaceMode = State(initialValue: .single)
+        self._workspaceSession = State(initialValue: StudioWorkspaceSession(
+            batchCoordinator: batchCoordinator
+        ))
         self.actions = actions
     }
 
@@ -45,8 +85,10 @@ public struct LocalOCRStudioView: View {
         searchableProgress: StudioProgress?
     ) {
         self._model = State(initialValue: model)
-        self._batchCoordinator = State(initialValue: batchCoordinator)
-        self._workspaceMode = State(initialValue: workspaceMode)
+        self._workspaceSession = State(initialValue: StudioWorkspaceSession(
+            batchCoordinator: batchCoordinator,
+            initialMode: workspaceMode
+        ))
         self.actions = actions
         self._isCreatingSearchablePDF = State(
             initialValue: isCreatingSearchablePDF
@@ -60,7 +102,7 @@ public struct LocalOCRStudioView: View {
             header
 
             Group {
-                switch workspaceMode {
+                switch workspaceSession.mode {
                 case .single:
                     Group {
                         switch model.state {
@@ -106,7 +148,7 @@ public struct LocalOCRStudioView: View {
                 case .batch:
                     BatchWorkspaceView(
                         coordinator: batchCoordinator,
-                        onReturnToSingle: { workspaceMode = .single }
+                        onReturnToSingle: { workspaceSession.returnToSingle() }
                     )
                 }
             }
@@ -126,22 +168,25 @@ public struct LocalOCRStudioView: View {
                 Text(alertMessage(for: actionError))
             }
         }
-        .onDisappear {
-            lifecycle.invalidateForDisappearance()
-            pendingDropLoad?.cancel()
-            pendingDropLoad = nil
-            actionError = nil
-            isCreatingSearchablePDF = false
-            searchableProgress = nil
-            let task = searchablePDFTask
-            searchablePDFTask = nil
-            task?.cancel()
-            model.clear()
-            if batchCoordinator.phase == .processing {
-                batchCoordinator.cancel()
-            }
-            batchCoordinator.startNewBatch()
-        }
+        .onDisappear(perform: handleDisappearance)
+    }
+
+    private var batchCoordinator: StudioBatchCoordinator {
+        workspaceSession.batchCoordinator
+    }
+
+    private func handleDisappearance() {
+        lifecycle.invalidateForDisappearance()
+        pendingDropLoad?.cancel()
+        pendingDropLoad = nil
+        actionError = nil
+        isCreatingSearchablePDF = false
+        searchableProgress = nil
+        let task = searchablePDFTask
+        searchablePDFTask = nil
+        task?.cancel()
+        model.clear()
+        workspaceSession.handleDisappearance()
     }
 
     private var header: some View {
@@ -181,8 +226,7 @@ public struct LocalOCRStudioView: View {
         pendingDropLoad?.cancel()
         pendingDropLoad = nil
         isDropTargeted = false
-        batchCoordinator.startNewBatch()
-        workspaceMode = .batch
+        workspaceSession.enterBatch()
     }
 
     private func showOpenPanel() {

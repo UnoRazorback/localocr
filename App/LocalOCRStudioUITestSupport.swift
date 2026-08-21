@@ -12,10 +12,13 @@ enum LocalOCRStudioUITestSupport {
         case batchReview
         case batchProcessing
         case batchComplete
+        case batchSkippedOnly
+        case batchPlanningFailure
 
         var isBatch: Bool {
             switch self {
-            case .batchReview, .batchProcessing, .batchComplete:
+            case .batchReview, .batchProcessing, .batchComplete,
+                 .batchSkippedOnly, .batchPlanningFailure:
                 true
             case .empty, .result, .resultBusy, .error:
                 false
@@ -24,11 +27,12 @@ enum LocalOCRStudioUITestSupport {
 
         var batchExecutionMode: FixtureBatchExecutionMode {
             switch self {
-            case .batchProcessing:
+            case .batchReview, .batchProcessing:
                 .processing
             case .batchComplete:
                 .complete
-            case .empty, .result, .resultBusy, .error, .batchReview:
+            case .empty, .result, .resultBusy, .error,
+                 .batchSkippedOnly, .batchPlanningFailure:
                 .review
             }
         }
@@ -59,7 +63,8 @@ enum LocalOCRStudioUITestSupport {
             break
         case .result, .resultBusy, .error:
             model.open(fixtureSourceURL)
-        case .batchReview, .batchProcessing, .batchComplete:
+        case .batchReview, .batchProcessing, .batchComplete,
+             .batchSkippedOnly, .batchPlanningFailure:
             prepareBatchFixture(batchCoordinator, for: state)
         }
 
@@ -103,7 +108,8 @@ enum LocalOCRStudioUITestSupport {
             progress: @escaping @Sendable (StudioProgress) -> Void
         ) async throws -> StudioDocumentResult {
             switch state {
-            case .empty, .batchReview, .batchProcessing, .batchComplete:
+            case .empty, .batchReview, .batchProcessing, .batchComplete,
+                 .batchSkippedOnly, .batchPlanningFailure:
                 throw FixtureError.unavailable
             case .result, .resultBusy:
                 progress(.recognizing(page: 2, total: 2))
@@ -144,8 +150,10 @@ enum LocalOCRStudioUITestSupport {
         for state: FixtureState
     ) -> StudioBatchCoordinator {
         StudioBatchCoordinator(
-            enumerator: FixtureBatchEnumerator(discovery: batchDiscovery),
-            planner: FixtureBatchPlanner(),
+            enumerator: FixtureBatchEnumerator(discovery: discovery(for: state)),
+            planner: FixtureBatchPlanner(
+                shouldFail: state == .batchPlanningFailure
+            ),
             executor: FixtureBatchExecutor(mode: state.batchExecutionMode)
         )
     }
@@ -161,10 +169,9 @@ enum LocalOCRStudioUITestSupport {
             URL(fileURLWithPath: "/tmp/LocalOCR-UI-Fixture-Output", isDirectory: true)
         )
 
-        guard state != .batchReview else { return }
+        guard state == .batchProcessing || state == .batchComplete else { return }
         Task { @MainActor in
             await coordinator.waitUntilPreparationIdleForTesting()
-            try? await Task.sleep(for: .milliseconds(250))
             coordinator.start()
             if state == .batchComplete {
                 await coordinator.waitUntilIdleForTesting()
@@ -200,6 +207,27 @@ enum LocalOCRStudioUITestSupport {
         selectedFolderRoots: []
     )
 
+    private static let skippedOnlyDiscovery = StudioBatchDiscovery(
+        candidates: [],
+        skipped: [
+            StudioBatchSkippedInput(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000003")!,
+                sourceURL: URL(fileURLWithPath: "/tmp/LocalOCR-UI-Fixture/notes.txt"),
+                reason: StudioBatchIssue(
+                    title: "Unsupported File",
+                    message: "Choose a PDF or image file.",
+                    details: nil
+                )
+            )
+        ],
+        duplicateCount: 0,
+        selectedFolderRoots: []
+    )
+
+    private static func discovery(for state: FixtureState) -> StudioBatchDiscovery {
+        state == .batchSkippedOnly ? skippedOnlyDiscovery : batchDiscovery
+    }
+
     private static func batchCandidate(
         id: String,
         filename: String,
@@ -231,11 +259,20 @@ enum LocalOCRStudioUITestSupport {
     }
 
     private actor FixtureBatchPlanner: StudioBatchOutputPlanning {
+        let shouldFail: Bool
+
+        init(shouldFail: Bool) {
+            self.shouldFail = shouldFail
+        }
+
         func makePlan(
             discovery: StudioBatchDiscovery,
             outputRoot: URL
         ) async throws -> StudioBatchPlan {
-            StudioBatchPlan(
+            if shouldFail {
+                throw FixtureError.expectedFailure
+            }
+            return StudioBatchPlan(
                 outputRoot: outputRoot,
                 items: discovery.candidates.map { candidate in
                     StudioBatchItem(

@@ -54,7 +54,7 @@ import Testing
         coordinator.addSelections([skippedURL])
         await coordinator.waitUntilIdleForTesting()
 
-        #expect(coordinator.phase == .empty)
+        #expect(coordinator.phase == .reviewing)
         #expect(coordinator.discovery?.skipped.count == 1)
         #expect(coordinator.summary.skipped == 1)
         #expect(coordinator.items.isEmpty)

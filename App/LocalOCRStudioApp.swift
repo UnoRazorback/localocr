@@ -23,7 +23,7 @@ struct LocalOCRStudioApp: App {
 }
 
 @MainActor
-final class LocalOCRStudioAppDelegate: NSObject, NSApplicationDelegate {
+final class LocalOCRStudioAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var mainWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -54,6 +54,7 @@ final class LocalOCRStudioAppDelegate: NSObject, NSApplicationDelegate {
                 rootView: LocalOCRStudioRoot.makeView()
             )
             window.isReleasedWhenClosed = false
+            window.delegate = self
             window.center()
             mainWindow = window
         }
@@ -61,13 +62,24 @@ final class LocalOCRStudioAppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender === mainWindow else { return true }
+        sender.contentViewController = NSHostingController(
+            rootView: LocalOCRStudioRoot.makeView(includeUITestFixture: false)
+        )
+        return true
+    }
 }
 
 @MainActor
 enum LocalOCRStudioRoot {
-    static func makeView() -> LocalOCRStudioView {
+    static func makeView(
+        includeUITestFixture: Bool = true
+    ) -> LocalOCRStudioView {
         #if DEBUG
-        if let fixtureView = LocalOCRStudioUITestSupport.makeViewIfRequested() {
+        if includeUITestFixture,
+           let fixtureView = LocalOCRStudioUITestSupport.makeViewIfRequested() {
             return fixtureView
         }
         #endif

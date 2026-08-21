@@ -160,9 +160,13 @@ public struct BatchWorkspaceView: View {
                     } else {
                         ForEach(
                             Array(coordinator.items.enumerated()),
-                            id: \.element.renderIdentity
+                            id: \.element.id
                         ) { index, item in
-                            BatchQueueRowView(index: index, item: item)
+                            BatchQueueRowView(
+                                index: index,
+                                itemID: item.id,
+                                coordinator: coordinator
+                            )
                             Divider().padding(.leading, 56)
                         }
                     }
@@ -269,6 +273,7 @@ public struct BatchWorkspaceView: View {
             completedCount: coordinator.summary.completed,
             failedCount: coordinator.summary.failed,
             cancelledCount: coordinator.summary.cancelled,
+            isPreparedToStart: coordinator.canStart,
             hasOutputRoot: coordinator.outputRoot != nil
         )
     }
@@ -397,30 +402,5 @@ public struct BatchWorkspaceView: View {
         guard contract.canReturnToSingle else { return }
         invalidatePendingDrop()
         onReturnToSingle()
-    }
-}
-
-private extension StudioBatchItem {
-    var renderIdentity: String {
-        "\(id.uuidString)-\(state.renderIdentity)"
-    }
-}
-
-private extension StudioBatchItemState {
-    var renderIdentity: String {
-        switch self {
-        case .queued:
-            "queued"
-        case let .processing(progress):
-            "processing-\(progress.statusText)"
-        case let .completed(outputURL):
-            "completed-\(outputURL.path)"
-        case let .skipped(issue):
-            "skipped-\(issue.title)-\(issue.message)"
-        case let .failed(issue):
-            "failed-\(issue.title)-\(issue.message)"
-        case .cancelled:
-            "cancelled"
-        }
     }
 }
