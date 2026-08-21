@@ -91,8 +91,9 @@ def _section_lead(section: str, *, section_level: int) -> str:
 
 
 _CANDIDATE_SUBJECT = (
-    r"(?:the\s+candidate|this\s+candidate|candidate|this\s+build|"
-    r"`?v0\.3\.0-beta\.1`?|it)"
+    r"(?:\bthe\s+candidate\b|\bthis\s+candidate\b|\bcandidate\b|"
+    r"\bthis\s+build\b|(?<![\w`])`?v0\.3\.0-beta\.1`?(?![\w`])|"
+    r"\bit\b)"
 )
 _STATUS_ADVERB = r"(?:now|not|never|no|yet|longer)"
 _COPULAR_STATUS = re.compile(
@@ -405,6 +406,52 @@ def test_candidate_validator_allows_harmless_workflow_editorial_rewrite() -> Non
         studio=STUDIO.read_text(),
         beta_guide=BETA_GUIDE.read_text(),
     )
+
+
+@pytest.mark.parametrize(
+    "editorial_sentence",
+    (
+        "The audit is signed.",
+        "A permit was published.",
+    ),
+)
+def test_candidate_validator_allows_unrelated_nouns_ending_in_it(
+    editorial_sentence: str,
+) -> None:
+    notes = NOTES.read_text().replace(
+        "## Privacy",
+        f"{editorial_sentence}\n\n## Privacy",
+    )
+
+    _validate_candidate_documentation(
+        notes=notes,
+        studio=STUDIO.read_text(),
+        beta_guide=BETA_GUIDE.read_text(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("candidate_sentence", "expected_message"),
+    (
+        ("It is signed.", "candidate must not claim signing"),
+        ("The candidate was published.", "candidate must not claim publication"),
+    ),
+)
+def test_candidate_validator_rejects_standalone_candidate_subjects_in_workflow(
+    candidate_sentence: str,
+    expected_message: str,
+) -> None:
+    notes = NOTES.read_text().replace(
+        "## Privacy",
+        f"{candidate_sentence}\n\n## Privacy",
+    )
+
+    with pytest.raises(AssertionError, match=expected_message):
+        _validate_candidate_documentation(
+            notes=notes,
+            studio=STUDIO.read_text(),
+            beta_guide=BETA_GUIDE.read_text(),
+        )
 
 
 def test_candidate_validator_checks_claim_below_nested_heading() -> None:
