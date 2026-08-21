@@ -197,6 +197,28 @@ import Testing
         ])
     }
 
+    @Test func unavailableCaseSensitivityQueryFailsClosedToAliasSafeReservations() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appending(path: "sources/one/Photo.jpg")
+        let second = root.appending(path: "sources/two/photo.png")
+        let output = root.appending(path: "Output", directoryHint: .isDirectory)
+        try writeEmptyFile(at: first)
+        try writeEmptyFile(at: second)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let discovery = await BatchInputEnumerator().discover(selections: [second, first])
+        for answer in [CaseSensitivityAnswer.unavailable, .failure] {
+            let resolver = ControllableCaseSensitivityResolver(answer: answer)
+            let plan = try await BatchOutputPlanner(caseSensitivityResolver: resolver)
+                .makePlan(discovery: discovery, outputRoot: output)
+
+            #expect(plan.items.map { $0.reservation.finalURL.lastPathComponent } == [
+                "Photo.txt",
+                "photo_2.txt",
+            ])
+        }
+    }
+
     @Test func folderCaseAliasesUseDistinctGroupsWhenTheDestinationIgnoresCase() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -400,6 +422,49 @@ import Testing
         ])
         #expect(refreshed.finalURL.lastPathComponent == "scan_searchable_3.pdf")
     }
+
+    @Test func refreshUsesStoredPlanSemanticsWhenLaterCaseQueryFails() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appending(path: "sources/one/scan.pdf")
+        let second = root.appending(path: "sources/two/scan.pdf")
+        let output = root.appending(path: "Output", directoryHint: .isDirectory)
+        try writeEmptyFile(at: first)
+        try writeEmptyFile(at: second)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let resolver = ControllableCaseSensitivityResolver(answer: .value(true))
+        let planner = BatchOutputPlanner(caseSensitivityResolver: resolver)
+        let discovery = await BatchInputEnumerator().discover(selections: [second, first])
+        let plan = try await planner.makePlan(discovery: discovery, outputRoot: output)
+        resolver.setAnswer(.failure)
+        try Data().write(to: plan.items[0].reservation.finalURL)
+
+        let refreshed = try await planner.refreshReservation(for: plan.items[0], outputRoot: output)
+
+        #expect(refreshed.finalURL.lastPathComponent == "scan_searchable_3.pdf")
+    }
+
+    @Test func refreshWithoutItsActivePlanFailsWithATypedError() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let input = root.appending(path: "input", directoryHint: .isDirectory)
+        let output = root.appending(path: "output", directoryHint: .isDirectory)
+        let pdf = input.appending(path: "scan.pdf")
+        try writeEmptyFile(at: pdf)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let discovery = await BatchInputEnumerator().discover(selections: [pdf])
+        let planningPlanner = BatchOutputPlanner()
+        let plan = try await planningPlanner.makePlan(discovery: discovery, outputRoot: output)
+
+        do {
+            _ = try await BatchOutputPlanner().refreshReservation(for: plan.items[0], outputRoot: output)
+            #expect(Bool(false), "Expected a missing active-plan error")
+        } catch let error as StudioBatchPlanningError {
+            #expect(error == .missingActivePlan)
+        } catch {
+            #expect(Bool(false), "Unexpected error: \(error)")
+        }
+    }
 }
 
 private func temporaryDirectory() throws -> URL {
@@ -424,6 +489,44 @@ private func destinationTreatsAliasesAsTheSameEntry(
     defer { try? FileManager.default.removeItem(at: first) }
     try Data().write(to: first)
     return FileManager.default.fileExists(atPath: second.path)
+}
+
+private final class ControllableCaseSensitivityResolver: @unchecked Sendable, DestinationCaseSensitivityResolving {
+    private let lock = NSLock()
+    private var answer: CaseSensitivityAnswer
+
+    init(answer: CaseSensitivityAnswer) {
+        self.answer = answer
+    }
+
+    func caseSensitive(for _: URL) throws -> Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        switch answer {
+        case let .value(value):
+            return value
+        case .unavailable:
+            return nil
+        case .failure:
+            throw CaseSensitivityResolverError.failed
+        }
+    }
+
+    func setAnswer(_ answer: CaseSensitivityAnswer) {
+        lock.lock()
+        self.answer = answer
+        lock.unlock()
+    }
+}
+
+private enum CaseSensitivityAnswer: Sendable {
+    case value(Bool)
+    case unavailable
+    case failure
+}
+
+private enum CaseSensitivityResolverError: Error {
+    case failed
 }
 
 private func unsafeDiscovery(

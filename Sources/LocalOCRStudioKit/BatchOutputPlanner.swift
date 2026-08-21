@@ -23,6 +23,7 @@ public struct StudioBatchPlan: Sendable, Equatable {
 public enum StudioBatchPlanningError: Error, Sendable, Equatable {
     case unsafeOutputRoot
     case escapedOutputRoot
+    case missingActivePlan
 }
 
 public protocol StudioBatchOutputPlanning: Sendable {
@@ -39,11 +40,21 @@ public protocol StudioBatchOutputPlanning: Sendable {
 
 public actor BatchOutputPlanner: StudioBatchOutputPlanning {
     private let fileManager: FileManager
+    private let caseSensitivityResolver: any DestinationCaseSensitivityResolving
     /// Plans are replaced atomically after successful planning so refresh can retain peer reservations.
-    private var activePlans: [DestinationPathKey: ActivePlanClaims] = [:]
+    private var activePlans: [PhysicalOutputRootIdentity: ActivePlanClaims] = [:]
 
     public init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
+        caseSensitivityResolver = VolumeCaseSensitivityResolver()
+    }
+
+    init(
+        fileManager: FileManager = .default,
+        caseSensitivityResolver: any DestinationCaseSensitivityResolving
+    ) {
+        self.fileManager = fileManager
+        self.caseSensitivityResolver = caseSensitivityResolver
     }
 
     public func makePlan(
@@ -51,8 +62,11 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
         outputRoot: URL
     ) async throws -> StudioBatchPlan {
         let physicalOutputRoot = try validatedOutputRoot(outputRoot)
-        let destinationSemantics = DestinationPathSemantics(outputRoot: physicalOutputRoot)
-        let outputRootKey = destinationSemantics.key(for: physicalOutputRoot)
+        let destinationSemantics = DestinationPathSemantics(
+            outputRoot: physicalOutputRoot,
+            resolver: caseSensitivityResolver
+        )
+        let outputRootIdentity = PhysicalOutputRootIdentity(physicalOutputRoot)
         let folderRoots = discovery.selectedFolderRoots.map(physicalURLResolvingExistingAncestors)
 
         guard folderRoots.allSatisfy({ !isEqualOrDescendant(physicalOutputRoot, of: $0) }) else {
@@ -115,7 +129,9 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
             skipped: discovery.skipped,
             duplicateCount: discovery.duplicateCount
         )
-        activePlans[outputRootKey] = ActivePlanClaims(
+        activePlans[outputRootIdentity] = ActivePlanClaims(
+            outputRoot: physicalOutputRoot,
+            outputRootIdentity: outputRootIdentity,
             semantics: destinationSemantics,
             claims: claims,
             finalClaimsByItemID: finalClaimsByItemID
@@ -128,8 +144,7 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
         outputRoot: URL
     ) async throws -> StudioBatchReservation {
         let physicalOutputRoot = try validatedOutputRoot(outputRoot)
-        let destinationSemantics = DestinationPathSemantics(outputRoot: physicalOutputRoot)
-        let outputRootKey = destinationSemantics.key(for: physicalOutputRoot)
+        let outputRootIdentity = PhysicalOutputRootIdentity(physicalOutputRoot)
         guard item.reservation.outputRoot == physicalOutputRoot else {
             throw StudioBatchPlanningError.unsafeOutputRoot
         }
@@ -147,7 +162,13 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
             }
         }
 
-        var activePlan = activePlans[outputRootKey] ?? ActivePlanClaims(semantics: destinationSemantics)
+        guard var activePlan = activePlans[outputRootIdentity],
+              activePlan.outputRoot == physicalOutputRoot,
+              activePlan.outputRootIdentity == outputRootIdentity
+        else {
+            throw StudioBatchPlanningError.missingActivePlan
+        }
+        let destinationSemantics = activePlan.semantics
         if let previousFinalClaim = activePlan.finalClaimsByItemID[item.id] {
             activePlan.claims.removeFinal(previousFinalClaim)
         }
@@ -165,7 +186,7 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
             claims: &activePlan.claims
         )
         activePlan.finalClaimsByItemID[item.id] = destinationSemantics.key(for: reservation.finalURL)
-        activePlans[outputRootKey] = activePlan
+        activePlans[outputRootIdentity] = activePlan
         return reservation
     }
 
@@ -426,12 +447,22 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
     }
 }
 
+protocol DestinationCaseSensitivityResolving: Sendable {
+    func caseSensitive(for outputRoot: URL) throws -> Bool?
+}
+
+private struct VolumeCaseSensitivityResolver: DestinationCaseSensitivityResolving {
+    func caseSensitive(for outputRoot: URL) throws -> Bool? {
+        let values = try outputRoot.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
+        return values.volumeSupportsCaseSensitiveNames
+    }
+}
+
 private struct DestinationPathSemantics: Sendable {
     let caseSensitive: Bool
 
-    init(outputRoot: URL) {
-        let values = try? outputRoot.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
-        caseSensitive = values?.volumeSupportsCaseSensitiveNames ?? true
+    init(outputRoot: URL, resolver: any DestinationCaseSensitivityResolving) {
+        caseSensitive = (try? resolver.caseSensitive(for: outputRoot)) ?? false
     }
 
     func key(for url: URL) -> DestinationPathKey {
@@ -457,6 +488,14 @@ private struct DestinationPathKey: Hashable, Sendable {
     func isEqualToOrAncestor(of other: DestinationPathKey) -> Bool {
         guard components.count <= other.components.count else { return false }
         return components.elementsEqual(other.components.prefix(components.count))
+    }
+}
+
+private struct PhysicalOutputRootIdentity: Hashable, Sendable {
+    let outputRoot: URL
+
+    init(_ outputRoot: URL) {
+        self.outputRoot = outputRoot.standardizedFileURL
     }
 }
 
@@ -508,15 +547,21 @@ private struct PathClaims: Sendable {
 }
 
 private struct ActivePlanClaims: Sendable {
+    let outputRoot: URL
+    let outputRootIdentity: PhysicalOutputRootIdentity
     let semantics: DestinationPathSemantics
     var claims: PathClaims
     var finalClaimsByItemID: [UUID: DestinationPathKey]
 
     init(
+        outputRoot: URL,
+        outputRootIdentity: PhysicalOutputRootIdentity,
         semantics: DestinationPathSemantics,
         claims: PathClaims = .init(),
         finalClaimsByItemID: [UUID: DestinationPathKey] = [:]
     ) {
+        self.outputRoot = outputRoot
+        self.outputRootIdentity = outputRootIdentity
         self.semantics = semantics
         self.claims = claims
         self.finalClaimsByItemID = finalClaimsByItemID
