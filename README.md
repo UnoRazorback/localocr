@@ -8,9 +8,9 @@ stored locally.
 LocalOCR is an open-core project for **macOS 14 or later**. The open-source
 core includes the Swift OCR engine, the `localocr` command-line tool, and the
 `localocr-mcp` stdio server. The repository also contains the release pipeline
-for a directly distributed LocalOCR Studio Mac app. The current private
-prerelease is [v0.2.0-beta.1](https://github.com/UnoRazorback/localocr/releases/tag/v0.2.0-beta.1)
-for invited testers with repository access. See the [Beta Tester Guide](BETA_TESTING.md)
+for a directly distributed LocalOCR Studio Mac app. The published prerelease is
+[v0.2.0-beta.1](https://github.com/UnoRazorback/localocr/releases/tag/v0.2.0-beta.1).
+See the [Beta Tester Guide](BETA_TESTING.md)
 for the verified Beta 1 download, installation, privacy, and optional MCP setup.
 The [Beta 2 candidate notes](docs/release/v0.3.0-beta.1-notes.md) describe the
 next desktop workflow without changing the published-download instructions.
@@ -78,12 +78,11 @@ The resulting executables are `dist/native-tools/localocr` and
 `dist/native-tools/localocr-mcp`. The build script creates local development
 artifacts only; it does not sign, notarize, install, or publish them.
 
-## Private beta distribution
+## Published prerelease distribution
 
-The current private prerelease is
+The published prerelease is
 [v0.2.0-beta.1](https://github.com/UnoRazorback/localocr/releases/tag/v0.2.0-beta.1).
-It is available only to invited testers with private-repository access. Its
-release identity is version `0.2.0`, build `1`, source commit
+Its release identity is version `0.2.0`, build `1`, source commit
 `2cb03cc9684ed9bb4b449a0f7d79f0588fb7ae38`, and verified ZIP SHA-256
 `3a6a1c754ee369ab9a8ffe01bcc96e7f4927ac44eb1f82b410f538aee901c0d5`.
 It was built with Xcode 26.6 (`17F113`), Swift 6, and arm64, with deployment target macOS 14.0; acceptance covered Apple M5 and Apple M4 Macs tested on macOS 27 beta build `26A5388g`.
@@ -102,6 +101,26 @@ or use an unverified build or staging copy. The [Beta 1 Tester Guide](BETA_TESTI
 contains the complete install, five-minute desktop test, compatibility, and
 feedback instructions.
 
+Release operators and second-Mac testers must use a clean checkout at the
+exact approved release commit. From that checkout's repository root, run the
+downloaded-copy verifier with absolute paths to both downloaded assets before
+an unpublished candidate is released or a published prerelease is promoted:
+
+```bash
+cd /path/to/localocr
+export LOCALOCR_EXPECTED_BUNDLE_ID="<approved-bundle-id>"
+export LOCALOCR_RELEASE_VERSION="<approved-version>"
+export LOCALOCR_RELEASE_BUILD="<approved-build>"
+scripts/test-downloaded-release.sh \
+  "/absolute/path/to/LocalOCR-Studio-<version>-<build>.zip" \
+  "/absolute/path/to/LocalOCR-Studio-<version>-<build>.sha256"
+```
+
+The private release notes workflow applies only to an unpublished candidate;
+it identifies the approved version, exact release commit, installation steps,
+known limitations, and the owner-approved feedback URL. The published
+prerelease notes identify the corresponding facts for an available build.
+
 ### Beta limitations
 
 - macOS 14 or later on Apple silicon is required.
@@ -110,7 +129,7 @@ feedback instructions.
 - The MCP server uses local stdio and client configuration remains manual.
 - Windows, Linux, and Intel Macs are not supported.
 - Beta behavior and file-format results may change; keep original documents
-  and report substantive issues through the feedback URL in the private
+  and report substantive issues through the feedback URL in the published
   release notes.
 
 ## CLI

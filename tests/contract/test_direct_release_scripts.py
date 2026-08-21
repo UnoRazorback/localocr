@@ -1202,8 +1202,8 @@ def _real_app_stage_environment(unsigned_app: Path) -> dict[str, str]:
     env.update(
         {
             "LOCALOCR_UNSIGNED_APP": str(unsigned_app),
-            "LOCALOCR_RELEASE_VERSION": "0.2.0",
-            "LOCALOCR_RELEASE_BUILD": "1",
+            "LOCALOCR_RELEASE_VERSION": "0.3.0",
+            "LOCALOCR_RELEASE_BUILD": "2",
             "LOCALOCR_EXPECTED_BUNDLE_ID": "com.rayconsulting.localocr",
         }
     )
@@ -1609,8 +1609,8 @@ def test_real_unsigned_studio_app_stages_under_exact_release_policy(
     staged_plist = _read_bundle_plist(real_staged_studio_app)
     assert staged_plist["CFBundleExecutable"] == "LocalOCR Studio"
     assert staged_plist["CFBundleIdentifier"] == "com.rayconsulting.localocr"
-    assert staged_plist["CFBundleShortVersionString"] == "0.2.0"
-    assert staged_plist["CFBundleVersion"] == "1"
+    assert staged_plist["CFBundleShortVersionString"] == "0.3.0"
+    assert staged_plist["CFBundleVersion"] == "2"
 
     helpers = real_staged_studio_app / "Contents" / "Helpers"
     assert sorted(path.name for path in helpers.iterdir()) == [

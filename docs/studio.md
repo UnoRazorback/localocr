@@ -46,7 +46,7 @@ name when the preferred name is already taken.
 You can **Cancel Batch** while it is running. Completed outputs remain in the
 chosen output folder; pending work is marked cancelled. After a completed run,
 use **Retry Failed** to try only failed items, **Reveal Output Folder** to open
-the chosen destination, or **New Batch** to clear the review and begin again.
+the chosen destination, or **Start New Batch** to clear the review and begin again.
 Use **Single Document** to return to the default one-document workflow when no
 batch is processing.
 
@@ -90,10 +90,9 @@ tools and client-configuration shape. The adjacent
 
 ## Beta status
 
-The current private prerelease is
+The published prerelease is
 [v0.2.0-beta.1](https://github.com/UnoRazorback/localocr/releases/tag/v0.2.0-beta.1).
-Invited testers need private-repository access to download it. Follow the
-[Beta 1 Tester Guide](../BETA_TESTING.md) to verify
+Follow the [Beta 1 Tester Guide](../BETA_TESTING.md) to verify
 `LocalOCR-Studio-0.2.0-1.zip` with its matching `.sha256` file, then move the
 expanded app to `/Applications` and open it normally. Do not use a staging
 copy or bypass Gatekeeper. The [Beta 2 candidate notes](release/v0.3.0-beta.1-notes.md)

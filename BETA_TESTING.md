@@ -1,7 +1,6 @@
 # LocalOCR Studio Beta Tester Guide
 
-The current published private prerelease is Beta 1 for invited testers. You
-need repository access to download it and file feedback. The separate
+The published prerelease is Beta 1. The separate
 [Beta 2 candidate notes](docs/release/v0.3.0-beta.1-notes.md) describe the
 next desktop batch workflow; that candidate is not yet published and has no
 downloadable archive, signing, notarization, or acceptance claim here.
@@ -33,7 +32,7 @@ unchanged, and existing output names are never overwritten: a numbered name is
 chosen instead.
 
 You can cancel a running batch, retry only failed items after it completes,
-reveal the chosen output folder, or select **New Batch** to clear the queue.
+reveal the chosen output folder, or select **Start New Batch** to clear the queue.
 This candidate uses the same local-only processing boundary as Beta 1.
 
 ## Five-minute desktop test
@@ -53,7 +52,7 @@ Recognition uses Apple Vision and PDFKit locally. LocalOCR does not upload docum
 
 ## Compatibility and build provenance
 
-This build was made with stable Xcode 26.6 (`17F113`), Swift 6, and arm64, with deployment target macOS 14.0. It is Developer ID signed with Hardened Runtime, Apple notarized, stapled, and Gatekeeper accepted. Complete downloaded-package and GUI acceptance passed on Apple M5 and Apple M4 Macs tested on macOS 27 beta build `26A5388g`.
+The published Beta 1 build (version `0.2.0`) was made with stable Xcode 26.6 (`17F113`), Swift 6, and arm64, with deployment target macOS 14.0. It is Developer ID signed with Hardened Runtime, Apple notarized, stapled, and Gatekeeper accepted. Complete downloaded-package and GUI acceptance passed on Apple M5 and Apple M4 Macs tested on macOS 27 beta build `26A5388g`.
 
 Release provenance: version `0.2.0` build `1` comes from source commit `2cb03cc9684ed9bb4b449a0f7d79f0588fb7ae38`; the verified ZIP SHA-256 is `3a6a1c754ee369ab9a8ffe01bcc96e7f4927ac44eb1f82b410f538aee901c0d5`.
 
@@ -76,7 +75,10 @@ Use the repository [beta feedback form](https://github.com/UnoRazorback/localocr
 
 ## Advanced: MCP setup
 
-This optional path is separate from the desktop flow. Studio remains one-document-at-a-time; its bundled local stdio MCP server exposes the six tools below, including batch PDF OCR. The installed helper is:
+This optional path is separate from the desktop flow. The published Beta 1 app
+processes one document at a time; the Beta 2 candidate keeps that flow as the
+default and adds reviewed desktop batches. Its bundled local stdio MCP server
+exposes the six tools below, including batch PDF OCR. The installed helper is:
 
 ```text
 /Applications/LocalOCR Studio.app/Contents/Helpers/localocr-mcp
