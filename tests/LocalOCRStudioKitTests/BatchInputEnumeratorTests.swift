@@ -53,6 +53,20 @@ import Testing
         #expect(discovery.duplicateCount == 2)
     }
 
+    @Test func directSelectionMetadataOverridesEarlierFolderDiscovery() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pdf = root.appending(path: "invoice.pdf")
+        try Data().write(to: pdf)
+
+        let discovery = await BatchInputEnumerator().discover(selections: [root, pdf])
+
+        #expect(discovery.candidates.count == 1)
+        #expect(discovery.candidates[0].relativePath == "invoice.pdf")
+        #expect(discovery.candidates[0].outputGroupName == nil)
+        #expect(discovery.duplicateCount == 1)
+    }
+
     @Test func skipsHiddenEntriesAndPackagesWithoutDescendingIntoThem() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

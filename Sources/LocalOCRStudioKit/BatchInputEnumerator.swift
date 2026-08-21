@@ -131,20 +131,46 @@ public actor BatchInputEnumerator: StudioBatchInputEnumerating {
         }
 
         let identity = resolvedIdentity(for: sourceURL)
-        guard state.candidateIdentities.insert(identity).inserted else {
+        if let existingIndex = state.candidateIndices[identity] {
             state.duplicateCount += 1
+            if folderRoot == nil, state.candidates[existingIndex].outputGroupName != nil {
+                state.candidates[existingIndex] = candidate(
+                    id: state.candidates[existingIndex].id,
+                    sourceURL: sourceURL,
+                    identity: identity,
+                    kind: kind,
+                    folderRoot: nil
+                )
+            }
             return
         }
 
+        state.candidateIndices[identity] = state.candidates.count
         state.candidates.append(
-            StudioBatchCandidate(
+            candidate(
                 id: UUID(),
                 sourceURL: sourceURL,
-                standardizedSourceURL: identity,
+                identity: identity,
                 kind: kind,
-                relativePath: folderRoot.map { relativePath(of: sourceURL, from: $0) } ?? sourceURL.lastPathComponent,
-                outputGroupName: folderRoot?.lastPathComponent
+                folderRoot: folderRoot
             )
+        )
+    }
+
+    private func candidate(
+        id: UUID,
+        sourceURL: URL,
+        identity: URL,
+        kind: StudioDocumentKind,
+        folderRoot: URL?
+    ) -> StudioBatchCandidate {
+        StudioBatchCandidate(
+            id: id,
+            sourceURL: sourceURL,
+            standardizedSourceURL: identity,
+            kind: kind,
+            relativePath: folderRoot.map { relativePath(of: sourceURL, from: $0) } ?? sourceURL.lastPathComponent,
+            outputGroupName: folderRoot?.lastPathComponent
         )
     }
 
@@ -212,7 +238,7 @@ private struct DiscoveryState {
     var candidates: [StudioBatchCandidate] = []
     var skipped: [StudioBatchSkippedInput] = []
     var duplicateCount = 0
-    var candidateIdentities: Set<URL> = []
+    var candidateIndices: [URL: Int] = [:]
     var selectedFolderRoots: [URL] = []
     var selectedFolderRootIdentities: Set<URL> = []
 }
