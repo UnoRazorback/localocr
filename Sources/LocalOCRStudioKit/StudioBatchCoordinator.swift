@@ -28,7 +28,9 @@ public final class StudioBatchCoordinator {
     @ObservationIgnored private var selectedURLs: [URL] = []
     @ObservationIgnored private var selectedOutputRoot: URL?
     @ObservationIgnored private var generation = UUID()
-    @ObservationIgnored private var preparationTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var preparationTask: Task<Void, Never>?
+    @ObservationIgnored private var preparationTaskID: UUID?
+    @ObservationIgnored private var pendingPreparationRequest: StudioBatchPreparationRequest?
     @ObservationIgnored private var processingTask: Task<Void, Never>?
     @ObservationIgnored private var processingTaskID: UUID?
     @ObservationIgnored private var progressTasks: [UUID: Task<Void, Never>] = [:]
@@ -109,7 +111,7 @@ public final class StudioBatchCoordinator {
 
     public func startNewBatch() {
         generation = UUID()
-        cancelPreparationTasks()
+        cancelPreparation()
         processingTask?.cancel()
 
         selectedURLs = []
@@ -123,12 +125,12 @@ public final class StudioBatchCoordinator {
 
     @_spi(Testing)
     public func waitUntilIdleForTesting() async {
-        while !preparationTasks.isEmpty || processingTask != nil || !progressTasks.isEmpty {
-            let preparations = Array(preparationTasks.values)
+        while preparationTask != nil || processingTask != nil || !progressTasks.isEmpty {
+            let preparation = preparationTask
             let processing = processingTask
             let progressDeliveries = Array(progressTasks.values)
-            for task in preparations {
-                await task.value
+            if let preparation {
+                await preparation.value
             }
             if let processing {
                 await processing.value
@@ -141,10 +143,8 @@ public final class StudioBatchCoordinator {
 
     @_spi(Testing)
     public func waitUntilPreparationIdleForTesting() async {
-        while !preparationTasks.isEmpty {
-            for task in Array(preparationTasks.values) {
-                await task.value
-            }
+        while let preparationTask {
+            await preparationTask.value
         }
     }
 
@@ -153,48 +153,64 @@ public final class StudioBatchCoordinator {
         await activeProgressRelay?.waitUntilDeliveredThroughLatest()
     }
 
+    @_spi(Testing)
+    public var ownedPreparationTaskCountForTesting: Int {
+        preparationTask == nil ? 0 : 1
+    }
+
+    @_spi(Testing)
+    public var pendingPreparationRequestCountForTesting: Int {
+        pendingPreparationRequest == nil ? 0 : 1
+    }
+
     private func beginPreparation() {
         generation = UUID()
-        let preparationGeneration = generation
-        let precedingTasks = Array(preparationTasks.values)
-        cancelPreparationTasks()
         actionError = nil
         items = []
 
+        let request = StudioBatchPreparationRequest(
+            generation: generation,
+            selections: selectedURLs,
+            requestedOutputRoot: selectedOutputRoot
+        )
+        guard let preparationTask else {
+            startPreparation(request)
+            return
+        }
+
+        pendingPreparationRequest = request
+        preparationTask.cancel()
+    }
+
+    private func startPreparation(_ request: StudioBatchPreparationRequest) {
         let taskID = UUID()
-        let selections = selectedURLs
-        let requestedOutputRoot = selectedOutputRoot
         let enumerator = enumerator
         let planner = planner
         let task = Task { @MainActor [weak self] in
             defer { self?.finishPreparationTask(taskID) }
-            let discovered = await enumerator.discover(selections: selections)
+            let discovered = await enumerator.discover(selections: request.selections)
             guard !Task.isCancelled,
                   self?.accept(
                       discovered,
-                      generation: preparationGeneration
+                      generation: request.generation
                   ) == true
             else { return }
             guard !discovered.candidates.isEmpty,
-                  let requestedOutputRoot
+                  let requestedOutputRoot = request.requestedOutputRoot
             else { return }
-
-            for precedingTask in precedingTasks {
-                await precedingTask.value
-            }
-            guard !Task.isCancelled else { return }
 
             do {
                 let plan = try await planner.makePlan(
                     discovery: discovered,
                     outputRoot: requestedOutputRoot
                 )
-                self?.accept(plan, generation: preparationGeneration)
+                self?.accept(plan, generation: request.generation)
             } catch {
-                self?.acceptPreparationError(error, generation: preparationGeneration)
+                self?.acceptPreparationError(error, generation: request.generation)
             }
         }
-        preparationTasks[taskID] = task
+        preparationTaskID = taskID
+        preparationTask = task
     }
 
     @discardableResult
@@ -238,14 +254,20 @@ public final class StudioBatchCoordinator {
         actionError = batchIssue(for: error)
     }
 
-    private func cancelPreparationTasks() {
-        for task in preparationTasks.values {
-            task.cancel()
-        }
+    private func cancelPreparation() {
+        pendingPreparationRequest = nil
+        preparationTask?.cancel()
     }
 
     private func finishPreparationTask(_ id: UUID) {
-        preparationTasks.removeValue(forKey: id)
+        guard preparationTaskID == id else { return }
+
+        preparationTask = nil
+        preparationTaskID = nil
+        guard let pendingPreparationRequest else { return }
+
+        self.pendingPreparationRequest = nil
+        startPreparation(pendingPreparationRequest)
     }
 
     private func startProcessing(
@@ -254,7 +276,7 @@ public final class StudioBatchCoordinator {
     ) {
         generation = UUID()
         let processingGeneration = generation
-        cancelPreparationTasks()
+        cancelPreparation()
         actionError = nil
         phase = .processing
 
@@ -505,6 +527,12 @@ public final class StudioBatchCoordinator {
 private enum StudioBatchProcessingDisposition {
     case continueBatch
     case stop
+}
+
+private struct StudioBatchPreparationRequest {
+    let generation: UUID
+    let selections: [URL]
+    let requestedOutputRoot: URL?
 }
 
 private struct StudioBatchProgressDelivery {

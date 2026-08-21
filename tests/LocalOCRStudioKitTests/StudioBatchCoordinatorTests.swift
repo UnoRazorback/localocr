@@ -1,6 +1,5 @@
 import Foundation
 import LocalOCRCore
-import Observation
 @_spi(Testing) @testable import LocalOCRStudioKit
 import Testing
 
@@ -101,10 +100,11 @@ import Testing
         coordinator.addSelections([first])
         await enumerator.waitForRequestCount(1)
         coordinator.addSelections([second])
-        await enumerator.waitForRequestCount(2)
+        #expect(await enumerator.requestCount() == 1)
 
-        await enumerator.succeed(1, with: discovery(for: [first, second]))
         await enumerator.succeed(0, with: discovery(for: [first]))
+        await enumerator.waitForRequestCount(2)
+        await enumerator.succeed(1, with: discovery(for: [first, second]))
         await coordinator.waitUntilIdleForTesting()
 
         #expect(coordinator.phase == .reviewing)
@@ -125,11 +125,8 @@ import Testing
         await coordinator.waitUntilIdleForTesting()
         coordinator.chooseOutputRoot(firstRoot)
         await planner.waitForRequestCount(1)
-        let firstDiscoveryID = coordinator.discovery?.candidates.first?.id
         coordinator.chooseOutputRoot(secondRoot)
-        await waitUntilObserved {
-            coordinator.discovery?.candidates.first?.id != firstDiscoveryID
-        }
+        #expect(await planner.requestCount() == 1)
 
         let firstRequest = await planner.request(at: 0)
         await planner.succeed(0, with: plan(
@@ -148,6 +145,55 @@ import Testing
         #expect(coordinator.items.allSatisfy {
             $0.reservation.outputRoot == secondRoot.standardizedFileURL
         })
+    }
+
+    @Test @MainActor func preparationChangesCoalesceBehindOneSuspendedPlannerCall() async {
+        let enumerator = ImmediateCoordinatorEnumerator()
+        let planner = ControlledCoordinatorPlanner()
+        let coordinator = StudioBatchCoordinator(
+            enumerator: enumerator,
+            planner: planner,
+            executor: ControlledBatchExecutor()
+        )
+        let source = testURL("coalesced.pdf")
+        let firstRoot = testURL("coalesced-output-0")
+        let latestRoot = testURL("coalesced-output-100")
+
+        coordinator.addSelections([source])
+        await coordinator.waitUntilIdleForTesting()
+        coordinator.chooseOutputRoot(firstRoot)
+        await planner.waitForRequestCount(1)
+
+        for index in 1...100 {
+            coordinator.chooseOutputRoot(testURL("coalesced-output-\(index)"))
+        }
+
+        #expect(coordinator.ownedPreparationTaskCountForTesting == 1)
+        #expect(coordinator.pendingPreparationRequestCountForTesting == 1)
+        #expect(await enumerator.requestCount() == 2)
+        #expect(await planner.requestCount() == 1)
+
+        let firstRequest = await planner.request(at: 0)
+        await planner.succeed(0, with: plan(
+            discovery: firstRequest.discovery,
+            outputRoot: firstRequest.outputRoot
+        ))
+        await planner.waitForRequestCount(2)
+
+        #expect(await enumerator.requestCount() == 3)
+        let latestRequest = await planner.request(at: 1)
+        #expect(latestRequest.outputRoot == latestRoot.standardizedFileURL)
+        await planner.succeed(1, with: plan(
+            discovery: latestRequest.discovery,
+            outputRoot: latestRequest.outputRoot
+        ))
+        await coordinator.waitUntilIdleForTesting()
+
+        #expect(coordinator.ownedPreparationTaskCountForTesting == 0)
+        #expect(coordinator.pendingPreparationRequestCountForTesting == 0)
+        #expect(coordinator.outputRoot == latestRoot.standardizedFileURL)
+        #expect(coordinator.items.count == 1)
+        #expect(coordinator.items[0].reservation.outputRoot == latestRoot.standardizedFileURL)
     }
 
     @Test @MainActor func stalePlanningCannotReplaceTheRealPlannersActiveClaims() async throws {
@@ -178,9 +224,6 @@ import Testing
         await planner.waitForRequestCount(1)
 
         coordinator.addSelections([second])
-        await waitUntilObserved {
-            coordinator.discovery?.candidates.count == 2
-        }
         await planner.releaseFirstAfterAnyOverlappingRequest()
         await coordinator.waitUntilIdleForTesting()
 
@@ -233,13 +276,17 @@ import Testing
         planningCoordinator.chooseOutputRoot(testURL("late-output"))
         await planner.waitForRequestCount(1)
         let request = await planner.request(at: 0)
+        planningCoordinator.addSelections([testURL("discarded-pending.pdf")])
+        #expect(planningCoordinator.pendingPreparationRequestCountForTesting == 1)
         planningCoordinator.startNewBatch()
+        #expect(planningCoordinator.pendingPreparationRequestCountForTesting == 0)
         await planner.succeed(0, with: plan(
             discovery: request.discovery,
             outputRoot: request.outputRoot
         ))
         await planningCoordinator.waitUntilIdleForTesting()
 
+        #expect(await planner.requestCount() == 1)
         assertEmptySession(planningCoordinator)
     }
 
@@ -739,6 +786,10 @@ private actor ControlledCoordinatorEnumerator: StudioBatchInputEnumerating {
         }
     }
 
+    func requestCount() -> Int {
+        requests.count
+    }
+
     func succeed(_ index: Int, with result: StudioBatchDiscovery) {
         continuations.removeValue(forKey: index)?.resume(returning: result)
     }
@@ -847,6 +898,10 @@ private actor ControlledCoordinatorPlanner: StudioBatchOutputPlanning {
 
     func request(at index: Int) -> Request {
         requests[index]
+    }
+
+    func requestCount() -> Int {
+        requests.count
     }
 
     func succeed(_ index: Int, with result: StudioBatchPlan) {
@@ -1092,19 +1147,6 @@ private func testURL(_ name: String) -> URL {
 
 private func testIssue(_ title: String) -> StudioBatchIssue {
     StudioBatchIssue(title: title, message: "test", details: nil)
-}
-
-@MainActor
-private func waitUntilObserved(_ condition: @escaping @MainActor () -> Bool) async {
-    while !condition() {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            withObservationTracking {
-                _ = condition()
-            } onChange: {
-                continuation.resume()
-            }
-        }
-    }
 }
 
 @MainActor
