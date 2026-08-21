@@ -79,6 +79,15 @@ enum LocalOCRStudioRoot {
             clipboard: NSPasteboardStudioClipboard(),
             textWriter: AtomicStudioTextWriter()
         )
-        return LocalOCRStudioView(model: model, actions: actions)
+        let batchCoordinator = StudioBatchCoordinator(
+            enumerator: BatchInputEnumerator(),
+            planner: BatchOutputPlanner(),
+            executor: StudioBatchExecutor(client: client)
+        )
+        return LocalOCRStudioView(
+            model: model,
+            actions: actions,
+            batchCoordinator: batchCoordinator
+        )
     }
 }

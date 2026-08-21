@@ -19,7 +19,81 @@ final class LocalOCRStudioUITests: XCTestCase {
         XCTAssertTrue(dropZone.waitForExistence(timeout: 5))
         XCTAssertEqual(dropZone.label, "Document drop zone")
         XCTAssertTrue(app.buttons["studio.open"].exists)
+        XCTAssertTrue(app.buttons["studio.new-batch"].exists)
         XCTAssertTrue(app.staticTexts["Processed locally on this Mac."].exists)
+    }
+
+    func testBatchNavigationReturnsToTheUnchangedSingleDocumentStart() {
+        let app = launch(state: "empty")
+        let newBatch = app.buttons["studio.new-batch"]
+
+        XCTAssertTrue(newBatch.waitForExistence(timeout: 5))
+        newBatch.click()
+
+        let workspace = element("studio.batch.workspace", in: app)
+        XCTAssertTrue(workspace.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["studio.batch.add-files"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.add-folder"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.choose-output"].isEnabled)
+
+        let returnToSingle = app.buttons["studio.batch.return-single"]
+        XCTAssertTrue(returnToSingle.isEnabled)
+        returnToSingle.click()
+
+        XCTAssertTrue(element("studio.drop-zone", in: app).waitForExistence(timeout: 5))
+        XCTAssertFalse(workspace.exists)
+    }
+
+    func testBatchReviewFixtureExposesOrderedQueueAndExplicitStart() {
+        let app = launch(state: "batchReview")
+
+        XCTAssertTrue(element("studio.batch.workspace", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            element(
+                "studio.batch.row.00000000-0000-0000-0000-000000000001",
+                in: app
+            ).waitForExistence(timeout: 5)
+        )
+        XCTAssertTrue(app.buttons["studio.batch.add-files"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.add-folder"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.choose-output"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.start"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.copy-diagnostics"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.return-single"].isEnabled)
+    }
+
+    func testBatchProcessingFixtureMakesCancelTheSafeExit() {
+        let app = launch(state: "batchProcessing")
+
+        XCTAssertTrue(element("studio.batch.workspace", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["studio.batch.cancel"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["studio.batch.cancel"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.copy-diagnostics"].isEnabled)
+        XCTAssertFalse(app.buttons["studio.batch.return-single"].isEnabled)
+        NSPasteboard.general.clearContents()
+        app.buttons["studio.batch.copy-diagnostics"].click()
+        let diagnostics = NSPasteboard.general.string(forType: .string) ?? "No diagnostics"
+        XCTAssertTrue(diagnostics.contains("State: processing"), diagnostics)
+        XCTAssertFalse(diagnostics.contains(Self.resultText), diagnostics)
+        XCTAssertTrue(
+            app.staticTexts["Status: Processing"].waitForExistence(timeout: 5),
+            diagnostics + "\n" + app.debugDescription
+        )
+    }
+
+    func testBatchCompleteFixtureExposesRecoveryAndCompletionActions() {
+        let app = launch(state: "batchComplete")
+
+        XCTAssertTrue(element("studio.batch.workspace", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["studio.batch.retry-failed"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.reveal-output"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.copy-diagnostics"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.new"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.return-single"].isEnabled)
+        XCTAssertTrue(
+            app.staticTexts["Status: Failed"].waitForExistence(timeout: 5),
+            app.debugDescription
+        )
     }
 
     func testSingleWindowLaunchAndReopenNeverCreatesASecondDocumentWindow() {

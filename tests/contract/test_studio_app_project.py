@@ -26,6 +26,8 @@ SHARED_SCHEME = (
 APP_ENTRY_POINT = ROOT / "App" / "LocalOCRStudioApp.swift"
 UI_TEST_SUPPORT = ROOT / "App" / "LocalOCRStudioUITestSupport.swift"
 UI_TESTS = ROOT / "AppUITests" / "LocalOCRStudioUITests.swift"
+BATCH_WORKSPACE = ROOT / "Sources" / "LocalOCRStudioKit" / "BatchWorkspaceView.swift"
+BATCH_STATUS_VIEWS = ROOT / "Sources" / "LocalOCRStudioKit" / "BatchStatusViews.swift"
 BUILD_SCRIPT = ROOT / "scripts" / "build-unsigned-studio-app.sh"
 RELEASE_TOOLCHAIN = ROOT / "scripts" / "release-toolchain.sh"
 
@@ -223,7 +225,38 @@ def test_ui_fixtures_are_debug_only_and_require_a_test_session_marker() -> None:
         "result",
         "resultBusy",
         "error",
+        "batchReview",
+        "batchProcessing",
+        "batchComplete",
     }
+
+
+def test_batch_workspace_contract_is_included_and_privacy_safe() -> None:
+    workspace = _read(BATCH_WORKSPACE)
+    status_views = _read(BATCH_STATUS_VIEWS)
+    entry_point = _read(APP_ENTRY_POINT)
+
+    for identifier in (
+        "studio.batch.workspace",
+        "studio.batch.add-files",
+        "studio.batch.add-folder",
+        "studio.batch.choose-output",
+        "studio.batch.start",
+        "studio.batch.cancel",
+        "studio.batch.retry-failed",
+        "studio.batch.reveal-output",
+        "studio.batch.copy-diagnostics",
+        "studio.batch.new",
+        "studio.batch.return-single",
+    ):
+        assert identifier in workspace
+
+    assert "StudioBatchExecutor(client: client)" in entry_point
+    assert "StudioViewModel(client: client)" in entry_point
+    assert "sourceSHA256" not in workspace
+    assert "sourceSHA256" not in status_views
+    assert "ProcessInfo.processInfo.environment" not in workspace
+    assert "ProcessInfo.processInfo.environment" not in status_views
 
 
 def test_unsigned_build_script_has_stable_toolchain_and_confined_paths() -> None:
