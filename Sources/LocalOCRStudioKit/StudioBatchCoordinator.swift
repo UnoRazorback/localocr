@@ -31,6 +31,8 @@ public final class StudioBatchCoordinator {
     @ObservationIgnored private var preparationTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var processingTask: Task<Void, Never>?
     @ObservationIgnored private var processingTaskID: UUID?
+    @ObservationIgnored private var progressTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var activeProgressRelay: StudioBatchProgressRelay?
 
     public init(
         enumerator: any StudioBatchInputEnumerating = BatchInputEnumerator(),
@@ -121,21 +123,40 @@ public final class StudioBatchCoordinator {
 
     @_spi(Testing)
     public func waitUntilIdleForTesting() async {
-        while !preparationTasks.isEmpty || processingTask != nil {
+        while !preparationTasks.isEmpty || processingTask != nil || !progressTasks.isEmpty {
             let preparations = Array(preparationTasks.values)
             let processing = processingTask
+            let progressDeliveries = Array(progressTasks.values)
             for task in preparations {
                 await task.value
             }
             if let processing {
                 await processing.value
             }
+            for task in progressDeliveries {
+                await task.value
+            }
         }
+    }
+
+    @_spi(Testing)
+    public func waitUntilPreparationIdleForTesting() async {
+        while !preparationTasks.isEmpty {
+            for task in Array(preparationTasks.values) {
+                await task.value
+            }
+        }
+    }
+
+    @_spi(Testing)
+    public func waitUntilProgressDeliveredForTesting() async {
+        await activeProgressRelay?.waitUntilDeliveredThroughLatest()
     }
 
     private func beginPreparation() {
         generation = UUID()
         let preparationGeneration = generation
+        let precedingTasks = Array(preparationTasks.values)
         cancelPreparationTasks()
         actionError = nil
         items = []
@@ -146,36 +167,32 @@ public final class StudioBatchCoordinator {
         let enumerator = enumerator
         let planner = planner
         let task = Task { @MainActor [weak self] in
+            defer { self?.finishPreparationTask(taskID) }
             let discovered = await enumerator.discover(selections: selections)
-            guard let self else { return }
-            guard !Task.isCancelled else {
-                self.finishPreparationTask(taskID)
-                return
-            }
-            guard self.accept(
-                discovered,
-                generation: preparationGeneration
-            ) else {
-                self.finishPreparationTask(taskID)
-                return
-            }
+            guard !Task.isCancelled,
+                  self?.accept(
+                      discovered,
+                      generation: preparationGeneration
+                  ) == true
+            else { return }
             guard !discovered.candidates.isEmpty,
                   let requestedOutputRoot
-            else {
-                self.finishPreparationTask(taskID)
-                return
+            else { return }
+
+            for precedingTask in precedingTasks {
+                await precedingTask.value
             }
+            guard !Task.isCancelled else { return }
 
             do {
                 let plan = try await planner.makePlan(
                     discovery: discovered,
                     outputRoot: requestedOutputRoot
                 )
-                self.accept(plan, generation: preparationGeneration)
+                self?.accept(plan, generation: preparationGeneration)
             } catch {
-                self.acceptPreparationError(error, generation: preparationGeneration)
+                self?.acceptPreparationError(error, generation: preparationGeneration)
             }
-            self.finishPreparationTask(taskID)
         }
         preparationTasks[taskID] = task
     }
@@ -242,88 +259,190 @@ public final class StudioBatchCoordinator {
         phase = .processing
 
         let taskID = UUID()
+        let planner = planner
+        let executor = executor
         processingTaskID = taskID
         processingTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            await self.process(
-                indices: indices,
-                refreshReservations: refreshReservations,
-                generation: processingGeneration
-            )
-            self.finishProcessingTask(taskID)
+            defer { self?.finishProcessingTask(taskID) }
+            for index in indices {
+                guard var item = self?.queuedItem(
+                    at: index,
+                    generation: processingGeneration
+                ) else { return }
+
+                let itemID = item.id
+                if refreshReservations {
+                    do {
+                        guard let outputRoot = self?.outputRoot else { return }
+                        let refreshed = try await planner.refreshReservation(
+                            for: item,
+                            outputRoot: outputRoot
+                        )
+                        guard let refreshedItem = self?.accept(
+                            refreshed,
+                            index: index,
+                            itemID: itemID,
+                            generation: processingGeneration
+                        ) else { return }
+                        item = refreshedItem
+                    } catch {
+                        guard let disposition = self?.acceptProcessingError(
+                            error,
+                            index: index,
+                            itemID: itemID,
+                            generation: processingGeneration
+                        ) else { return }
+                        if disposition == .stop { return }
+                        continue
+                    }
+                }
+
+                guard let executionItem = self?.beginExecution(
+                    item,
+                    index: index,
+                    generation: processingGeneration
+                ), let delivery = self?.beginProgressDelivery(
+                    index: index,
+                    itemID: itemID,
+                    generation: processingGeneration
+                ) else { return }
+
+                do {
+                    let resultURL = try await executor.execute(executionItem) { progress in
+                        delivery.relay.submit(progress)
+                    }
+                    delivery.relay.finish()
+                    await delivery.task.value
+                    guard self?.accept(
+                        resultURL,
+                        index: index,
+                        itemID: itemID,
+                        generation: processingGeneration
+                    ) == true else { return }
+                } catch {
+                    delivery.relay.finish()
+                    await delivery.task.value
+                    guard let disposition = self?.acceptProcessingError(
+                        error,
+                        index: index,
+                        itemID: itemID,
+                        generation: processingGeneration
+                    ) else { return }
+                    if disposition == .stop { return }
+                }
+            }
+
+            self?.completeProcessing(generation: processingGeneration)
         }
     }
 
-    private func process(
-        indices: [Int],
-        refreshReservations: Bool,
-        generation: UUID
-    ) async {
-        for index in indices {
-            guard isCurrentProcessingGeneration(generation),
-                  items.indices.contains(index),
-                  items[index].state == .queued
-            else {
-                return
-            }
-
-            if refreshReservations {
-                do {
-                    guard let outputRoot else { return }
-                    let refreshed = try await planner.refreshReservation(
-                        for: items[index],
-                        outputRoot: outputRoot
-                    )
-                    guard isCurrentProcessingGeneration(generation) else { return }
-                    items[index].reservation = refreshed
-                } catch {
-                    guard isCurrentProcessingGeneration(generation) else { return }
-                    if isCancellation(error) {
-                        finishExecutorCancellation()
-                        return
-                    }
-                    items[index].state = .failed(batchIssue(for: error))
-                    continue
-                }
-            }
-
-            let itemID = items[index].id
-            items[index].state = .processing(.inspecting)
-            let executionItem = items[index]
-
-            do {
-                let resultURL = try await executor.execute(executionItem) { [weak self] progress in
-                    Task { @MainActor [weak self] in
-                        self?.accept(
-                            progress,
-                            index: index,
-                            itemID: itemID,
-                            generation: generation
-                        )
-                    }
-                }
-                guard isCurrentProcessingGeneration(generation),
-                      items.indices.contains(index),
-                      items[index].id == itemID
-                else {
-                    return
-                }
-                items[index].state = .completed(resultURL)
-            } catch {
-                guard isCurrentProcessingGeneration(generation),
-                      items.indices.contains(index),
-                      items[index].id == itemID
-                else {
-                    return
-                }
-                if isCancellation(error) {
-                    finishExecutorCancellation()
-                    return
-                }
-                items[index].state = .failed(batchIssue(for: error))
-            }
+    private func queuedItem(at index: Int, generation: UUID) -> StudioBatchItem? {
+        guard isCurrentProcessingGeneration(generation),
+              items.indices.contains(index),
+              items[index].state == .queued
+        else {
+            return nil
         }
+        return items[index]
+    }
 
+    private func accept(
+        _ reservation: StudioBatchReservation,
+        index: Int,
+        itemID: UUID,
+        generation: UUID
+    ) -> StudioBatchItem? {
+        guard isCurrentProcessingGeneration(generation),
+              items.indices.contains(index),
+              items[index].id == itemID,
+              items[index].state == .queued
+        else {
+            return nil
+        }
+        items[index].reservation = reservation
+        return items[index]
+    }
+
+    private func beginExecution(
+        _ item: StudioBatchItem,
+        index: Int,
+        generation: UUID
+    ) -> StudioBatchItem? {
+        guard isCurrentProcessingGeneration(generation),
+              items.indices.contains(index),
+              items[index].id == item.id,
+              items[index].state == .queued
+        else {
+            return nil
+        }
+        items[index].state = .processing(.inspecting)
+        return items[index]
+    }
+
+    private func beginProgressDelivery(
+        index: Int,
+        itemID: UUID,
+        generation: UUID
+    ) -> StudioBatchProgressDelivery? {
+        guard isCurrentProcessingGeneration(generation) else { return nil }
+
+        let relay = StudioBatchProgressRelay()
+        let taskID = UUID()
+        let task = Task { @MainActor [weak self, relay] in
+            for await event in relay.events {
+                self?.accept(
+                    event.progress,
+                    index: index,
+                    itemID: itemID,
+                    generation: generation
+                )
+                relay.markDelivered(event.sequence)
+            }
+            self?.finishProgressTask(taskID, relay: relay)
+        }
+        progressTasks[taskID] = task
+        activeProgressRelay = relay
+        return StudioBatchProgressDelivery(relay: relay, task: task)
+    }
+
+    private func accept(
+        _ resultURL: URL,
+        index: Int,
+        itemID: UUID,
+        generation: UUID
+    ) -> Bool {
+        guard isCurrentProcessingGeneration(generation),
+              items.indices.contains(index),
+              items[index].id == itemID,
+              case .processing = items[index].state
+        else {
+            return false
+        }
+        items[index].state = .completed(resultURL)
+        return true
+    }
+
+    private func acceptProcessingError(
+        _ error: any Error,
+        index: Int,
+        itemID: UUID,
+        generation: UUID
+    ) -> StudioBatchProcessingDisposition? {
+        guard isCurrentProcessingGeneration(generation),
+              items.indices.contains(index),
+              items[index].id == itemID
+        else {
+            return nil
+        }
+        if isCancellation(error) {
+            finishExecutorCancellation()
+            return .stop
+        }
+        items[index].state = .failed(batchIssue(for: error))
+        return .continueBatch
+    }
+
+    private func completeProcessing(generation: UUID) {
         guard isCurrentProcessingGeneration(generation) else { return }
         phase = .complete
     }
@@ -370,6 +489,103 @@ public final class StudioBatchCoordinator {
         guard processingTaskID == id else { return }
         processingTask = nil
         processingTaskID = nil
+    }
+
+    private func finishProgressTask(
+        _ id: UUID,
+        relay: StudioBatchProgressRelay
+    ) {
+        progressTasks.removeValue(forKey: id)
+        if activeProgressRelay === relay {
+            activeProgressRelay = nil
+        }
+    }
+}
+
+private enum StudioBatchProcessingDisposition {
+    case continueBatch
+    case stop
+}
+
+private struct StudioBatchProgressDelivery {
+    let relay: StudioBatchProgressRelay
+    let task: Task<Void, Never>
+}
+
+private final class StudioBatchProgressRelay: @unchecked Sendable {
+    struct Event: Sendable {
+        let sequence: Int
+        let progress: StudioProgress
+    }
+
+    let events: AsyncStream<Event>
+
+    private let continuation: AsyncStream<Event>.Continuation
+    private let lock = NSLock()
+    private var nextSequence = 0
+    private var latestSubmittedSequence = -1
+    private var latestDeliveredSequence = -1
+    private var deliveryWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var isFinished = false
+
+    init() {
+        let stream = AsyncStream.makeStream(of: Event.self)
+        events = stream.stream
+        continuation = stream.continuation
+    }
+
+    func submit(_ progress: StudioProgress) {
+        lock.lock()
+        guard !isFinished else {
+            lock.unlock()
+            return
+        }
+        let sequence = nextSequence
+        nextSequence += 1
+        latestSubmittedSequence = sequence
+        continuation.yield(Event(sequence: sequence, progress: progress))
+        lock.unlock()
+    }
+
+    func finish() {
+        lock.lock()
+        guard !isFinished else {
+            lock.unlock()
+            return
+        }
+        isFinished = true
+        continuation.finish()
+        lock.unlock()
+    }
+
+    func markDelivered(_ sequence: Int) {
+        lock.lock()
+        latestDeliveredSequence = max(latestDeliveredSequence, sequence)
+        let ready = deliveryWaiters.filter { latestDeliveredSequence >= $0.0 }
+        deliveryWaiters.removeAll { latestDeliveredSequence >= $0.0 }
+        lock.unlock()
+        ready.forEach { $0.1.resume() }
+    }
+
+    func waitUntilDeliveredThroughLatest() async {
+        let target = latestSubmitted()
+        guard target >= 0 else { return }
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if latestDeliveredSequence >= target {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                deliveryWaiters.append((target, continuation))
+                lock.unlock()
+            }
+        }
+    }
+
+    private func latestSubmitted() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return latestSubmittedSequence
     }
 }
 

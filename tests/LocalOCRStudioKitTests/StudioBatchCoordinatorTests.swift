@@ -1,5 +1,6 @@
 import Foundation
 import LocalOCRCore
+import Observation
 @_spi(Testing) @testable import LocalOCRStudioKit
 import Testing
 
@@ -124,18 +125,22 @@ import Testing
         await coordinator.waitUntilIdleForTesting()
         coordinator.chooseOutputRoot(firstRoot)
         await planner.waitForRequestCount(1)
+        let firstDiscoveryID = coordinator.discovery?.candidates.first?.id
         coordinator.chooseOutputRoot(secondRoot)
-        await planner.waitForRequestCount(2)
+        await waitUntilObserved {
+            coordinator.discovery?.candidates.first?.id != firstDiscoveryID
+        }
 
-        let secondRequest = await planner.request(at: 1)
         let firstRequest = await planner.request(at: 0)
-        await planner.succeed(1, with: plan(
-            discovery: secondRequest.discovery,
-            outputRoot: secondRoot
-        ))
         await planner.succeed(0, with: plan(
             discovery: firstRequest.discovery,
             outputRoot: firstRoot
+        ))
+        await planner.waitForRequestCount(2)
+        let secondRequest = await planner.request(at: 1)
+        await planner.succeed(1, with: plan(
+            discovery: secondRequest.discovery,
+            outputRoot: secondRoot
         ))
         await coordinator.waitUntilIdleForTesting()
 
@@ -143,6 +148,61 @@ import Testing
         #expect(coordinator.items.allSatisfy {
             $0.reservation.outputRoot == secondRoot.standardizedFileURL
         })
+    }
+
+    @Test @MainActor func stalePlanningCannotReplaceTheRealPlannersActiveClaims() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StudioBatchCoordinatorPlanning-\(UUID().uuidString)", isDirectory: true)
+        let output = root.appending(path: "output", directoryHint: .isDirectory)
+        let first = root.appending(path: "input/first.pdf")
+        let second = root.appending(path: "input/second.pdf")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: first.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data().write(to: first)
+        try Data().write(to: second)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let planner = ReorderingRealCoordinatorPlanner()
+        let executor = ControlledBatchExecutor()
+        let coordinator = StudioBatchCoordinator(
+            enumerator: ImmediateCoordinatorEnumerator(),
+            planner: planner,
+            executor: executor
+        )
+        coordinator.addSelections([first])
+        await coordinator.waitUntilIdleForTesting()
+        coordinator.chooseOutputRoot(output)
+        await planner.waitForRequestCount(1)
+
+        coordinator.addSelections([second])
+        await waitUntilObserved {
+            coordinator.discovery?.candidates.count == 2
+        }
+        await planner.releaseFirstAfterAnyOverlappingRequest()
+        await coordinator.waitUntilIdleForTesting()
+
+        #expect(coordinator.items.count == 2)
+        let originalFirstReservation = coordinator.items[0].reservation.finalURL
+
+        coordinator.start()
+        await executor.waitForRequestCount(1)
+        await executor.fail(0, with: CoordinatorTestError.expected)
+        await executor.waitForRequestCount(2)
+        await executor.fail(1, with: CoordinatorTestError.expected)
+        await coordinator.waitUntilIdleForTesting()
+
+        coordinator.retryFailed()
+        await executor.waitForRequestCount(3)
+
+        #expect((await executor.requestedItems())[2].reservation.finalURL == originalFirstReservation)
+
+        await executor.succeed(2)
+        await executor.waitForRequestCount(4)
+        await executor.succeed(3)
+        await coordinator.waitUntilIdleForTesting()
     }
 
     @Test @MainActor func resetRejectsLateDiscoveryAndPlanningResults() async {
@@ -239,6 +299,7 @@ import Testing
         coordinator.start()
         await executor.waitForRequestCount(1)
         await executor.sendProgress(.recognizing(page: 1, total: 4), for: 0)
+        await coordinator.waitUntilProgressDeliveredForTesting()
 
         #expect(coordinator.items[0].state == .processing(.recognizing(page: 1, total: 4)))
         #expect(coordinator.items[1].state == .queued)
@@ -255,6 +316,7 @@ import Testing
 
         await executor.sendProgress(.assembling, for: 0)
         await executor.sendProgress(.recognizing(page: 2, total: 2), for: 1)
+        await coordinator.waitUntilProgressDeliveredForTesting()
 
         #expect(coordinator.items[0].state.isRetryable)
         #expect(coordinator.items[1].state == .processing(.recognizing(page: 2, total: 2)))
@@ -264,6 +326,31 @@ import Testing
 
         #expect(coordinator.phase == .complete)
         #expect(coordinator.summary.failed == 1)
+        #expect(coordinator.summary.completed == 1)
+    }
+
+    @Test @MainActor func sameItemProgressIsDeliveredInCallbackOrder() async {
+        let executor = ControlledBatchExecutor()
+        let coordinator = await readyCoordinator(
+            itemNames: ["ordered.pdf"],
+            executor: executor
+        )
+
+        coordinator.start()
+        await executor.waitForRequestCount(1)
+        await executor.sendProgress(
+            [
+                .recognizing(page: 1, total: 3),
+                .assembling,
+            ],
+            for: 0
+        )
+        await coordinator.waitUntilProgressDeliveredForTesting()
+
+        #expect(coordinator.items[0].state == .processing(.assembling))
+
+        await executor.succeed(0)
+        await coordinator.waitUntilIdleForTesting()
         #expect(coordinator.summary.completed == 1)
     }
 
@@ -400,6 +487,83 @@ import Testing
         #expect(coordinator.items.isEmpty)
         #expect(!coordinator.canStart)
         #expect(await enumerator.lastRequest() == [newSource])
+    }
+
+    @Test @MainActor func replacementBatchWaitsForCancellationIgnoringExecutorToDrain() async {
+        let executor = ControlledBatchExecutor()
+        let coordinator = await readyCoordinator(
+            itemNames: ["old.pdf"],
+            executor: executor
+        )
+
+        coordinator.start()
+        await executor.waitForRequestCount(1)
+        coordinator.startNewBatch()
+        coordinator.addSelections([testURL("replacement.pdf")])
+        coordinator.chooseOutputRoot(testURL("replacement-output"))
+        await coordinator.waitUntilPreparationIdleForTesting()
+
+        #expect(coordinator.phase == .reviewing)
+        #expect(coordinator.canStart)
+        coordinator.start()
+        #expect(await executor.requestCount() == 1)
+        #expect(await executor.maximumActiveCount() == 1)
+
+        await executor.succeed(0)
+        await coordinator.waitUntilIdleForTesting()
+        #expect(coordinator.phase == .reviewing)
+
+        coordinator.start()
+        await executor.waitForRequestCount(2)
+        #expect(await executor.maximumActiveCount() == 1)
+        await executor.succeed(1)
+        await coordinator.waitUntilIdleForTesting()
+
+        #expect(coordinator.phase == .complete)
+        #expect(coordinator.summary.completed == 1)
+    }
+
+    @Test @MainActor func coordinatorCanDeallocateWhileCancelledPlanningIgnoresCancellation() async {
+        let planner = ControlledCoordinatorPlanner()
+        var coordinator: StudioBatchCoordinator? = StudioBatchCoordinator(
+            enumerator: ImmediateCoordinatorEnumerator(),
+            planner: planner,
+            executor: ControlledBatchExecutor()
+        )
+        coordinator?.addSelections([testURL("planning-retain.pdf")])
+        await coordinator?.waitUntilIdleForTesting()
+        coordinator?.chooseOutputRoot(testURL("planning-retain-output"))
+        await planner.waitForRequestCount(1)
+        let request = await planner.request(at: 0)
+        weak let weakCoordinator = coordinator
+
+        coordinator?.startNewBatch()
+        coordinator = nil
+
+        #expect(weakCoordinator == nil)
+
+        await planner.succeed(0, with: plan(
+            discovery: request.discovery,
+            outputRoot: request.outputRoot
+        ))
+    }
+
+    @Test @MainActor func coordinatorCanDeallocateWhileCancelledExecutionIgnoresCancellation() async {
+        let executor = ControlledBatchExecutor()
+        var coordinator: StudioBatchCoordinator? = await readyCoordinator(
+            itemNames: ["execution-retain.pdf"],
+            executor: executor
+        )
+        coordinator?.start()
+        await executor.waitForRequestCount(1)
+        weak let weakCoordinator = coordinator
+
+        coordinator?.startNewBatch()
+        coordinator = nil
+
+        #expect(weakCoordinator == nil)
+
+        await executor.succeed(0)
     }
 
     @Test @MainActor func retryRefreshesAndExecutesOnlyFailedItems() async {
@@ -696,6 +860,85 @@ private actor ControlledCoordinatorPlanner: StudioBatchOutputPlanning {
     }
 }
 
+private actor ReorderingRealCoordinatorPlanner: StudioBatchOutputPlanning {
+    private struct PendingRequest {
+        let discovery: StudioBatchDiscovery
+        let outputRoot: URL
+        let continuation: CheckedContinuation<StudioBatchPlan, any Error>
+    }
+
+    private let planner = BatchOutputPlanner()
+    private var requestCount = 0
+    private var firstRelease: CheckedContinuation<Void, Never>?
+    private var secondRequest: PendingRequest?
+    private var requestWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var hasReleasedFirst = false
+
+    func makePlan(
+        discovery: StudioBatchDiscovery,
+        outputRoot: URL
+    ) async throws -> StudioBatchPlan {
+        let index = requestCount
+        requestCount += 1
+        resumeRequestWaiters()
+
+        if index == 0 {
+            await withCheckedContinuation { continuation in
+                firstRelease = continuation
+            }
+            return try await planner.makePlan(discovery: discovery, outputRoot: outputRoot)
+        }
+        if hasReleasedFirst {
+            return try await planner.makePlan(discovery: discovery, outputRoot: outputRoot)
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            secondRequest = PendingRequest(
+                discovery: discovery,
+                outputRoot: outputRoot,
+                continuation: continuation
+            )
+        }
+    }
+
+    func refreshReservation(
+        for item: StudioBatchItem,
+        outputRoot: URL
+    ) async throws -> StudioBatchReservation {
+        try await planner.refreshReservation(for: item, outputRoot: outputRoot)
+    }
+
+    func waitForRequestCount(_ expected: Int) async {
+        guard requestCount < expected else { return }
+        await withCheckedContinuation { continuation in
+            requestWaiters.append((expected, continuation))
+        }
+    }
+
+    func releaseFirstAfterAnyOverlappingRequest() async {
+        hasReleasedFirst = true
+        if let secondRequest {
+            self.secondRequest = nil
+            do {
+                let plan = try await planner.makePlan(
+                    discovery: secondRequest.discovery,
+                    outputRoot: secondRequest.outputRoot
+                )
+                secondRequest.continuation.resume(returning: plan)
+            } catch {
+                secondRequest.continuation.resume(throwing: error)
+            }
+        }
+        firstRelease?.resume()
+        firstRelease = nil
+    }
+
+    private func resumeRequestWaiters() {
+        let ready = requestWaiters.filter { requestCount >= $0.0 }
+        requestWaiters.removeAll { requestCount >= $0.0 }
+        ready.forEach { $0.1.resume() }
+    }
+}
+
 private actor ControlledBatchExecutor: StudioBatchItemExecuting {
     private var items: [StudioBatchItem] = []
     private var progressHandlers: [@Sendable (StudioProgress) -> Void] = []
@@ -727,9 +970,14 @@ private actor ControlledBatchExecutor: StudioBatchItemExecuting {
         }
     }
 
-    func sendProgress(_ progress: StudioProgress, for index: Int) async {
+    func sendProgress(_ progress: StudioProgress, for index: Int) {
         progressHandlers[index](progress)
-        await MainActor.run {}
+    }
+
+    func sendProgress(_ progressValues: [StudioProgress], for index: Int) {
+        for progress in progressValues {
+            progressHandlers[index](progress)
+        }
     }
 
     func succeed(_ index: Int, at url: URL? = nil) {
@@ -844,6 +1092,19 @@ private func testURL(_ name: String) -> URL {
 
 private func testIssue(_ title: String) -> StudioBatchIssue {
     StudioBatchIssue(title: title, message: "test", details: nil)
+}
+
+@MainActor
+private func waitUntilObserved(_ condition: @escaping @MainActor () -> Bool) async {
+    while !condition() {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            withObservationTracking {
+                _ = condition()
+            } onChange: {
+                continuation.resume()
+            }
+        }
+    }
 }
 
 @MainActor
