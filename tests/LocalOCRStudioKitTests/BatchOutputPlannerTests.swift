@@ -136,6 +136,110 @@ import Testing
         ])
     }
 
+    @Test func folderGroupDirectoryForcesAConflictingDirectFinalToNumber() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appending(path: "sources/photo.txt", directoryHint: .isDirectory)
+        let directImage = root.appending(path: "sources/z/photo.jpg")
+        let output = root.appending(path: "output", directoryHint: .isDirectory)
+        try writeEmptyFile(at: folder.appending(path: "scan.pdf"))
+        try writeEmptyFile(at: directImage)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        let discovery = await BatchInputEnumerator().discover(selections: [folder, directImage])
+        let plan = try await BatchOutputPlanner().makePlan(discovery: discovery, outputRoot: output)
+
+        #expect(plan.items.map { $0.reservation.finalURL.path } == [
+            output.appending(path: "photo.txt/scan_searchable.pdf").path,
+            output.appending(path: "photo_2.txt").path,
+        ])
+    }
+
+    @Test func requiredNestedDirectoryForcesAConflictingFolderFinalToNumber() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appending(path: "Batch", directoryHint: .isDirectory)
+        let output = root.appending(path: "output", directoryHint: .isDirectory)
+        try writeEmptyFile(at: folder.appending(path: "photo.jpg"))
+        try writeEmptyFile(at: folder.appending(path: "photo.txt/scan.pdf"))
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        let discovery = await BatchInputEnumerator().discover(selections: [folder])
+        let plan = try await BatchOutputPlanner().makePlan(discovery: discovery, outputRoot: output)
+
+        #expect(plan.items.map { $0.reservation.finalURL.path } == [
+            output.appending(path: "Batch/photo_2.txt").path,
+            output.appending(path: "Batch/photo.txt/scan_searchable.pdf").path,
+        ])
+    }
+
+    @Test func directCaseAliasesUseDistinctReservationsWhenTheDestinationIgnoresCase() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appending(path: "sources/one/Photo.jpg")
+        let second = root.appending(path: "sources/two/photo.png")
+        let output = root.appending(path: "output", directoryHint: .isDirectory)
+        try writeEmptyFile(at: first)
+        try writeEmptyFile(at: second)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let aliasesCollide = try destinationTreatsAliasesAsTheSameEntry(
+            in: output,
+            firstName: "CaseProbe",
+            secondName: "caseprobe"
+        )
+
+        let discovery = await BatchInputEnumerator().discover(selections: [second, first])
+        let plan = try await BatchOutputPlanner().makePlan(discovery: discovery, outputRoot: output)
+
+        #expect(plan.items.map { $0.reservation.finalURL.lastPathComponent } == [
+            "Photo.txt",
+            aliasesCollide ? "photo_2.txt" : "photo.txt",
+        ])
+    }
+
+    @Test func folderCaseAliasesUseDistinctGroupsWhenTheDestinationIgnoresCase() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appending(path: "sources/one/Receipts", directoryHint: .isDirectory)
+        let second = root.appending(path: "sources/two/receipts", directoryHint: .isDirectory)
+        let output = root.appending(path: "output", directoryHint: .isDirectory)
+        try writeEmptyFile(at: first.appending(path: "invoice.pdf"))
+        try writeEmptyFile(at: second.appending(path: "invoice.pdf"))
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let aliasesCollide = try destinationTreatsAliasesAsTheSameEntry(
+            in: output,
+            firstName: "GroupProbe",
+            secondName: "groupprobe"
+        )
+
+        let discovery = await BatchInputEnumerator().discover(selections: [second, first])
+        let plan = try await BatchOutputPlanner().makePlan(discovery: discovery, outputRoot: output)
+
+        #expect(plan.items.map { $0.reservation.finalURL.path } == [
+            output.appending(path: "Receipts/invoice_searchable.pdf").path,
+            output.appending(path: aliasesCollide ? "receipts_2/invoice_searchable.pdf" : "receipts/invoice_searchable.pdf").path,
+        ])
+    }
+
+    @Test func unicodeEquivalentDirectNamesUseDistinctReservations() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appending(path: "sources/one/Café.jpg")
+        let second = root.appending(path: "sources/two/Cafe\u{301}.png")
+        let output = root.appending(path: "output", directoryHint: .isDirectory)
+        try writeEmptyFile(at: first)
+        try writeEmptyFile(at: second)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        let discovery = await BatchInputEnumerator().discover(selections: [second, first])
+        let plan = try await BatchOutputPlanner().makePlan(discovery: discovery, outputRoot: output)
+
+        #expect(plan.items.map { $0.reservation.finalURL.lastPathComponent } == [
+            "Café.txt",
+            "Cafe\u{301}_2.txt",
+        ])
+    }
+
     @Test func rejectsSymbolicLinkFileAndMissingOutputRoots() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -273,6 +377,29 @@ import Testing
 
         #expect(refreshed.finalURL == output.appending(path: "scan_searchable_2.pdf"))
     }
+
+    @Test func refreshAvoidsTheReservationsHeldByOtherItemsInTheActivePlan() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appending(path: "sources/one/scan.pdf")
+        let second = root.appending(path: "sources/two/scan.pdf")
+        let output = root.appending(path: "output", directoryHint: .isDirectory)
+        try writeEmptyFile(at: first)
+        try writeEmptyFile(at: second)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let discovery = await BatchInputEnumerator().discover(selections: [second, first])
+        let planner = BatchOutputPlanner()
+        let plan = try await planner.makePlan(discovery: discovery, outputRoot: output)
+        try Data().write(to: plan.items[0].reservation.finalURL)
+
+        let refreshed = try await planner.refreshReservation(for: plan.items[0], outputRoot: output)
+
+        #expect(plan.items.map { $0.reservation.finalURL.lastPathComponent } == [
+            "scan_searchable.pdf",
+            "scan_searchable_2.pdf",
+        ])
+        #expect(refreshed.finalURL.lastPathComponent == "scan_searchable_3.pdf")
+    }
 }
 
 private func temporaryDirectory() throws -> URL {
@@ -285,6 +412,18 @@ private func temporaryDirectory() throws -> URL {
 private func writeEmptyFile(at url: URL) throws {
     try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     try Data().write(to: url)
+}
+
+private func destinationTreatsAliasesAsTheSameEntry(
+    in directory: URL,
+    firstName: String,
+    secondName: String
+) throws -> Bool {
+    let first = directory.appending(path: firstName)
+    let second = directory.appending(path: secondName)
+    defer { try? FileManager.default.removeItem(at: first) }
+    try Data().write(to: first)
+    return FileManager.default.fileExists(atPath: second.path)
 }
 
 private func unsafeDiscovery(

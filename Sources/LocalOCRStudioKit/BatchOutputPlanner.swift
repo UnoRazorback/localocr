@@ -39,6 +39,8 @@ public protocol StudioBatchOutputPlanning: Sendable {
 
 public actor BatchOutputPlanner: StudioBatchOutputPlanning {
     private let fileManager: FileManager
+    /// Plans are replaced atomically after successful planning so refresh can retain peer reservations.
+    private var activePlans: [DestinationPathKey: ActivePlanClaims] = [:]
 
     public init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
@@ -49,20 +51,23 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
         outputRoot: URL
     ) async throws -> StudioBatchPlan {
         let physicalOutputRoot = try validatedOutputRoot(outputRoot)
+        let destinationSemantics = DestinationPathSemantics(outputRoot: physicalOutputRoot)
+        let outputRootKey = destinationSemantics.key(for: physicalOutputRoot)
         let folderRoots = discovery.selectedFolderRoots.map(physicalURLResolvingExistingAncestors)
 
         guard folderRoots.allSatisfy({ !isEqualOrDescendant(physicalOutputRoot, of: $0) }) else {
             throw StudioBatchPlanningError.unsafeOutputRoot
         }
 
+        var claims = PathClaims()
         let groups = try allocatedGroups(
             for: discovery.candidates,
             folderRoots: folderRoots,
-            outputRoot: physicalOutputRoot
+            outputRoot: physicalOutputRoot,
+            semantics: destinationSemantics,
+            claims: &claims
         )
-        var reservedFinalURLs = Set<URL>()
-        var items: [StudioBatchItem] = []
-
+        var directories: [UUID: URL] = [:]
         for candidate in discovery.candidates {
             let directory = try outputDirectory(
                 for: candidate,
@@ -70,12 +75,30 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
                 groups: groups,
                 outputRoot: physicalOutputRoot
             )
+            try reserveRequiredDirectories(
+                through: directory,
+                beneath: physicalOutputRoot,
+                semantics: destinationSemantics,
+                claims: &claims
+            )
+            directories[candidate.id] = directory
+        }
+
+        var items: [StudioBatchItem] = []
+        var finalClaimsByItemID: [UUID: DestinationPathKey] = [:]
+
+        for candidate in discovery.candidates {
+            guard let directory = directories[candidate.id] else {
+                throw StudioBatchPlanningError.escapedOutputRoot
+            }
             let reservation = try reserve(
                 for: candidate,
                 in: directory,
                 outputRoot: physicalOutputRoot,
-                reservedFinalURLs: &reservedFinalURLs
+                semantics: destinationSemantics,
+                claims: &claims
             )
+            finalClaimsByItemID[candidate.id] = destinationSemantics.key(for: reservation.finalURL)
             items.append(
                 StudioBatchItem(
                     id: candidate.id,
@@ -86,12 +109,18 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
             )
         }
 
-        return StudioBatchPlan(
+        let plan = StudioBatchPlan(
             outputRoot: physicalOutputRoot,
             items: items,
             skipped: discovery.skipped,
             duplicateCount: discovery.duplicateCount
         )
+        activePlans[outputRootKey] = ActivePlanClaims(
+            semantics: destinationSemantics,
+            claims: claims,
+            finalClaimsByItemID: finalClaimsByItemID
+        )
+        return plan
     }
 
     public func refreshReservation(
@@ -99,6 +128,8 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
         outputRoot: URL
     ) async throws -> StudioBatchReservation {
         let physicalOutputRoot = try validatedOutputRoot(outputRoot)
+        let destinationSemantics = DestinationPathSemantics(outputRoot: physicalOutputRoot)
+        let outputRootKey = destinationSemantics.key(for: physicalOutputRoot)
         guard item.reservation.outputRoot == physicalOutputRoot else {
             throw StudioBatchPlanningError.unsafeOutputRoot
         }
@@ -116,13 +147,26 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
             }
         }
 
-        var reservedFinalURLs = Set<URL>()
-        return try reserve(
+        var activePlan = activePlans[outputRootKey] ?? ActivePlanClaims(semantics: destinationSemantics)
+        if let previousFinalClaim = activePlan.finalClaimsByItemID[item.id] {
+            activePlan.claims.removeFinal(previousFinalClaim)
+        }
+        try reserveRequiredDirectories(
+            through: directory,
+            beneath: physicalOutputRoot,
+            semantics: destinationSemantics,
+            claims: &activePlan.claims
+        )
+        let reservation = try reserve(
             for: item.candidate,
             in: directory,
             outputRoot: physicalOutputRoot,
-            reservedFinalURLs: &reservedFinalURLs
+            semantics: destinationSemantics,
+            claims: &activePlan.claims
         )
+        activePlan.finalClaimsByItemID[item.id] = destinationSemantics.key(for: reservation.finalURL)
+        activePlans[outputRootKey] = activePlan
+        return reservation
     }
 
     private func validatedOutputRoot(_ outputRoot: URL) throws -> URL {
@@ -149,10 +193,11 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
     private func allocatedGroups(
         for candidates: [StudioBatchCandidate],
         folderRoots: [URL],
-        outputRoot: URL
+        outputRoot: URL,
+        semantics: DestinationPathSemantics,
+        claims: inout PathClaims
     ) throws -> [URL: URL] {
         var groups: [URL: URL] = [:]
-        var allocatedGroupURLs = Set<URL>()
 
         for candidate in candidates where candidate.outputGroupName != nil {
             let folderRoot = try folderRoot(for: candidate, among: folderRoots)
@@ -161,7 +206,8 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
             groups[folderRoot] = try allocateGroupDirectory(
                 named: groupName,
                 outputRoot: outputRoot,
-                allocatedGroupURLs: &allocatedGroupURLs
+                semantics: semantics,
+                claims: &claims
             )
         }
         return groups
@@ -194,11 +240,35 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
         return physicalDirectory
     }
 
+    private func reserveRequiredDirectories(
+        through directory: URL,
+        beneath outputRoot: URL,
+        semantics: DestinationPathSemantics,
+        claims: inout PathClaims
+    ) throws {
+        guard isEqualOrDescendant(directory, of: outputRoot) else {
+            throw StudioBatchPlanningError.escapedOutputRoot
+        }
+        guard isStrictDescendant(directory, of: outputRoot) else { return }
+        guard let components = relativeComponents(of: directory, beneath: outputRoot) else {
+            throw StudioBatchPlanningError.escapedOutputRoot
+        }
+
+        var claimedDirectory = outputRoot
+        for component in components {
+            claimedDirectory.appendPathComponent(component, isDirectory: true)
+            guard claims.reserveDirectory(semantics.key(for: claimedDirectory)) else {
+                throw StudioBatchPlanningError.escapedOutputRoot
+            }
+        }
+    }
+
     private func reserve(
         for candidate: StudioBatchCandidate,
         in directory: URL,
         outputRoot: URL,
-        reservedFinalURLs: inout Set<URL>
+        semantics: DestinationPathSemantics,
+        claims: inout PathClaims
     ) throws -> StudioBatchReservation {
         let name = try outputName(for: candidate)
         var suffix = 1
@@ -219,8 +289,7 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
                 throw StudioBatchPlanningError.escapedOutputRoot
             }
 
-            if !reservedFinalURLs.contains(physicalCandidateURL) {
-                reservedFinalURLs.insert(physicalCandidateURL)
+            if claims.reserveFinal(semantics.key(for: physicalCandidateURL)) {
                 return StudioBatchReservation(finalURL: physicalCandidateURL, outputRoot: outputRoot)
             }
             suffix += 1
@@ -230,7 +299,8 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
     private func allocateGroupDirectory(
         named name: String,
         outputRoot: URL,
-        allocatedGroupURLs: inout Set<URL>
+        semantics: DestinationPathSemantics,
+        claims: inout PathClaims
     ) throws -> URL {
         var suffix = 1
 
@@ -248,8 +318,8 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
                 throw StudioBatchPlanningError.escapedOutputRoot
             }
 
-            if !allocatedGroupURLs.contains(physicalCandidateURL) {
-                allocatedGroupURLs.insert(physicalCandidateURL)
+            let claimKey = semantics.key(for: physicalCandidateURL)
+            if !claims.isClaimed(claimKey), claims.reserveDirectory(claimKey) {
                 return physicalCandidateURL
             }
             suffix += 1
@@ -353,5 +423,102 @@ public actor BatchOutputPlanner: StudioBatchOutputPlanning {
     private func pathEntryExists(_ url: URL) -> Bool {
         var attributes = stat()
         return lstat(url.path, &attributes) == 0
+    }
+}
+
+private struct DestinationPathSemantics: Sendable {
+    let caseSensitive: Bool
+
+    init(outputRoot: URL) {
+        let values = try? outputRoot.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
+        caseSensitive = values?.volumeSupportsCaseSensitiveNames ?? true
+    }
+
+    func key(for url: URL) -> DestinationPathKey {
+        DestinationPathKey(
+            components: url.standardizedFileURL.pathComponents.map { component in
+                let normalized = component.precomposedStringWithCanonicalMapping
+                return caseSensitive
+                    ? normalized
+                    : normalized.folding(options: .caseInsensitive, locale: nil)
+            }
+        )
+    }
+}
+
+private struct DestinationPathKey: Hashable, Sendable {
+    let components: [String]
+
+    func conflicts(with other: DestinationPathKey) -> Bool {
+        let commonCount = min(components.count, other.components.count)
+        return components.prefix(commonCount).elementsEqual(other.components.prefix(commonCount))
+    }
+
+    func isEqualToOrAncestor(of other: DestinationPathKey) -> Bool {
+        guard components.count <= other.components.count else { return false }
+        return components.elementsEqual(other.components.prefix(components.count))
+    }
+}
+
+private enum PathClaim: Sendable {
+    case directory
+    case final
+}
+
+private struct PathClaims: Sendable {
+    private var claims: [DestinationPathKey: PathClaim] = [:]
+
+    func isClaimed(_ key: DestinationPathKey) -> Bool {
+        claims[key] != nil
+    }
+
+    mutating func reserveDirectory(_ key: DestinationPathKey) -> Bool {
+        if let existing = claims[key] {
+            return existing == .directory
+        }
+        guard !claims.contains(where: { claim in
+            claim.value == .final && key.conflicts(with: claim.key)
+        }) else {
+            return false
+        }
+        claims[key] = .directory
+        return true
+    }
+
+    mutating func reserveFinal(_ key: DestinationPathKey) -> Bool {
+        guard !claims.contains(where: { claim in
+            switch claim.value {
+            case .directory:
+                key.isEqualToOrAncestor(of: claim.key)
+            case .final:
+                key.conflicts(with: claim.key)
+            }
+        }) else {
+            return false
+        }
+        claims[key] = .final
+        return true
+    }
+
+    mutating func removeFinal(_ key: DestinationPathKey) {
+        if claims[key] == .final {
+            claims.removeValue(forKey: key)
+        }
+    }
+}
+
+private struct ActivePlanClaims: Sendable {
+    let semantics: DestinationPathSemantics
+    var claims: PathClaims
+    var finalClaimsByItemID: [UUID: DestinationPathKey]
+
+    init(
+        semantics: DestinationPathSemantics,
+        claims: PathClaims = .init(),
+        finalClaimsByItemID: [UUID: DestinationPathKey] = [:]
+    ) {
+        self.semantics = semantics
+        self.claims = claims
+        self.finalClaimsByItemID = finalClaimsByItemID
     }
 }
