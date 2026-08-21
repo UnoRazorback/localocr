@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "LocalOCR",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v14), .iOS(.v18)],
     products: [.library(name: "LocalOCRCore", targets: ["LocalOCRCore"])],
     targets: [
         .target(

@@ -223,7 +223,7 @@ import Testing
                     )
                 }
             },
-            rename: liveOperations.rename
+            replace: liveOperations.replace
         )
 
         await #expect(throws: LocalOCRError.insufficientDiskSpace) {
@@ -261,7 +261,7 @@ import Testing
                     try liveOperations.write(data, url, stage)
                 }
             },
-            rename: liveOperations.rename
+            replace: liveOperations.replace
         )
 
         await #expect(throws: LocalOCRError.insufficientDiskSpace) {
@@ -318,7 +318,7 @@ import Testing
         )
     }
 
-    @Test func permissionDeniedDuringAtomicRenamePreservesExistingDestination() async throws {
+    @Test func replacementFailurePreservesExistingDestination() async throws {
         let sourceURL = try fixtureURL()
         let location = try temporaryPDFLocation()
         let originalDestination = Data("ORIGINAL DESTINATION".utf8)
@@ -327,7 +327,12 @@ import Testing
         let liveOperations = SearchablePDFFileOperations.live
         let failingOperations = SearchablePDFFileOperations(
             write: liveOperations.write,
-            rename: { _, _ in EACCES }
+            replace: { _, _ in
+                throw NSError(
+                    domain: NSPOSIXErrorDomain,
+                    code: Int(EACCES)
+                )
+            }
         )
 
         await #expect(throws: LocalOCRError.permissionDenied) {
@@ -346,7 +351,7 @@ import Testing
         )
     }
 
-    @Test func missingTargetDuringAtomicRenameMapsInvalidDestination() async throws {
+    @Test func missingTargetDuringReplacementMapsInvalidDestination() async throws {
         let sourceURL = try fixtureURL()
         let location = try temporaryPDFLocation()
         let originalDestination = Data("ORIGINAL DESTINATION".utf8)
@@ -355,7 +360,12 @@ import Testing
         let liveOperations = SearchablePDFFileOperations.live
         let failingOperations = SearchablePDFFileOperations(
             write: liveOperations.write,
-            rename: { _, _ in ENOENT }
+            replace: { _, _ in
+                throw NSError(
+                    domain: NSPOSIXErrorDomain,
+                    code: Int(ENOENT)
+                )
+            }
         )
 
         await #expect(throws: LocalOCRError.invalidDestination) {
@@ -414,6 +424,36 @@ import Testing
             includingPropertiesForKeys: nil
         ).filter { $0.lastPathComponent.hasPrefix(".localocr-") }
         #expect(temporaryFiles.isEmpty)
+    }
+
+    @Test func replacementSuccessReplacesExistingDestination() async throws {
+        let sourceURL = try fixtureURL()
+        let location = try temporaryPDFLocation()
+        let originalDestination = Data("ORIGINAL DESTINATION".utf8)
+        try originalDestination.write(to: location.outputURL)
+        defer { try? FileManager.default.removeItem(at: location.directoryURL) }
+        let probe = ReplaceInvocationProbe()
+        let liveOperations = SearchablePDFFileOperations.live
+        let operations = SearchablePDFFileOperations(
+            write: liveOperations.write,
+            replace: { temporaryURL, destinationURL in
+                probe.recordInvocation()
+                try liveOperations.replace(temporaryURL, destinationURL)
+            }
+        )
+
+        _ = try await SearchablePDFWriter(
+            pdfReader: PDFDocumentSource(),
+            fileOperations: operations
+        ).write(
+            sourceURL: sourceURL,
+            destinationURL: location.outputURL,
+            pageResults: []
+        )
+
+        #expect(probe.wasInvoked)
+        #expect(try Data(contentsOf: location.outputURL) != originalDestination)
+        #expect(PDFDocument(url: location.outputURL) != nil)
     }
 
     @Test func preservesDifferingPageBoxesAndCroppedAppearance() async throws {
@@ -633,6 +673,35 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: outputURL.path))
     }
 
+    @Test func cancellationBeforeReplacementDoesNotInvokeReplace() async throws {
+        let sourceURL = try fixtureURL()
+        let location = try temporaryPDFLocation()
+        defer { try? FileManager.default.removeItem(at: location.directoryURL) }
+        let probe = ReplaceInvocationProbe()
+        let liveOperations = SearchablePDFFileOperations.live
+        let operations = SearchablePDFFileOperations(
+            write: liveOperations.write,
+            replace: { _, _ in
+                probe.recordInvocation()
+                throw LocalOCRError.outputValidationFailed
+            }
+        )
+
+        await #expect(throws: LocalOCRError.cancelled) {
+            try await SearchablePDFWriter(
+                pdfReader: CancellationValidationProbe(site: .inspect, kind: .swift),
+                fileOperations: operations
+            ).write(
+                sourceURL: sourceURL,
+                destinationURL: location.outputURL,
+                pageResults: []
+            )
+        }
+
+        #expect(!probe.wasInvoked)
+        #expect(!FileManager.default.fileExists(atPath: location.outputURL.path))
+    }
+
     @Test func validationAdapterCancellationUsesTheCoreError() async throws {
         let sourceURL = try fixtureURL()
 
@@ -726,6 +795,19 @@ private struct CancellationValidationProbe: PDFDocumentReading {
         case .local:
             throw LocalOCRError.cancelled
         }
+    }
+}
+
+private final class ReplaceInvocationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var invocationCount = 0
+
+    var wasInvoked: Bool {
+        lock.withLock { invocationCount > 0 }
+    }
+
+    func recordInvocation() {
+        lock.withLock { invocationCount += 1 }
     }
 }
 

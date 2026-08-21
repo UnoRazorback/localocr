@@ -1,7 +1,8 @@
 # LocalOCRCore Engine API
 
-`LocalOCRCore` is a macOS 14+ Swift 6 library for local PDF inspection,
-Apple Vision recognition, resumable page caching, and searchable-PDF output.
+`LocalOCRCore` is a macOS 14+ and iOS 18+ Swift 6 library for local PDF
+inspection, Apple Vision recognition, resumable page caching, and
+searchable-PDF output.
 It has no UI, CLI, MCP, licensing, analytics, or networking dependency.
 
 ## Supported inputs and outputs
@@ -131,6 +132,9 @@ The encoded contract uses snake-case keys (`source_sha256`,
 `searchable_pages`, `ocr_needed_pages`, `fully_searchable`,
 `page_details`, and `bounding_box`). Orientations encode as the raw
 `CGImagePropertyOrientation` integer.
+
+The OCR JSON contract is identical on macOS and iOS: encoded fields, values,
+and omission behavior do not vary by platform.
 
 The public Swift `OCRResult` does not duplicate `OCRRequest.sourceURL` as a
 stored path. Python-facing adapters that preserve the legacy response add

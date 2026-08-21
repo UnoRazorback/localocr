@@ -1,6 +1,5 @@
 import CoreGraphics
 import CoreText
-import Darwin
 import Foundation
 import ImageIO
 import PDFKit
@@ -33,24 +32,21 @@ enum SearchablePDFWriteStage: Sendable {
 struct SearchablePDFFileOperations: Sendable {
     let write:
         @Sendable (Data, URL, SearchablePDFWriteStage) throws -> Void
-    let rename: @Sendable (URL, URL) -> Int32?
+    let replace: @Sendable (URL, URL) throws -> Void
 
     static let live = SearchablePDFFileOperations(
         write: { data, url, _ in
             try data.write(to: url)
         },
-        rename: { sourceURL, destinationURL in
-            sourceURL.withUnsafeFileSystemRepresentation { sourcePath in
-                destinationURL.withUnsafeFileSystemRepresentation {
-                    destinationPath in
-                    guard let sourcePath, let destinationPath else {
-                        return EINVAL
-                    }
-                    guard Darwin.rename(sourcePath, destinationPath) != 0 else {
-                        return nil
-                    }
-                    return errno
-                }
+        replace: { temporaryURL, destinationURL in
+            let fileManager = FileManager.default
+            if fileManager.fileExists(atPath: destinationURL.path) {
+                _ = try fileManager.replaceItemAt(
+                    destinationURL,
+                    withItemAt: temporaryURL
+                )
+            } else {
+                try fileManager.moveItem(at: temporaryURL, to: destinationURL)
             }
         }
     )
@@ -505,14 +501,6 @@ public struct SearchablePDFWriter: SearchablePDFWriting {
         temporaryURL: URL,
         destinationURL: URL
     ) throws {
-        if let errorCode = fileOperations.rename(
-            temporaryURL,
-            destinationURL
-        ) {
-            throw NSError(
-                domain: NSPOSIXErrorDomain,
-                code: Int(errorCode)
-            )
-        }
+        try fileOperations.replace(temporaryURL, destinationURL)
     }
 }
