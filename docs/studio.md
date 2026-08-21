@@ -1,9 +1,10 @@
 # LocalOCR Studio
 
-LocalOCR Studio is the native Mac interface for LocalOCR. It is deliberately
-focused on one document at a time: open one file or drop one file into the
-window, and recognition starts automatically. There is no setup wizard, batch
-queue, language picker, or OCR-settings step in this beta design.
+LocalOCR Studio is the native Mac interface for LocalOCR. It opens in the
+one-document-at-a-time workflow: open one file or drop one file into the
+window, and recognition starts automatically. There is no setup wizard,
+language picker, or OCR-settings step. Select **New Batch** when you
+intentionally want to review a sequential batch before any document starts.
 
 ## Documents and processing
 
@@ -28,6 +29,27 @@ or result history. The LocalOCR engine may reuse its local OCR cache at:
 Opening another document replaces the current result. Studio never overwrites
 the source document.
 
+## Desktop batch
+
+The desktop batch flow is review-first. Select **New Batch**, then add files
+or folders and choose an output folder. Folder selections are scanned
+recursively for supported PDFs and images. The queue shows supported items and
+items it skipped before **Start Batch** becomes available, so nothing processes
+merely because it was added.
+
+Studio processes the reviewed queue sequentially, one item at a time. Every
+output stays beneath the output folder you chose: a PDF gets a new searchable
+PDF, and an image gets a recognized-text `.txt` file. Source documents remain
+unchanged. Studio never overwrites an existing output; it selects a numbered
+name when the preferred name is already taken.
+
+You can **Cancel Batch** while it is running. Completed outputs remain in the
+chosen output folder; pending work is marked cancelled. After a completed run,
+use **Retry Failed** to try only failed items, **Reveal Output Folder** to open
+the chosen destination, or **New Batch** to clear the review and begin again.
+Use **Single Document** to return to the default one-document workflow when no
+batch is processing.
+
 ## Result actions
 
 - **Copy** places all recognized text on the macOS clipboard.
@@ -39,15 +61,16 @@ the source document.
 - **Process Another Document** immediately returns to the drop/open screen
   without relaunching the app or deleting any saved output.
 
-## Studio and MCP are separate surfaces
+## Advanced CLI and MCP
 
-The Studio GUI processes one document at a time and calls the LocalOCR service
-directly. It does not launch either bundled helper.
+The Studio GUI calls the LocalOCR service directly. It does not launch either
+bundled helper. The desktop batch flow is the normal batch route for app users.
 
-The MCP server retains automation features, including `ocr_pdf_batch`, so an
-MCP client can submit several local PDF paths and receive a result for each
-without one file failure stopping the rest. The MCP transport is local stdio;
-there is no HTTP listener or network MCP service.
+The `localocr` CLI and MCP server are advanced local-use interfaces. The MCP
+server retains automation features, including `ocr_pdf_batch`, so an MCP
+client can submit several local PDF paths and receive a result for each without
+one file failure stopping the rest. Its transport is local stdio; there is no
+HTTP listener or network MCP service.
 
 For an app installed in the normal Applications folder, the MCP executable is:
 
@@ -73,7 +96,9 @@ Invited testers need private-repository access to download it. Follow the
 [Beta 1 Tester Guide](../BETA_TESTING.md) to verify
 `LocalOCR-Studio-0.2.0-1.zip` with its matching `.sha256` file, then move the
 expanded app to `/Applications` and open it normally. Do not use a staging
-copy or bypass Gatekeeper.
+copy or bypass Gatekeeper. The [Beta 2 candidate notes](release/v0.3.0-beta.1-notes.md)
+document the desktop batch candidate separately; they are not a download,
+signature, notarization, or acceptance record.
 
 ## Compatibility and build provenance
 

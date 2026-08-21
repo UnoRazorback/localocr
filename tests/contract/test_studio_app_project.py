@@ -34,8 +34,8 @@ RELEASE_TOOLCHAIN = ROOT / "scripts" / "release-toolchain.sh"
 EXPECTED_SETTINGS = {
     "PRODUCT_BUNDLE_IDENTIFIER": "com.rayconsulting.localocr",
     "PRODUCT_NAME": "LocalOCR Studio",
-    "MARKETING_VERSION": "0.2.0",
-    "CURRENT_PROJECT_VERSION": "1",
+    "MARKETING_VERSION": "0.3.0",
+    "CURRENT_PROJECT_VERSION": "2",
     "MACOSX_DEPLOYMENT_TARGET": "14.0",
     "ARCHS": "arm64",
     "SWIFT_VERSION": "6.0",
@@ -527,8 +527,8 @@ def _write_staged_app(
         plistlib.dump(
             {
                 "CFBundleIdentifier": bundle_identifier,
-                "CFBundleShortVersionString": "0.2.0",
-                "CFBundleVersion": "1",
+                "CFBundleShortVersionString": "0.3.0",
+                "CFBundleVersion": "2",
                 "LSMinimumSystemVersion": minimum_os,
             },
             plist,

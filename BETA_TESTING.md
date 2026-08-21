@@ -1,6 +1,10 @@
-# LocalOCR Studio Beta 1 Tester Guide
+# LocalOCR Studio Beta Tester Guide
 
-This is a private-repository prerelease for invited testers. You need repository access to download the release and file feedback.
+The current published private prerelease is Beta 1 for invited testers. You
+need repository access to download it and file feedback. The separate
+[Beta 2 candidate notes](docs/release/v0.3.0-beta.1-notes.md) describe the
+next desktop batch workflow; that candidate is not yet published and has no
+downloadable archive, signing, notarization, or acceptance claim here.
 
 ## Download and install
 
@@ -17,6 +21,20 @@ The command must report `OK`. Expand the verified ZIP, move `LocalOCR Studio.app
 Use **Open** or drag and drop to process one document at a time. LocalOCR Studio recognizes text in PDFs and supported images (including PNG, JPEG, TIFF, and HEIC/HEIF where ImageIO supports them) with local Apple Vision and PDFKit. Existing usable PDF text is preserved while pages that need OCR are recognized.
 
 After processing, you can Copy recognized text, Save Text as a plain-text file, or Create Searchable PDF at a new destination. The source document remains unchanged. Select **Process Another Document** to return immediately to the drop/open screen without relaunching.
+
+## Beta 2 candidate: desktop batch workflow
+
+The default remains one document at a time. In the candidate, select **New
+Batch** to add files or folders, choose an output folder, and review the queue
+before selecting **Start Batch**. Folders are scanned recursively for supported
+PDFs and images. Processing is sequential. PDFs create new searchable PDFs;
+images create `.txt` files containing recognized text. Original sources remain
+unchanged, and existing output names are never overwritten: a numbered name is
+chosen instead.
+
+You can cancel a running batch, retry only failed items after it completes,
+reveal the chosen output folder, or select **New Batch** to clear the queue.
+This candidate uses the same local-only processing boundary as Beta 1.
 
 ## Five-minute desktop test
 
@@ -41,12 +59,12 @@ Release provenance: version `0.2.0` build `1` comes from source commit `2cb03cc9
 
 Later Apple beta builds may introduce regressions; report the exact macOS version and build number.
 
-## Known Beta 1 limitations
+## Known limitations
 
 - Apple silicon only; macOS 14 or later is required.
 - No Intel, Windows, or Linux support.
-- Desktop processing is one document at a time.
-- No history, batch queue, language/settings wizard, or guided MCP setup.
+- The default desktop workflow is one document at a time. The Beta 2 batch
+  candidate has no run history, language/settings wizard, or guided MCP setup.
 - MCP setup is manual and uses local stdio.
 - Beta output behavior may change; retain your original documents.
 

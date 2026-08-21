@@ -10,8 +10,10 @@ core includes the Swift OCR engine, the `localocr` command-line tool, and the
 `localocr-mcp` stdio server. The repository also contains the release pipeline
 for a directly distributed LocalOCR Studio Mac app. The current private
 prerelease is [v0.2.0-beta.1](https://github.com/UnoRazorback/localocr/releases/tag/v0.2.0-beta.1)
-for invited testers with repository access. See the [Beta 1 Tester Guide](BETA_TESTING.md)
-for the verified download, installation, privacy, and optional MCP setup.
+for invited testers with repository access. See the [Beta Tester Guide](BETA_TESTING.md)
+for the verified Beta 1 download, installation, privacy, and optional MCP setup.
+The [Beta 2 candidate notes](docs/release/v0.3.0-beta.1-notes.md) describe the
+next desktop workflow without changing the published-download instructions.
 
 ## What it does
 
@@ -26,16 +28,21 @@ overwritten. A searchable-PDF operation writes a new output file.
 
 ## LocalOCR Studio
 
-LocalOCR Studio is the one-document-at-a-time Mac interface. Drop or open one
-PDF or image and processing starts automatically on the Mac; there is no
-configuration wizard or batch queue. After recognition, the app can copy the
-text, save it as a text file, create a new searchable PDF from a PDF source,
-or select **Process Another Document** to return immediately to the drop/open
-screen.
+LocalOCR Studio opens in its one-document-at-a-time workflow. Drop or open one
+PDF or image and processing starts automatically on the Mac. After
+recognition, the app can copy the text, save it as a text file, create a new
+searchable PDF from a PDF source, or select **Process Another Document** to
+return immediately to the drop/open screen.
 
-Batch PDF OCR remains available through the local MCP server rather than the
-Studio interface. See [the Studio guide](docs/studio.md) for the exact GUI/MCP
-boundary, installed helper path, supported inputs, and current beta status.
+Select **New Batch** only when you want a reviewed, sequential run. Add files
+or folders, choose an output folder, inspect the planned queue, then start it.
+Folders are scanned recursively for supported PDFs and images; sources are
+never overwritten. PDFs receive new searchable-PDF outputs and images receive
+text-file outputs. Existing output names are preserved by choosing a numbered
+name instead of overwriting. You can cancel, retry failed items, reveal the
+chosen output folder, or start a new batch. See [the Studio guide](docs/studio.md)
+for the full desktop flow and [the Beta 2 candidate notes](docs/release/v0.3.0-beta.1-notes.md)
+for its release boundary. MCP and CLI remain advanced, local-use interfaces.
 
 ## Quick start from source
 

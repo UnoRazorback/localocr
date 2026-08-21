@@ -14,7 +14,7 @@ from mcp.client.stdio import stdio_client
 ROOT = Path(__file__).parents[2]
 ARTIFACTS = ROOT / "dist" / "native-tools"
 SMOKE_SCRIPT = ROOT / "scripts" / "smoke-native-tools.sh"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 SYSTEM_LIBRARY_PREFIXES = ("/System/Library/", "/usr/lib/")
 COMPATIBILITY_SPAN_INSTALL_NAME = "@rpath/libswiftCompatibilitySpan.dylib"
 SYSTEM_SWIFT_RPATH = "/usr/lib/swift"

@@ -16,7 +16,7 @@ def test_extension_manifest_starts_native_server_without_machine_runtime_paths()
     mcp_config = server["mcp_config"]
     serialized = json.dumps(manifest).lower()
 
-    assert manifest["version"] == "0.2.0"
+    assert manifest["version"] == "0.3.0"
     assert server["entry_point"] == "localocr-mcp"
     assert mcp_config["command"] == "localocr-mcp"
     assert mcp_config["args"] == []
