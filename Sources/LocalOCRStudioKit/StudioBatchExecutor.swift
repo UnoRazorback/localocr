@@ -13,6 +13,8 @@ public protocol StudioBatchItemExecuting: Sendable {
 public protocol StudioBatchOutputCommitting: Sendable {
     func temporaryURL(for finalURL: URL, outputRoot: URL) async throws -> URL
 
+    func adoptPDF(at temporaryURL: URL, outputRoot: URL) async throws
+
     func writeText(
         _ text: String,
         to temporaryURL: URL,
@@ -78,6 +80,12 @@ public actor StudioBatchExecutor: StudioBatchItemExecuting {
                         destinationURL: temporaryURL,
                         progress: progress
                     )
+                    // A normally-returning client call is the ownership handoff. Adopt before
+                    // checking cancellation so a completed client write can be cleaned safely.
+                    try await committer.adoptPDF(
+                        at: temporaryURL,
+                        outputRoot: reservation.outputRoot
+                    )
                     guard generatedURL.standardizedFileURL == temporaryURL.standardizedFileURL else {
                         throw LocalOCRError.outputValidationFailed
                     }
@@ -112,87 +120,212 @@ public actor StudioBatchExecutor: StudioBatchItemExecuting {
 }
 
 public actor AtomicStudioBatchOutputCommitter: StudioBatchOutputCommitting {
-    private struct RootIdentity: Sendable, Equatable {
+    typealias OperationHook = @Sendable () async throws -> Void
+
+    private struct FileIdentity: Sendable, Equatable {
         let device: UInt64
         let inode: UInt64
     }
 
-    private struct TemporaryReservation: Sendable {
-        let temporaryURL: URL
-        let finalURL: URL
-        let outputRoot: URL
-        let rootIdentity: RootIdentity
+    private struct DirectoryHandle: Sendable {
+        let descriptor: Int32
+        let nameFromParent: String?
+        let identity: FileIdentity
     }
 
-    private let temporaryName: @Sendable (URL) -> String
-    private var temporaryReservations: [URL: TemporaryReservation] = [:]
+    private struct TemporaryReservation: Sendable {
+        let temporaryURL: URL
+        let temporaryName: String
+        let stagingName: String
+        let finalURL: URL
+        let finalName: String
+        let outputRoot: URL
+        let directoryHandles: [DirectoryHandle]
+        var ownedTemporaryIdentity: FileIdentity?
 
-    public init() {
-        temporaryName = { finalURL in
-            ".\(finalURL.lastPathComponent).\(UUID().uuidString).partial"
+        var finalParentHandle: DirectoryHandle {
+            directoryHandles[directoryHandles.count - 2]
+        }
+
+        var stagingHandle: DirectoryHandle {
+            directoryHandles[directoryHandles.count - 1]
         }
     }
 
-    init(temporaryName: @escaping @Sendable (URL) -> String) {
+    private let temporaryName: @Sendable (URL) -> String
+    private let beforeTextCreation: OperationHook
+    private let beforeExclusiveCommit: OperationHook
+    private var temporaryReservations: [String: TemporaryReservation] = [:]
+
+    public init() {
+        temporaryName = Self.defaultTemporaryName
+        beforeTextCreation = {}
+        beforeExclusiveCommit = {}
+    }
+
+    init(
+        temporaryName: @escaping @Sendable (URL) -> String,
+        beforeTextCreation: @escaping OperationHook = {},
+        beforeExclusiveCommit: @escaping OperationHook = {}
+    ) {
         self.temporaryName = temporaryName
+        self.beforeTextCreation = beforeTextCreation
+        self.beforeExclusiveCommit = beforeExclusiveCommit
+    }
+
+    init(
+        beforeTextCreation: @escaping OperationHook = {},
+        beforeExclusiveCommit: @escaping OperationHook = {}
+    ) {
+        temporaryName = Self.defaultTemporaryName
+        self.beforeTextCreation = beforeTextCreation
+        self.beforeExclusiveCommit = beforeExclusiveCommit
+    }
+
+    deinit {
+        for reservation in temporaryReservations.values {
+            closeHandles(reservation.directoryHandles)
+        }
     }
 
     public func temporaryURL(for finalURL: URL, outputRoot: URL) throws -> URL {
-        let root = try validatedRoot(outputRoot)
-        let final = try validatedFinal(finalURL, beneath: root.url)
-        try createAndValidateAncestors(
-            through: final.deletingLastPathComponent(),
-            beneath: root.url,
-            rootIdentity: root.identity
-        )
-        try requireRootIdentity(root.identity, at: root.url)
+        let root = try validatedPhysicalRoot(outputRoot)
+        let final = try validatedFinal(finalURL, beneath: root.requested)
+        let relativeFinalComponents = try descendantComponents(of: final, beneath: root.requested)
+        var physicalFinal = root.physical
+        for component in relativeFinalComponents {
+            physicalFinal.appendPathComponent(component, isDirectory: false)
+        }
+        let finalParent = physicalFinal.deletingLastPathComponent()
+        var handles = try openDirectoryChain(to: root.physical)
+        var keepHandles = false
+        defer {
+            if !keepHandles {
+                closeHandles(handles)
+            }
+        }
 
-        if pathEntryExists(final) {
+        try appendDescendantDirectoryHandles(
+            to: &handles,
+            through: finalParent,
+            beneath: root.physical,
+            createMissing: true
+        )
+        try reproveDirectoryChain(handles)
+        let finalParentHandle = try requiredLastHandle(handles)
+        if try entryMetadata(named: physicalFinal.lastPathComponent, beneath: finalParentHandle.descriptor) != nil {
             throw LocalOCRError.outputExists
         }
 
         for _ in 0..<128 {
-            let name = temporaryName(final)
-            guard isSafeLeafName(name) else {
+            let stagingName = temporaryName(final)
+            guard isSafeLeafName(stagingName) else {
                 throw LocalOCRError.invalidDestination
             }
-            let candidate = final.deletingLastPathComponent()
-                .appendingPathComponent(name, isDirectory: false)
-                .standardizedFileURL
-            guard candidate.deletingLastPathComponent() == final.deletingLastPathComponent(),
-                  isStrictDescendant(candidate, of: root.url)
-            else {
-                throw LocalOCRError.invalidDestination
+            let createStatus = stagingName.withCString { name in
+                mkdirat(finalParentHandle.descriptor, name, 0o700)
             }
-            guard !pathEntryExists(candidate), temporaryReservations[candidate] == nil else {
-                continue
+            guard createStatus == 0 else {
+                if errno == EEXIST { continue }
+                throw LocalOCRError.invalidDestination
             }
 
-            temporaryReservations[candidate] = TemporaryReservation(
-                temporaryURL: candidate,
-                finalURL: final,
-                outputRoot: root.url,
-                rootIdentity: root.identity
-            )
-            return candidate
+            do {
+                let stagingHandle = try openDirectory(
+                    named: stagingName,
+                    beneath: finalParentHandle.descriptor
+                )
+                guard try isPrivateOwnedDirectory(stagingHandle) else {
+                    Darwin.close(stagingHandle.descriptor)
+                    throw LocalOCRError.invalidDestination
+                }
+                handles.append(stagingHandle)
+                try reproveDirectoryChain(handles)
+
+                let leafName = physicalFinal.lastPathComponent
+                guard try entryMetadata(named: leafName, beneath: stagingHandle.descriptor) == nil else {
+                    throw LocalOCRError.outputExists
+                }
+                let candidate = finalParent
+                    .appendingPathComponent(stagingName, isDirectory: true)
+                    .appendingPathComponent(leafName, isDirectory: false)
+                guard candidate.deletingLastPathComponent().deletingLastPathComponent() == finalParent,
+                      isStrictDescendant(candidate, of: root.physical)
+                else {
+                    throw LocalOCRError.invalidDestination
+                }
+
+                let reservation = TemporaryReservation(
+                    temporaryURL: candidate,
+                    temporaryName: leafName,
+                    stagingName: stagingName,
+                    finalURL: final,
+                    finalName: physicalFinal.lastPathComponent,
+                    outputRoot: root.requested,
+                    directoryHandles: handles,
+                    ownedTemporaryIdentity: nil
+                )
+                temporaryReservations[candidate.path] = reservation
+                keepHandles = true
+                return candidate
+            } catch {
+                if let stagingHandle = handles.last,
+                   stagingHandle.nameFromParent == stagingName
+                {
+                    _ = stagingName.withCString { name in
+                        unlinkat(finalParentHandle.descriptor, name, AT_REMOVEDIR)
+                    }
+                }
+                throw error
+            }
         }
         throw LocalOCRError.outputExists
+    }
+
+    public func adoptPDF(at temporaryURL: URL, outputRoot: URL) throws {
+        var reservation = try validatedReservation(
+            temporaryURL: temporaryURL,
+            outputRoot: outputRoot
+        )
+        try reproveReservationDirectories(reservation)
+        guard let metadata = try entryMetadata(
+            named: reservation.temporaryName,
+            beneath: reservation.stagingHandle.descriptor
+        ) else {
+            throw LocalOCRError.outputValidationFailed
+        }
+
+        // A normally-returning client call hands ownership of the exact staging entry to us.
+        reservation.ownedTemporaryIdentity = identity(of: metadata)
+        temporaryReservations[reservation.temporaryURL.path] = reservation
+        guard fileType(metadata) == S_IFREG else {
+            throw LocalOCRError.outputValidationFailed
+        }
     }
 
     public func writeText(
         _ text: String,
         to temporaryURL: URL,
         outputRoot: URL
-    ) throws {
-        let reservation = try validatedReservation(
+    ) async throws {
+        var reservation = try validatedReservation(
             temporaryURL: temporaryURL,
             outputRoot: outputRoot
         )
-        try revalidate(reservation)
+        try reproveReservationDirectories(reservation)
+        try await beforeTextCreation()
+        try reproveReservationDirectories(reservation)
+        guard reservation.ownedTemporaryIdentity == nil else {
+            throw LocalOCRError.invalidDestination
+        }
 
-        let descriptor = temporaryURL.withUnsafeFileSystemRepresentation { path -> Int32 in
-            guard let path else { return -1 }
-            return Darwin.open(path, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        let descriptor = reservation.temporaryName.withCString { name in
+            openat(
+                reservation.stagingHandle.descriptor,
+                name,
+                O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                0o600
+            )
         }
         guard descriptor >= 0 else {
             if errno == EEXIST {
@@ -201,6 +334,15 @@ public actor AtomicStudioBatchOutputCommitter: StudioBatchOutputCommitting {
             throw LocalOCRError.invalidDestination
         }
         defer { Darwin.close(descriptor) }
+
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0,
+              fileType(metadata) == S_IFREG
+        else {
+            throw LocalOCRError.outputValidationFailed
+        }
+        reservation.ownedTemporaryIdentity = identity(of: metadata)
+        temporaryReservations[reservation.temporaryURL.path] = reservation
 
         let bytes = Data(text.utf8)
         do {
@@ -222,40 +364,31 @@ public actor AtomicStudioBatchOutputCommitter: StudioBatchOutputCommitting {
         _ temporaryURL: URL,
         to finalURL: URL,
         outputRoot: URL
-    ) throws {
+    ) async throws {
         let reservation = try validatedReservation(
             temporaryURL: temporaryURL,
             finalURL: finalURL,
             outputRoot: outputRoot
         )
-        try revalidate(reservation)
-        let temporaryData = try validatedRegularFileData(at: reservation.temporaryURL)
-        switch reservation.finalURL.pathExtension.lowercased() {
-        case "pdf":
-            guard temporaryData.starts(with: Data("%PDF-".utf8)),
-                  let document = PDFDocument(data: temporaryData),
-                  document.pageCount > 0
-            else {
-                throw LocalOCRError.outputValidationFailed
-            }
-        case "txt":
-            guard String(data: temporaryData, encoding: .utf8) != nil else {
-                throw LocalOCRError.outputValidationFailed
-            }
-        default:
-            throw LocalOCRError.invalidDestination
-        }
+        try reproveReservationDirectories(reservation)
+        let temporaryData = try validatedOwnedFileData(reservation)
+        try validateOutputData(temporaryData, for: reservation.finalURL)
 
-        if pathEntryExists(reservation.finalURL) {
-            throw LocalOCRError.outputExists
-        }
+        try await beforeExclusiveCommit()
 
-        // This is intentionally the last filesystem validation before the exclusive rename.
-        try revalidate(reservation)
-        let status = reservation.temporaryURL.withUnsafeFileSystemRepresentation { temporaryPath in
-            reservation.finalURL.withUnsafeFileSystemRepresentation { finalPath in
-                guard let temporaryPath, let finalPath else { return EINVAL }
-                return renamex_np(temporaryPath, finalPath, UInt32(RENAME_EXCL))
+        // These are the final proofs before the descriptor-relative exclusive rename.
+        try reproveReservationDirectories(reservation)
+        try requireOwnedTemporaryIdentity(reservation)
+        try Task.checkCancellation()
+        let status = reservation.temporaryName.withCString { temporaryName in
+            reservation.finalName.withCString { finalName in
+                renameatx_np(
+                    reservation.stagingHandle.descriptor,
+                    temporaryName,
+                    reservation.finalParentHandle.descriptor,
+                    finalName,
+                    UInt32(RENAME_EXCL)
+                )
             }
         }
         guard status == 0 else {
@@ -265,34 +398,36 @@ public actor AtomicStudioBatchOutputCommitter: StudioBatchOutputCommitting {
             }
             throw LocalOCRError.invalidDestination
         }
-        temporaryReservations.removeValue(forKey: reservation.temporaryURL)
+
+        // The successful rename is irreversible success. Cleanup after this point is best effort.
+        finishReservation(reservation, removeStagingDirectory: true)
     }
 
     public func discard(_ temporaryURL: URL, outputRoot: URL) {
-        let temporary = temporaryURL.standardizedFileURL
-        guard let reservation = temporaryReservations[temporary],
+        guard let reservation = temporaryReservations[temporaryURL.path],
               reservation.outputRoot == outputRoot.standardizedFileURL
         else {
             return
         }
-        defer { temporaryReservations.removeValue(forKey: temporary) }
 
-        guard (try? requireRootIdentity(reservation.rootIdentity, at: reservation.outputRoot)) != nil,
-              (try? validateExistingAncestors(
-                  through: temporary.deletingLastPathComponent(),
-                  beneath: reservation.outputRoot,
-                  rootIdentity: reservation.rootIdentity
-              )) != nil
-        else {
-            return
+        if let ownedIdentity = reservation.ownedTemporaryIdentity,
+           descriptorStillMatches(reservation.stagingHandle),
+           let currentMetadata = try? entryMetadata(
+               named: reservation.temporaryName,
+               beneath: reservation.stagingHandle.descriptor
+           ),
+           identity(of: currentMetadata) == ownedIdentity
+        {
+            _ = reservation.temporaryName.withCString { name in
+                unlinkat(reservation.stagingHandle.descriptor, name, 0)
+            }
         }
 
-        var metadata = stat()
-        guard lstatPath(temporary, into: &metadata) == 0 else { return }
-        _ = temporary.withUnsafeFileSystemRepresentation { path -> Int32 in
-            guard let path else { return -1 }
-            return Darwin.unlink(path)
-        }
+        finishReservation(reservation, removeStagingDirectory: true)
+    }
+
+    private static func defaultTemporaryName(for finalURL: URL) -> String {
+        ".\(finalURL.lastPathComponent).\(UUID().uuidString).partial"
     }
 
     private func validatedReservation(
@@ -300,8 +435,7 @@ public actor AtomicStudioBatchOutputCommitter: StudioBatchOutputCommitting {
         finalURL: URL? = nil,
         outputRoot: URL
     ) throws -> TemporaryReservation {
-        let temporary = temporaryURL.standardizedFileURL
-        guard let reservation = temporaryReservations[temporary],
+        guard let reservation = temporaryReservations[temporaryURL.path],
               finalURL.map({ $0.standardizedFileURL == reservation.finalURL }) ?? true,
               outputRoot.standardizedFileURL == reservation.outputRoot
         else {
@@ -310,48 +444,37 @@ public actor AtomicStudioBatchOutputCommitter: StudioBatchOutputCommitting {
         return reservation
     }
 
-    private func revalidate(_ reservation: TemporaryReservation) throws {
-        try requireRootIdentity(reservation.rootIdentity, at: reservation.outputRoot)
-        guard isStrictDescendant(reservation.finalURL, of: reservation.outputRoot),
-              isStrictDescendant(reservation.temporaryURL, of: reservation.outputRoot),
-              reservation.temporaryURL.deletingLastPathComponent()
-                == reservation.finalURL.deletingLastPathComponent()
-        else {
-            throw LocalOCRError.invalidDestination
-        }
-        try validateExistingAncestors(
-            through: reservation.finalURL.deletingLastPathComponent(),
-            beneath: reservation.outputRoot,
-            rootIdentity: reservation.rootIdentity
-        )
-        try requireRootIdentity(reservation.rootIdentity, at: reservation.outputRoot)
-    }
-
-    private func validatedRoot(_ outputRoot: URL) throws -> (url: URL, identity: RootIdentity) {
+    private func validatedPhysicalRoot(_ outputRoot: URL) throws -> (requested: URL, physical: URL) {
         guard outputRoot.isFileURL else {
             throw LocalOCRError.invalidDestination
         }
-        let root = outputRoot.standardizedFileURL
-        guard root.resolvingSymlinksInPath().standardizedFileURL == root else {
+        let requested = outputRoot.standardizedFileURL
+        var metadata = stat()
+        let status = requested.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return lstat(path, &metadata)
+        }
+        guard status == 0, fileType(metadata) == S_IFDIR else {
             throw LocalOCRError.invalidDestination
         }
-        var metadata = stat()
-        guard lstatPath(root, into: &metadata) == 0,
-              fileType(metadata) == S_IFDIR
-        else {
+        var resolved = [CChar](repeating: 0, count: Int(PATH_MAX))
+        let result = requested.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return UnsafeMutablePointer<CChar>?.none }
+            return realpath(path, &resolved)
+        }
+        guard result != nil else {
             throw LocalOCRError.invalidDestination
         }
         return (
-            root,
-            RootIdentity(device: UInt64(metadata.st_dev), inode: UInt64(metadata.st_ino))
+            requested,
+            URL(
+                fileURLWithPath: String(
+                    decoding: resolved.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
+                    as: UTF8.self
+                ),
+                isDirectory: true
+            )
         )
-    }
-
-    private func requireRootIdentity(_ expected: RootIdentity, at outputRoot: URL) throws {
-        let current = try validatedRoot(outputRoot)
-        guard current.identity == expected else {
-            throw LocalOCRError.invalidDestination
-        }
     }
 
     private func validatedFinal(_ finalURL: URL, beneath outputRoot: URL) throws -> URL {
@@ -360,117 +483,174 @@ public actor AtomicStudioBatchOutputCommitter: StudioBatchOutputCommitting {
         }
         let final = finalURL.standardizedFileURL
         guard isStrictDescendant(final, of: outputRoot),
-              !final.lastPathComponent.isEmpty
+              isSafeLeafName(final.lastPathComponent)
         else {
             throw LocalOCRError.invalidDestination
         }
         return final
     }
 
-    private func createAndValidateAncestors(
-        through parent: URL,
-        beneath outputRoot: URL,
-        rootIdentity: RootIdentity
-    ) throws {
-        let components = try descendantComponents(of: parent, beneath: outputRoot)
-        try traverseAncestors(
-            components,
-            beneath: outputRoot,
-            rootIdentity: rootIdentity,
-            createMissing: true
-        )
-    }
-
-    private func validateExistingAncestors(
-        through parent: URL,
-        beneath outputRoot: URL,
-        rootIdentity: RootIdentity
-    ) throws {
-        let components = try descendantComponents(of: parent, beneath: outputRoot)
-        try traverseAncestors(
-            components,
-            beneath: outputRoot,
-            rootIdentity: rootIdentity,
-            createMissing: false
-        )
-    }
-
-    private func traverseAncestors(
-        _ components: [String],
-        beneath outputRoot: URL,
-        rootIdentity: RootIdentity,
-        createMissing: Bool
-    ) throws {
-        var descriptor = outputRoot.withUnsafeFileSystemRepresentation { path -> Int32 in
-            guard let path else { return -1 }
-            return Darwin.open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        }
-        guard descriptor >= 0 else {
+    private func openDirectoryChain(to outputRoot: URL) throws -> [DirectoryHandle] {
+        let rootDescriptor = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard rootDescriptor >= 0 else {
             throw LocalOCRError.invalidDestination
         }
-        defer { Darwin.close(descriptor) }
+        var handles: [DirectoryHandle] = []
+        var keepHandles = false
+        defer {
+            if !keepHandles {
+                closeHandles(handles)
+            }
+        }
 
-        var rootMetadata = stat()
-        guard fstat(descriptor, &rootMetadata) == 0,
-              fileType(rootMetadata) == S_IFDIR,
-              RootIdentity(
-                  device: UInt64(rootMetadata.st_dev),
-                  inode: UInt64(rootMetadata.st_ino)
-              ) == rootIdentity
+        do {
+            handles.append(try directoryHandle(
+                descriptor: rootDescriptor,
+                nameFromParent: nil
+            ))
+            for component in outputRoot.pathComponents.dropFirst() {
+                guard isSafeLeafName(component), let parent = handles.last else {
+                    throw LocalOCRError.invalidDestination
+                }
+                handles.append(try openDirectory(
+                    named: component,
+                    beneath: parent.descriptor
+                ))
+            }
+            try reproveDirectoryChain(handles)
+            keepHandles = true
+            return handles
+        } catch {
+            if handles.isEmpty {
+                Darwin.close(rootDescriptor)
+            }
+            throw error
+        }
+    }
+
+    private func appendDescendantDirectoryHandles(
+        to handles: inout [DirectoryHandle],
+        through directory: URL,
+        beneath outputRoot: URL,
+        createMissing: Bool
+    ) throws {
+        let components = try descendantComponents(of: directory, beneath: outputRoot)
+        for component in components {
+            guard let parent = handles.last else {
+                throw LocalOCRError.invalidDestination
+            }
+            do {
+                handles.append(try openDirectory(named: component, beneath: parent.descriptor))
+            } catch let error as POSIXLookupError where error.code == ENOENT && createMissing {
+                let status = component.withCString { name in
+                    mkdirat(parent.descriptor, name, 0o755)
+                }
+                guard status == 0 || errno == EEXIST else {
+                    throw LocalOCRError.invalidDestination
+                }
+                handles.append(try openDirectory(named: component, beneath: parent.descriptor))
+            } catch {
+                throw LocalOCRError.invalidDestination
+            }
+        }
+    }
+
+    private func openDirectory(named name: String, beneath parentDescriptor: Int32) throws -> DirectoryHandle {
+        let descriptor = name.withCString { component in
+            openat(parentDescriptor, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard descriptor >= 0 else {
+            throw POSIXLookupError(code: errno, name: name)
+        }
+        do {
+            return try directoryHandle(descriptor: descriptor, nameFromParent: name)
+        } catch {
+            Darwin.close(descriptor)
+            throw error
+        }
+    }
+
+    private func directoryHandle(
+        descriptor: Int32,
+        nameFromParent: String?
+    ) throws -> DirectoryHandle {
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0,
+              fileType(metadata) == S_IFDIR
         else {
             throw LocalOCRError.invalidDestination
         }
+        return DirectoryHandle(
+            descriptor: descriptor,
+            nameFromParent: nameFromParent,
+            identity: identity(of: metadata)
+        )
+    }
 
-        for component in components {
-            var nextDescriptor = component.withCString { name in
-                openat(descriptor, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-            }
-            if nextDescriptor < 0, errno == ENOENT, createMissing {
-                let createStatus = component.withCString { name in
-                    mkdirat(descriptor, name, 0o755)
-                }
-                guard createStatus == 0 || errno == EEXIST else {
-                    throw LocalOCRError.invalidDestination
-                }
-                nextDescriptor = component.withCString { name in
-                    openat(descriptor, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-                }
-            }
-            guard nextDescriptor >= 0 else {
+    private func requiredLastHandle(_ handles: [DirectoryHandle]) throws -> DirectoryHandle {
+        guard let handle = handles.last else {
+            throw LocalOCRError.invalidDestination
+        }
+        return handle
+    }
+
+    private func reproveReservationDirectories(_ reservation: TemporaryReservation) throws {
+        try reproveDirectoryChain(reservation.directoryHandles)
+    }
+
+    private func reproveDirectoryChain(_ handles: [DirectoryHandle]) throws {
+        guard !handles.isEmpty else {
+            throw LocalOCRError.invalidDestination
+        }
+        for (index, handle) in handles.enumerated() {
+            guard descriptorStillMatches(handle) else {
                 throw LocalOCRError.invalidDestination
             }
-
-            var metadata = stat()
-            guard fstat(nextDescriptor, &metadata) == 0,
-                  fileType(metadata) == S_IFDIR
+            guard index > 0 else { continue }
+            let parent = handles[index - 1]
+            guard let name = handle.nameFromParent,
+                  let metadata = try entryMetadata(named: name, beneath: parent.descriptor),
+                  fileType(metadata) == S_IFDIR,
+                  identity(of: metadata) == handle.identity
             else {
-                Darwin.close(nextDescriptor)
                 throw LocalOCRError.invalidDestination
             }
-            Darwin.close(descriptor)
-            descriptor = nextDescriptor
         }
     }
 
-    private func descendantComponents(of url: URL, beneath outputRoot: URL) throws -> [String] {
-        let standardized = url.standardizedFileURL
-        guard standardized == outputRoot || isStrictDescendant(standardized, of: outputRoot) else {
-            throw LocalOCRError.invalidDestination
-        }
-        guard standardized != outputRoot else { return [] }
-        let rootPrefix = outputRoot.path.hasSuffix("/") ? outputRoot.path : outputRoot.path + "/"
-        let relative = standardized.path.dropFirst(rootPrefix.count)
-        let components = relative.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
-        guard components.allSatisfy({ isSafeLeafName($0) }) else {
-            throw LocalOCRError.invalidDestination
-        }
-        return components
+    private func descriptorStillMatches(_ handle: DirectoryHandle) -> Bool {
+        var metadata = stat()
+        return fstat(handle.descriptor, &metadata) == 0 &&
+            fileType(metadata) == S_IFDIR &&
+            identity(of: metadata) == handle.identity
     }
 
-    private func validatedRegularFileData(at url: URL) throws -> Data {
-        let descriptor = url.withUnsafeFileSystemRepresentation { path -> Int32 in
-            guard let path else { return -1 }
-            return Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+    private func isPrivateOwnedDirectory(_ handle: DirectoryHandle) throws -> Bool {
+        var metadata = stat()
+        guard fstat(handle.descriptor, &metadata) == 0 else {
+            throw LocalOCRError.invalidDestination
+        }
+        return fileType(metadata) == S_IFDIR &&
+            metadata.st_uid == geteuid() &&
+            metadata.st_mode & 0o777 == 0o700
+    }
+
+    private func entryMetadata(named name: String, beneath descriptor: Int32) throws -> stat? {
+        var metadata = stat()
+        let status = name.withCString { component in
+            fstatat(descriptor, component, &metadata, AT_SYMLINK_NOFOLLOW)
+        }
+        if status == 0 { return metadata }
+        if errno == ENOENT { return nil }
+        throw LocalOCRError.invalidDestination
+    }
+
+    private func validatedOwnedFileData(_ reservation: TemporaryReservation) throws -> Data {
+        guard let expectedIdentity = reservation.ownedTemporaryIdentity else {
+            throw LocalOCRError.outputValidationFailed
+        }
+        let descriptor = reservation.temporaryName.withCString { name in
+            openat(reservation.stagingHandle.descriptor, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         }
         guard descriptor >= 0 else {
             throw LocalOCRError.outputValidationFailed
@@ -479,7 +659,8 @@ public actor AtomicStudioBatchOutputCommitter: StudioBatchOutputCommitting {
 
         var metadata = stat()
         guard fstat(descriptor, &metadata) == 0,
-              fileType(metadata) == S_IFREG
+              fileType(metadata) == S_IFREG,
+              identity(of: metadata) == expectedIdentity
         else {
             throw LocalOCRError.outputValidationFailed
         }
@@ -488,6 +669,79 @@ public actor AtomicStudioBatchOutputCommitter: StudioBatchOutputCommitting {
         } catch {
             throw LocalOCRError.outputValidationFailed
         }
+    }
+
+    private func requireOwnedTemporaryIdentity(_ reservation: TemporaryReservation) throws {
+        guard let expectedIdentity = reservation.ownedTemporaryIdentity,
+              let metadata = try entryMetadata(
+                  named: reservation.temporaryName,
+                  beneath: reservation.stagingHandle.descriptor
+              ),
+              fileType(metadata) == S_IFREG,
+              identity(of: metadata) == expectedIdentity
+        else {
+            throw LocalOCRError.outputValidationFailed
+        }
+    }
+
+    private func validateOutputData(_ data: Data, for finalURL: URL) throws {
+        switch finalURL.pathExtension.lowercased() {
+        case "pdf":
+            guard data.starts(with: Data("%PDF-".utf8)),
+                  let document = PDFDocument(data: data),
+                  document.pageCount > 0
+            else {
+                throw LocalOCRError.outputValidationFailed
+            }
+        case "txt":
+            guard String(data: data, encoding: .utf8) != nil else {
+                throw LocalOCRError.outputValidationFailed
+            }
+        default:
+            throw LocalOCRError.invalidDestination
+        }
+    }
+
+    private func finishReservation(
+        _ reservation: TemporaryReservation,
+        removeStagingDirectory: Bool
+    ) {
+        temporaryReservations.removeValue(forKey: reservation.temporaryURL.path)
+        if removeStagingDirectory,
+           descriptorStillMatches(reservation.finalParentHandle),
+           descriptorStillMatches(reservation.stagingHandle),
+           let currentMetadata = try? entryMetadata(
+               named: reservation.stagingName,
+               beneath: reservation.finalParentHandle.descriptor
+           ),
+           fileType(currentMetadata) == S_IFDIR,
+           identity(of: currentMetadata) == reservation.stagingHandle.identity
+        {
+            _ = reservation.stagingName.withCString { name in
+                unlinkat(reservation.finalParentHandle.descriptor, name, AT_REMOVEDIR)
+            }
+        }
+        closeHandles(reservation.directoryHandles)
+    }
+
+    nonisolated private func closeHandles(_ handles: [DirectoryHandle]) {
+        for handle in handles.reversed() {
+            Darwin.close(handle.descriptor)
+        }
+    }
+
+    private func descendantComponents(of url: URL, beneath outputRoot: URL) throws -> [String] {
+        guard url.path == outputRoot.path || isStrictDescendant(url, of: outputRoot) else {
+            throw LocalOCRError.invalidDestination
+        }
+        guard url.path != outputRoot.path else { return [] }
+        let rootPrefix = outputRoot.path.hasSuffix("/") ? outputRoot.path : outputRoot.path + "/"
+        let relative = url.path.dropFirst(rootPrefix.count)
+        let components = relative.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard components.allSatisfy({ isSafeLeafName($0) }) else {
+            throw LocalOCRError.invalidDestination
+        }
+        return components
     }
 
     private func writeAll(_ data: Data, to descriptor: Int32) throws {
@@ -525,6 +779,10 @@ public actor AtomicStudioBatchOutputCommitter: StudioBatchOutputCommitting {
         }
     }
 
+    private func identity(of metadata: stat) -> FileIdentity {
+        FileIdentity(device: UInt64(metadata.st_dev), inode: UInt64(metadata.st_ino))
+    }
+
     private func isStrictDescendant(_ url: URL, of root: URL) -> Bool {
         let rootPath = root.path.hasSuffix("/") ? root.path : root.path + "/"
         return url.path.hasPrefix(rootPath)
@@ -534,19 +792,12 @@ public actor AtomicStudioBatchOutputCommitter: StudioBatchOutputCommitting {
         !name.isEmpty && name != "." && name != ".." && !name.contains("/") && !name.contains("\0")
     }
 
-    private func pathEntryExists(_ url: URL) -> Bool {
-        var metadata = stat()
-        return lstatPath(url, into: &metadata) == 0
-    }
-
-    private func lstatPath(_ url: URL, into metadata: inout stat) -> Int32 {
-        url.withUnsafeFileSystemRepresentation { path in
-            guard let path else { return -1 }
-            return Darwin.lstat(path, &metadata)
-        }
-    }
-
     private func fileType(_ metadata: stat) -> mode_t {
         metadata.st_mode & S_IFMT
     }
+}
+
+private struct POSIXLookupError: Error {
+    let code: Int32
+    let name: String
 }

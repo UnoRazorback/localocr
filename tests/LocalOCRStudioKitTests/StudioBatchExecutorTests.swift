@@ -207,7 +207,9 @@ import Testing
 
         #expect(!FileManager.default.fileExists(atPath: external.appending(path: "photo.txt").path))
         #expect(try String(
-            contentsOf: movedParent.appending(path: temporaryURL.lastPathComponent),
+            contentsOf: movedParent
+                .appending(path: temporaryURL.deletingLastPathComponent().lastPathComponent)
+                .appending(path: temporaryURL.lastPathComponent),
             encoding: .utf8
         ) == "recognized")
     }
@@ -228,14 +230,238 @@ import Testing
             outputRoot: fixture.outputRoot
         )
 
-        #expect(temporaryURL.lastPathComponent == "available.partial")
-        #expect(temporaryURL.deletingLastPathComponent() == fixture.finalURL.deletingLastPathComponent())
+        #expect(temporaryURL.lastPathComponent == fixture.finalURL.lastPathComponent)
+        #expect(temporaryURL.deletingLastPathComponent().lastPathComponent == "available.partial")
+        #expect(temporaryURL.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent == "output")
         #expect(!FileManager.default.fileExists(atPath: temporaryURL.path))
+        #expect(try FileManager.default.attributesOfItem(
+            atPath: temporaryURL.deletingLastPathComponent().path
+        )[.posixPermissions] as? Int == 0o700)
+        #expect(try deviceID(of: temporaryURL.deletingLastPathComponent()) == deviceID(
+            of: fixture.finalURL.deletingLastPathComponent()
+        ))
         #expect(try String(
             contentsOf: fixture.outputRoot.appending(path: "occupied.partial"),
             encoding: .utf8
         ) == "do not replace")
         await committer.discard(temporaryURL, outputRoot: fixture.outputRoot)
+    }
+
+    @Test func discardPreservesAnUnownedPostReservationCollision() async throws {
+        let fixture = try BatchExecutorFixture(kind: .pdf, outputName: "scan_searchable.pdf")
+        defer { fixture.remove() }
+        let committer = AtomicStudioBatchOutputCommitter()
+        let temporaryURL = try await committer.temporaryURL(
+            for: fixture.finalURL,
+            outputRoot: fixture.outputRoot
+        )
+        try Data("peer collision".utf8).write(to: temporaryURL)
+
+        await committer.discard(temporaryURL, outputRoot: fixture.outputRoot)
+
+        #expect(try String(contentsOf: temporaryURL, encoding: .utf8) == "peer collision")
+    }
+
+    @Test func commitRejectsAndPreservesALeafSubstitutedAfterOwnership() async throws {
+        let fixture = try BatchExecutorFixture(kind: .image, outputName: "photo.txt")
+        defer { fixture.remove() }
+        let committer = AtomicStudioBatchOutputCommitter()
+        let temporaryURL = try await committer.temporaryURL(
+            for: fixture.finalURL,
+            outputRoot: fixture.outputRoot
+        )
+        try await committer.writeText(
+            "owned",
+            to: temporaryURL,
+            outputRoot: fixture.outputRoot
+        )
+        try FileManager.default.removeItem(at: temporaryURL)
+        try Data("peer replacement".utf8).write(to: temporaryURL)
+
+        await #expect(throws: LocalOCRError.outputValidationFailed) {
+            try await committer.commit(
+                temporaryURL,
+                to: fixture.finalURL,
+                outputRoot: fixture.outputRoot
+            )
+        }
+        await committer.discard(temporaryURL, outputRoot: fixture.outputRoot)
+
+        #expect(!FileManager.default.fileExists(atPath: fixture.finalURL.path))
+        #expect(try String(contentsOf: temporaryURL, encoding: .utf8) == "peer replacement")
+    }
+
+    @Test func discardCleansOwnedOutputThroughRetainedDescriptorsAfterAncestorReplacement() async throws {
+        let fixture = try BatchExecutorFixture(kind: .image, outputName: "nested/photo.txt")
+        defer { fixture.remove() }
+        let committer = AtomicStudioBatchOutputCommitter()
+        let temporaryURL = try await committer.temporaryURL(
+            for: fixture.finalURL,
+            outputRoot: fixture.outputRoot
+        )
+        try await committer.writeText(
+            "owned",
+            to: temporaryURL,
+            outputRoot: fixture.outputRoot
+        )
+        let originalParent = fixture.finalURL.deletingLastPathComponent()
+        let movedParent = fixture.baseURL.appending(path: "cleanup-parent", directoryHint: .isDirectory)
+        let external = fixture.baseURL.appending(path: "cleanup-external", directoryHint: .isDirectory)
+        let movedStagingURL = movedParent.appending(
+            path: temporaryURL.deletingLastPathComponent().lastPathComponent,
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.moveItem(at: originalParent, to: movedParent)
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: false)
+        try FileManager.default.createSymbolicLink(at: originalParent, withDestinationURL: external)
+
+        await committer.discard(temporaryURL, outputRoot: fixture.outputRoot)
+
+        #expect(!FileManager.default.fileExists(atPath: movedStagingURL.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
+    }
+
+    @Test func textCreationReprovesAncestorsAfterItsPreMutationProof() async throws {
+        let fixture = try BatchExecutorFixture(kind: .image, outputName: "nested/photo.txt")
+        defer { fixture.remove() }
+        let originalParent = fixture.finalURL.deletingLastPathComponent()
+        let movedParent = fixture.baseURL.appending(path: "proof-parent", directoryHint: .isDirectory)
+        let external = fixture.baseURL.appending(path: "proof-external", directoryHint: .isDirectory)
+        let mutation = OneShotAsyncMutation {
+            try FileManager.default.moveItem(at: originalParent, to: movedParent)
+            try FileManager.default.createDirectory(at: external, withIntermediateDirectories: false)
+            try FileManager.default.createSymbolicLink(at: originalParent, withDestinationURL: external)
+        }
+        let committer = AtomicStudioBatchOutputCommitter(
+            beforeTextCreation: mutation.run
+        )
+        let temporaryURL = try await committer.temporaryURL(
+            for: fixture.finalURL,
+            outputRoot: fixture.outputRoot
+        )
+
+        await #expect(throws: LocalOCRError.invalidDestination) {
+            try await committer.writeText(
+                "must not escape",
+                to: temporaryURL,
+                outputRoot: fixture.outputRoot
+            )
+        }
+        await committer.discard(temporaryURL, outputRoot: fixture.outputRoot)
+
+        #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
+    }
+
+    @Test func commitReprovesOwnedLeafAfterValidationBeforeExclusiveRename() async throws {
+        let fixture = try BatchExecutorFixture(kind: .image, outputName: "photo.txt")
+        defer { fixture.remove() }
+        let temporaryBox = LockedURL()
+        let mutation = OneShotAsyncMutation {
+            let temporaryURL = try #require(temporaryBox.value)
+            try FileManager.default.removeItem(at: temporaryURL)
+            try Data("peer replacement".utf8).write(to: temporaryURL)
+        }
+        let committer = AtomicStudioBatchOutputCommitter(
+            beforeExclusiveCommit: mutation.run
+        )
+        let temporaryURL = try await committer.temporaryURL(
+            for: fixture.finalURL,
+            outputRoot: fixture.outputRoot
+        )
+        temporaryBox.value = temporaryURL
+        try await committer.writeText(
+            "owned",
+            to: temporaryURL,
+            outputRoot: fixture.outputRoot
+        )
+
+        await #expect(throws: LocalOCRError.outputValidationFailed) {
+            try await committer.commit(
+                temporaryURL,
+                to: fixture.finalURL,
+                outputRoot: fixture.outputRoot
+            )
+        }
+        await committer.discard(temporaryURL, outputRoot: fixture.outputRoot)
+
+        #expect(!FileManager.default.fileExists(atPath: fixture.finalURL.path))
+        #expect(try String(contentsOf: temporaryURL, encoding: .utf8) == "peer replacement")
+    }
+
+    @Test func commitReprovesAncestorsAfterValidationBeforeExclusiveRename() async throws {
+        let fixture = try BatchExecutorFixture(kind: .image, outputName: "nested/photo.txt")
+        defer { fixture.remove() }
+        let originalParent = fixture.finalURL.deletingLastPathComponent()
+        let movedParent = fixture.baseURL.appending(path: "linear-parent", directoryHint: .isDirectory)
+        let external = fixture.baseURL.appending(path: "linear-external", directoryHint: .isDirectory)
+        let mutation = OneShotAsyncMutation {
+            try FileManager.default.moveItem(at: originalParent, to: movedParent)
+            try FileManager.default.createDirectory(at: external, withIntermediateDirectories: false)
+            try FileManager.default.createSymbolicLink(at: originalParent, withDestinationURL: external)
+        }
+        let committer = AtomicStudioBatchOutputCommitter(
+            beforeExclusiveCommit: mutation.run
+        )
+        let temporaryURL = try await committer.temporaryURL(
+            for: fixture.finalURL,
+            outputRoot: fixture.outputRoot
+        )
+        let movedStagingURL = movedParent.appending(
+            path: temporaryURL.deletingLastPathComponent().lastPathComponent,
+            directoryHint: .isDirectory
+        )
+        try await committer.writeText(
+            "owned",
+            to: temporaryURL,
+            outputRoot: fixture.outputRoot
+        )
+
+        await #expect(throws: LocalOCRError.invalidDestination) {
+            try await committer.commit(
+                temporaryURL,
+                to: fixture.finalURL,
+                outputRoot: fixture.outputRoot
+            )
+        }
+        await committer.discard(temporaryURL, outputRoot: fixture.outputRoot)
+
+        #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: movedStagingURL.path))
+    }
+
+    @Test func cancellationWhileCommitIsQueuedStopsBeforeExclusiveRename() async throws {
+        let fixture = try BatchExecutorFixture(kind: .image, outputName: "photo.txt")
+        defer { fixture.remove() }
+        let barrier = SuspendingCommitBarrier()
+        let committer = AtomicStudioBatchOutputCommitter(
+            beforeExclusiveCommit: barrier.suspend
+        )
+        let temporaryURL = try await committer.temporaryURL(
+            for: fixture.finalURL,
+            outputRoot: fixture.outputRoot
+        )
+        try await committer.writeText(
+            "owned",
+            to: temporaryURL,
+            outputRoot: fixture.outputRoot
+        )
+        let commitTask = Task {
+            try await committer.commit(
+                temporaryURL,
+                to: fixture.finalURL,
+                outputRoot: fixture.outputRoot
+            )
+        }
+        await barrier.waitUntilSuspended()
+
+        commitTask.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            try await commitTask.value
+        }
+        await committer.discard(temporaryURL, outputRoot: fixture.outputRoot)
+        #expect(!FileManager.default.fileExists(atPath: fixture.finalURL.path))
+        #expect(!FileManager.default.fileExists(atPath: temporaryURL.path))
     }
 
     @Test func invalidPDFOutputFailsValidationAndCleansTheTemporaryFile() async throws {
@@ -251,6 +477,21 @@ import Testing
 
         #expect(!FileManager.default.fileExists(atPath: fixture.finalURL.path))
         #expect(try partialEntries(in: fixture.outputRoot).isEmpty)
+    }
+
+    @Test func pdfClientThrowPreservesAnUnownedCollision() async throws {
+        let fixture = try BatchExecutorFixture(kind: .pdf, outputName: "scan_searchable.pdf")
+        defer { fixture.remove() }
+        let client = ExecutorRecordingClient(kind: .pdf, pdfOutput: .collisionThenThrows)
+        let executor = StudioBatchExecutor(client: client)
+
+        await #expect(throws: LocalOCRError.outputExists) {
+            try await executor.execute(fixture.item) { _ in }
+        }
+
+        let request = try #require(await client.searchableRequests().first)
+        #expect(try String(contentsOf: request.1, encoding: .utf8) == "peer collision")
+        #expect(!FileManager.default.fileExists(atPath: fixture.finalURL.path))
     }
 
     @Test func searchableClientMustReturnTheExactTemporaryURL() async throws {
@@ -457,6 +698,7 @@ private enum PDFOutputBehavior: Sendable {
     case invalid
     case returnsWrongURL
     case symbolicLink(URL)
+    case collisionThenThrows
 }
 
 private actor ExecutorRecordingClient: StudioOCRClient {
@@ -519,6 +761,9 @@ private actor ExecutorRecordingClient: StudioOCRClient {
             try Data("not a PDF".utf8).write(to: destinationURL)
         case let .symbolicLink(targetURL):
             try FileManager.default.createSymbolicLink(at: destinationURL, withDestinationURL: targetURL)
+        case .collisionThenThrows:
+            try Data("peer collision".utf8).write(to: destinationURL)
+            throw LocalOCRError.outputExists
         }
         if cancelAfterSearchable {
             withUnsafeCurrentTask { $0?.cancel() }
@@ -621,12 +866,69 @@ private final class LockedNames: @unchecked Sendable {
     }
 }
 
+private final class LockedURL: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: URL?
+
+    var value: URL? {
+        get { lock.withLock { storage } }
+        set { lock.withLock { storage = newValue } }
+    }
+}
+
+private final class OneShotAsyncMutation: @unchecked Sendable {
+    private let lock = NSLock()
+    private let operation: @Sendable () throws -> Void
+    private var hasRun = false
+
+    init(_ operation: @escaping @Sendable () throws -> Void) {
+        self.operation = operation
+    }
+
+    func run() async throws {
+        let shouldRun = lock.withLock {
+            guard !hasRun else { return false }
+            hasRun = true
+            return true
+        }
+        if shouldRun {
+            try operation()
+        }
+    }
+}
+
+private actor SuspendingCommitBarrier {
+    private var isSuspended = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func suspend() async throws {
+        isSuspended = true
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
+        try await Task.sleep(for: .seconds(30))
+    }
+
+    func waitUntilSuspended() async {
+        guard !isSuspended else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+}
+
 private func partialEntries(in directoryURL: URL) throws -> [URL] {
     guard FileManager.default.fileExists(atPath: directoryURL.path) else { return [] }
     return try FileManager.default.contentsOfDirectory(
         at: directoryURL,
         includingPropertiesForKeys: nil
     ).filter { $0.lastPathComponent.contains("partial") }
+}
+
+private func deviceID(of url: URL) throws -> UInt64 {
+    var metadata = stat()
+    guard lstat(url.path, &metadata) == 0 else {
+        throw LocalOCRError.invalidDestination
+    }
+    return UInt64(metadata.st_dev)
 }
 
 private func writeValidPDF(to destinationURL: URL) throws {
