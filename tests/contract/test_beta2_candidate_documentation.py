@@ -69,6 +69,7 @@ def _required_sections(
                 candidate
                 for candidate in headings
                 if candidate.start > heading.start
+                and candidate.level <= heading.level
             ),
             None,
         )
@@ -77,20 +78,66 @@ def _required_sections(
     return sections
 
 
-def _assert_no_contradictory_candidate_claims(candidate_sections: str) -> None:
-    normalized = _normalized(candidate_sections).lower()
-    forbidden_claims = (
-        ("publication", r"\b(?:is|has been) published\b"),
-        ("signing", r"\b(?:is|has been) signed\b"),
-        ("notarization", r"\b(?:is|has been) notarized\b"),
-        ("stapling", r"\b(?:is|has been) stapled\b"),
-        ("Gatekeeper acceptance", r"\bgatekeeper accepted\b"),
-        ("acceptance", r"\b(?:has )?passed acceptance\b"),
+def _section_lead(section: str, *, section_level: int) -> str:
+    boundary = next(
+        (
+            heading
+            for heading in _markdown_headings(section)
+            if heading.level <= section_level + 1
+        ),
+        None,
     )
-    for claim, pattern in forbidden_claims:
-        assert re.search(pattern, normalized) is None, (
-            f"candidate must not claim {claim}"
-        )
+    return section[: boundary.start if boundary else len(section)]
+
+
+_CANDIDATE_SUBJECT = (
+    r"(?:the\s+candidate|this\s+candidate|candidate|this\s+build|"
+    r"`?v0\.3\.0-beta\.1`?|it)"
+)
+_STATUS_ADVERB = r"(?:now|not|never|no|yet|longer)"
+_COPULAR_STATUS = re.compile(
+    rf"(?P<statement>(?:no\s+)?{_CANDIDATE_SUBJECT}\s+"
+    rf"(?P<verb_phrase>"
+    rf"(?:is|was)(?:\s+{_STATUS_ADVERB})*|"
+    rf"(?:has|had)(?:\s+{_STATUS_ADVERB})*\s+been"
+    rf"(?:\s+{_STATUS_ADVERB})*"
+    rf")\s+"
+    rf"(?P<status>gatekeeper\s+accepted|published|signed|notarized|stapled)\b)",
+    re.IGNORECASE,
+)
+_ACCEPTANCE_STATUS = re.compile(
+    rf"(?P<statement>(?:no\s+)?{_CANDIDATE_SUBJECT}\s+"
+    rf"(?P<verb_phrase>(?:has|had)(?:\s+{_STATUS_ADVERB})*\s+passed|passed)"
+    rf"\s+acceptance\b)",
+    re.IGNORECASE,
+)
+_NEGATION = re.compile(r"\b(?:not|never|no)\b", re.IGNORECASE)
+_STATUS_CLAIMS = {
+    "published": "publication",
+    "signed": "signing",
+    "notarized": "notarization",
+    "stapled": "stapling",
+    "gatekeeper accepted": "Gatekeeper acceptance",
+}
+
+
+def _positive_candidate_status(candidate_sections: str) -> str | None:
+    normalized = _normalized(candidate_sections).replace("**", "")
+    for statement in _COPULAR_STATUS.finditer(normalized):
+        if _NEGATION.search(statement.group("statement")) is None:
+            status = statement.group("status").lower()
+            return _STATUS_CLAIMS[status]
+
+    for statement in _ACCEPTANCE_STATUS.finditer(normalized):
+        if _NEGATION.search(statement.group("statement")) is None:
+            return "acceptance"
+
+    return None
+
+
+def _assert_no_contradictory_candidate_claims(candidate_sections: str) -> None:
+    claim = _positive_candidate_status(candidate_sections)
+    assert claim is None, f"candidate must not claim {claim}"
 
 
 def _assert_completion_action(workflow: str) -> None:
@@ -140,14 +187,18 @@ def _validate_candidate_documentation(
         ),
     )
 
-    candidate_identity = notes_sections["LocalOCR Studio v0.3.0-beta.1 candidate"]
+    candidate_identity = _section_lead(
+        notes_sections["LocalOCR Studio v0.3.0-beta.1 candidate"],
+        section_level=1,
+    )
     candidate_workflow = notes_sections[
         "Desktop batch, after the default single-document flow"
     ]
     candidate_compatibility = notes_sections["Compatibility and verification boundary"]
-    beta_guide_candidate_identity = beta_guide_sections[
-        "LocalOCR Studio Beta Tester Guide"
-    ]
+    beta_guide_candidate_identity = _section_lead(
+        beta_guide_sections["LocalOCR Studio Beta Tester Guide"],
+        section_level=1,
+    )
     beta_guide_workflow = beta_guide_sections[
         "Beta 2 candidate: desktop batch workflow"
     ]
@@ -347,6 +398,71 @@ def test_candidate_validator_allows_harmless_workflow_editorial_rewrite() -> Non
     notes = NOTES.read_text().replace(
         "LocalOCR Studio still opens with one document at a time.",
         "The default LocalOCR Studio flow remains one document at a time.",
+    )
+
+    _validate_candidate_documentation(
+        notes=notes,
+        studio=STUDIO.read_text(),
+        beta_guide=BETA_GUIDE.read_text(),
+    )
+
+
+def test_candidate_validator_checks_claim_below_nested_heading() -> None:
+    notes = NOTES.read_text().replace(
+        "## Privacy",
+        "### Candidate verification\n\n"
+        "This candidate was signed.\n\n"
+        "## Privacy",
+    )
+
+    with pytest.raises(AssertionError, match="candidate must not claim signing"):
+        _validate_candidate_documentation(
+            notes=notes,
+            studio=STUDIO.read_text(),
+            beta_guide=BETA_GUIDE.read_text(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("replacement", "expected_message"),
+    (
+        ("The candidate was published.", "candidate must not claim publication"),
+        (
+            "`v0.3.0-beta.1` is now published.",
+            "candidate must not claim publication",
+        ),
+        ("This build was signed.", "candidate must not claim signing"),
+        ("This candidate had been notarized.", "candidate must not claim notarization"),
+    ),
+)
+def test_candidate_validator_rejects_additional_positive_status_forms(
+    replacement: str,
+    expected_message: str,
+) -> None:
+    notes = NOTES.read_text().replace("It is not yet published.", replacement)
+
+    with pytest.raises(AssertionError, match=expected_message):
+        _validate_candidate_documentation(
+            notes=notes,
+            studio=STUDIO.read_text(),
+            beta_guide=BETA_GUIDE.read_text(),
+        )
+
+
+@pytest.mark.parametrize(
+    "negative_status",
+    (
+        "The candidate has not passed acceptance.",
+        "This candidate is not Gatekeeper accepted.",
+        "This build was not signed.",
+    ),
+)
+def test_candidate_validator_allows_negative_provenance_wording(
+    negative_status: str,
+) -> None:
+    notes = NOTES.read_text().replace(
+        "## Privacy",
+        f"{negative_status}\n\n## Privacy",
     )
 
     _validate_candidate_documentation(
