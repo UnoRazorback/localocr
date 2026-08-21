@@ -50,6 +50,25 @@ import Testing
         #expect(reservation.finalURL == finalURL)
         #expect(reservation.outputRoot == outputRoot)
     }
+
+    @Test func reservationResolvesAndStandardizesPhysicalOutputRoot() throws {
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("StudioBatchModelsTests-\(UUID().uuidString)", isDirectory: true)
+        let physicalRoot = temporaryRoot.appendingPathComponent("physical-output", isDirectory: true)
+        let symlinkRoot = temporaryRoot.appendingPathComponent("output-link", isDirectory: true)
+        defer { try? fileManager.removeItem(at: temporaryRoot) }
+
+        try fileManager.createDirectory(at: physicalRoot, withIntermediateDirectories: true)
+        try fileManager.createSymbolicLink(at: symlinkRoot, withDestinationURL: physicalRoot)
+
+        let reservation = StudioBatchReservation(
+            finalURL: physicalRoot.appendingPathComponent("a_searchable.pdf"),
+            outputRoot: symlinkRoot.appendingPathComponent(".", isDirectory: true)
+        )
+
+        #expect(reservation.outputRoot == physicalRoot.standardizedFileURL)
+    }
 }
 
 private func item(state: StudioBatchItemState) -> StudioBatchItem {

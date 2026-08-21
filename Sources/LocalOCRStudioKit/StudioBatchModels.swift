@@ -70,11 +70,14 @@ public struct StudioBatchDiscovery: Sendable, Equatable {
 
 public struct StudioBatchReservation: Sendable, Equatable {
     public let finalURL: URL
+    /// The standardized, symlink-resolved physical file URL for the selected output root.
     public let outputRoot: URL
 
     public init(finalURL: URL, outputRoot: URL) {
         self.finalURL = finalURL
-        self.outputRoot = outputRoot
+        self.outputRoot = outputRoot.standardizedFileURL
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
     }
 }
 
