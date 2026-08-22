@@ -312,6 +312,89 @@ def test_unsigned_build_root_validation_accepts_physical_macos_tmp_only() -> Non
     assert rejected.returncode != 0
 
 
+def test_unsigned_build_strips_only_the_validated_staged_executable(
+    tmp_path: Path,
+) -> None:
+    script, fake_repo = _copy_build_scripts_to_isolated_repo(tmp_path)
+    canonical_app = fake_repo / "dist" / "unsigned-app" / "LocalOCR Studio.app"
+
+    with tempfile.TemporaryDirectory(
+        prefix="localocr-studio-build.",
+        dir="/tmp",
+    ) as temporary_root:
+        build_root = Path(temporary_root)
+        source_product = build_root / "SourceProducts" / "LocalOCR Studio"
+        _compile_debug_path_fixture(source_product)
+        source_bytes = source_product.read_bytes()
+        assert b"/Users/" in source_bytes
+
+        staged_app = _write_staged_app(
+            build_root,
+            bundle_identifier="com.rayconsulting.localocr",
+            minimum_os="14.0",
+        )
+        staged_executable = staged_app / "Contents" / "MacOS" / "LocalOCR Studio"
+        shutil.copy2(source_product, staged_executable)
+
+        result = _run_sourced_build_function(
+            script,
+            build_root,
+            'validate_and_publish_staged_app "$build_root/Staged/LocalOCR Studio.app"',
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert source_product.read_bytes() == source_bytes
+
+    published_executable = (
+        canonical_app / "Contents" / "MacOS" / "LocalOCR Studio"
+    )
+    assert b"/Users/" not in published_executable.read_bytes()
+    symbols = subprocess.run(
+        ["/usr/bin/nm", "-ap", str(published_executable)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "/Users/" not in symbols
+    assert not list(canonical_app.rglob("*.dSYM"))
+
+
+def test_unsigned_build_rejects_a_symlinked_staged_executable_without_editing_target(
+    tmp_path: Path,
+) -> None:
+    script, fake_repo = _copy_build_scripts_to_isolated_repo(tmp_path)
+    canonical_app = fake_repo / "dist" / "unsigned-app" / "LocalOCR Studio.app"
+
+    with tempfile.TemporaryDirectory(
+        prefix="localocr-studio-build.",
+        dir="/tmp",
+    ) as temporary_root:
+        build_root = Path(temporary_root)
+        staged_app = _write_staged_app(
+            build_root,
+            bundle_identifier="com.rayconsulting.localocr",
+            minimum_os="14.0",
+        )
+        staged_executable = staged_app / "Contents" / "MacOS" / "LocalOCR Studio"
+        outside_target = build_root / "outside-debug-binary"
+        _compile_debug_path_fixture(outside_target)
+        outside_bytes = outside_target.read_bytes()
+        staged_executable.unlink()
+        staged_executable.symlink_to(outside_target)
+
+        result = _run_sourced_build_function(
+            script,
+            build_root,
+            'validate_and_publish_staged_app "$build_root/Staged/LocalOCR Studio.app"',
+        )
+
+        assert result.returncode != 0
+        assert "unsigned Studio executable is missing or invalid" in result.stderr
+        assert outside_target.read_bytes() == outside_bytes
+
+    assert not canonical_app.exists()
+
+
 def test_wrong_minimum_os_fails_before_creating_canonical_output(
     tmp_path: Path,
 ) -> None:
@@ -554,6 +637,28 @@ def _write_staged_app(
         executable.write_bytes(b"validation must stop before architecture checks")
         executable.chmod(0o755)
     return staged_app
+
+
+def _compile_debug_path_fixture(output: Path) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    source = output.parent / "debug-path-fixture.c"
+    source.write_text("int main(void) { return 0; }\n")
+    subprocess.run(
+        [
+            "/usr/bin/clang",
+            "-g",
+            "-arch",
+            "arm64",
+            "-mmacosx-version-min=14.0",
+            f"-ffile-prefix-map={output.parent}=/Users/example/private",
+            str(source),
+            "-o",
+            str(output),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _snapshot_file_bytes(root: Path) -> dict[Path, bytes]:

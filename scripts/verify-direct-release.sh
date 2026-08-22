@@ -205,6 +205,7 @@ verify_no_private_paths() {
     local strings_output
     local forbidden
 
+    release_reject_private_user_path "$binary"
     strings_output="$(/usr/bin/strings -a "$binary")"
     for forbidden in \
         "/Applications/Xcode" \

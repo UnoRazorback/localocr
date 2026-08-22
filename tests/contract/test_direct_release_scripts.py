@@ -1284,6 +1284,31 @@ def _compile_macos_fixture(
     assert result.returncode == 0, result.stderr
 
 
+def _compile_macos_debug_path_fixture(output: Path) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    source = output.parent / "debug-path-fixture.c"
+    source.write_text("int main(void) { return 0; }\n")
+    result = subprocess.run(
+        [
+            "/usr/bin/xcrun",
+            "clang",
+            "-g",
+            "-arch",
+            "arm64",
+            "-mmacosx-version-min=14.0",
+            f"-ffile-prefix-map={output.parent}=/Users/example/private",
+            str(source),
+            "-o",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert b"/Users/" in output.read_bytes()
+
+
 def _binary_minimum_macos(binary: Path) -> str:
     result = subprocess.run(
         ["/usr/bin/otool", "-l", str(binary)],
@@ -1590,6 +1615,17 @@ def test_real_unsigned_studio_app_stages_under_exact_release_policy(
     release_physical = (ROOT / "dist" / "direct-release").resolve()
     assert unsigned_physical.is_relative_to((ROOT / "dist").resolve())
     assert not unsigned_physical.is_relative_to(release_physical)
+    unsigned_main = (
+        real_unsigned_studio_app / "Contents" / "MacOS" / "LocalOCR Studio"
+    )
+    assert b"/Users/" not in unsigned_main.read_bytes()
+    assert "/Users/" not in subprocess.run(
+        ["/usr/bin/nm", "-ap", str(unsigned_main)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert not list(real_unsigned_studio_app.rglob("*.dSYM"))
 
     source_xattr = subprocess.run(
         [
@@ -1646,6 +1682,14 @@ def test_real_unsigned_studio_app_stages_under_exact_release_policy(
         assert architecture == "arm64"
         assert _binary_minimum_macos(binary) == "14.0"
         assert _binary_rpaths(binary) == ("/usr/lib/swift",)
+        assert b"/Users/" not in binary.read_bytes()
+        symbols = subprocess.run(
+            ["/usr/bin/nm", "-ap", str(binary)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert "/Users/" not in symbols
         for dependency in _binary_dependencies(binary):
             assert dependency.startswith(("/System/Library/", "/usr/lib/")) or (
                 dependency == "@rpath/libswiftCompatibilitySpan.dylib"
@@ -1660,6 +1704,7 @@ def test_real_unsigned_studio_app_stages_under_exact_release_policy(
     assert resource_files
     for resource in resource_files:
         assert b"/Users/" not in resource.read_bytes()
+    assert not list(real_staged_studio_app.rglob("*.dSYM"))
 
 
 def test_pre_signing_evidence_hashes_exact_staged_binaries(
@@ -1694,6 +1739,43 @@ def test_pre_signing_evidence_hashes_exact_staged_binaries(
     assert evidence.keys() == expected_paths.keys()
     for label, binary in expected_paths.items():
         assert evidence[label] == hashlib.sha256(binary.read_bytes()).hexdigest()
+
+
+def test_stage_strips_only_the_copied_main_executable(tmp_path: Path) -> None:
+    unsigned_app = tmp_path / "Debug Path LocalOCR Studio.app"
+    contents = unsigned_app / "Contents"
+    main = contents / "MacOS" / "LocalOCR Studio"
+    _compile_macos_debug_path_fixture(main)
+    generated_dsym = Path(f"{main}.dSYM")
+    retained_dsym = tmp_path / "LocalOCR Studio.dSYM"
+    if generated_dsym.exists():
+        shutil.move(generated_dsym, retained_dsym)
+    source_bytes = main.read_bytes()
+    with (contents / "Info.plist").open("wb") as plist_file:
+        plistlib.dump(
+            {
+                "CFBundleExecutable": "LocalOCR Studio",
+                "CFBundleIdentifier": "com.rayconsulting.localocr",
+                "CFBundleShortVersionString": "0.3.0",
+                "CFBundleVersion": "2",
+            },
+            plist_file,
+        )
+
+    result = _run_real_app_stage(unsigned_app)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert main.read_bytes() == source_bytes
+    assert retained_dsym.is_dir()
+    staged_main = STAGED_STUDIO_APP / "Contents" / "MacOS" / "LocalOCR Studio"
+    assert b"/Users/" not in staged_main.read_bytes()
+    assert "/Users/" not in subprocess.run(
+        ["/usr/bin/nm", "-ap", str(staged_main)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert not list(STAGED_STUDIO_APP.rglob("*.dSYM"))
 
 
 @pytest.mark.parametrize("helper_name", EXPECTED_HELPERS)
@@ -1749,6 +1831,218 @@ def test_stage_rejects_unapproved_dependencies_and_rpaths_in_each_staged_helper(
     assert expected_error in result.stderr
 
 
+def test_release_binary_sanitizer_runs_strip_S_and_revalidates_the_copy(
+    tmp_path: Path,
+) -> None:
+    validated_parent = tmp_path / "validated copies"
+    binary = validated_parent / "localocr"
+    _compile_macos_debug_path_fixture(binary)
+    toolchain = tmp_path / "release-toolchain.sh"
+    strip_trace = tmp_path / "strip-trace.txt"
+    strip_wrapper = tmp_path / "strip-wrapper"
+    strip_wrapper.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$@" > "${LOCALOCR_TEST_STRIP_TRACE:?}"
+exec /usr/bin/strip "$@"
+"""
+    )
+    strip_wrapper.chmod(0o755)
+    toolchain.write_text(
+        (SCRIPTS / "release-toolchain.sh").read_text().replace(
+            "/usr/bin/strip",
+            str(strip_wrapper),
+        )
+    )
+    env = os.environ.copy()
+    env["LOCALOCR_TEST_STRIP_TRACE"] = str(strip_trace)
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; sanitize_validated_release_binary "$2" "$2" false',
+            "release-binary-sanitizer-test",
+            str(toolchain),
+            str(binary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert strip_trace.read_text().splitlines() == ["-S", str(binary)]
+    assert b"/Users/" not in binary.read_bytes()
+    assert "/Users/" not in subprocess.run(
+        ["/usr/bin/nm", "-ap", str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert subprocess.run(
+        ["/usr/bin/lipo", "-archs", str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == "arm64"
+    assert _binary_minimum_macos(binary) == "14.0"
+    assert all(
+        dependency.startswith(("/System/Library/", "/usr/lib/"))
+        for dependency in _binary_dependencies(binary)
+    )
+    assert all(rpath == "/usr/lib/swift" for rpath in _binary_rpaths(binary))
+
+
+def test_release_binary_sanitizer_fails_closed_when_strip_leaves_a_user_path(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "validated" / "localocr"
+    _compile_macos_debug_path_fixture(binary)
+    noop_strip = tmp_path / "noop-strip"
+    noop_strip.write_text("#!/usr/bin/env sh\nexit 0\n")
+    noop_strip.chmod(0o755)
+    toolchain = tmp_path / "release-toolchain.sh"
+    toolchain.write_text(
+        (SCRIPTS / "release-toolchain.sh").read_text().replace(
+            "/usr/bin/strip",
+            str(noop_strip),
+        )
+    )
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; sanitize_validated_release_binary "$2" "$2" false',
+            "release-binary-sanitizer-test",
+            str(toolchain),
+            str(binary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "private /Users/ path" in result.stderr
+    assert b"/Users/" in binary.read_bytes()
+
+
+def test_release_binary_sanitizer_rejects_unexpected_and_symlinked_paths(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "outside" / "localocr"
+    _compile_macos_debug_path_fixture(target)
+    target_bytes = target.read_bytes()
+    validated_parent = tmp_path / "validated"
+    validated_parent.mkdir()
+    symlink = validated_parent / "localocr"
+    symlink.symlink_to(target)
+
+    mismatch = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; sanitize_validated_release_binary "$2" "$3" false',
+            "release-binary-sanitizer-test",
+            str(SCRIPTS / "release-toolchain.sh"),
+            str(target),
+            str(validated_parent / "other"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    symlinked = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; sanitize_validated_release_binary "$2" "$2" false',
+            "release-binary-sanitizer-test",
+            str(SCRIPTS / "release-toolchain.sh"),
+            str(symlink),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert mismatch.returncode != 0
+    assert "refusing to sanitize an unexpected release binary" in mismatch.stderr
+    assert symlinked.returncode != 0
+    assert "release binary copy is missing, symlinked, or not executable" in symlinked.stderr
+    assert target.read_bytes() == target_bytes
+
+
+def test_release_binary_sanitizer_fails_closed_in_conditional_context(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "validated" / "localocr"
+    binary.parent.mkdir()
+    _compile_macos_fixture(
+        binary,
+        architecture="x86_64",
+        minimum_macos="14.0",
+    )
+    original_bytes = binary.read_bytes()
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            (
+                'source "$1"; '
+                'if sanitize_validated_release_binary "$2" "$2" false; '
+                "then exit 0; else exit 1; fi"
+            ),
+            "release-binary-sanitizer-test",
+            str(SCRIPTS / "release-toolchain.sh"),
+            str(binary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "arm64 Mach-O executable" in result.stderr
+    assert binary.read_bytes() == original_bytes
+
+
+def test_verifier_rejects_absolute_user_paths_in_debug_symbol_records(
+    tmp_path: Path,
+) -> None:
+    debug_binary = tmp_path / "debug-localocr"
+    clean_binary = tmp_path / "clean-localocr"
+    _compile_macos_debug_path_fixture(debug_binary)
+    shutil.copy2(debug_binary, clean_binary)
+    subprocess.run(["/usr/bin/strip", "-S", str(clean_binary)], check=True)
+
+    def verify(binary: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                'source "$1"; verify_no_private_paths "$2"',
+                "verify-private-path-test",
+                str(RELEASE_SCRIPTS["verify"]),
+                str(binary),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    rejected = verify(debug_binary)
+    accepted = verify(clean_binary)
+
+    assert rejected.returncode != 0
+    assert "/Users/" in rejected.stderr
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+
+
 @pytest.mark.parametrize("use_explicit_artifact_dir", (False, True))
 def test_build_native_tools_publishes_both_helpers_to_selected_directory(
     tmp_path: Path,
@@ -1763,6 +2057,10 @@ def test_build_native_tools_publishes_both_helpers_to_selected_directory(
     stub_bin.mkdir()
     build_script = isolated_scripts / "build-native-tools.sh"
     shutil.copy2(SCRIPTS / "build-native-tools.sh", build_script)
+    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
+    source_fixture = tmp_path / "source-fixture" / "localocr"
+    _compile_macos_debug_path_fixture(source_fixture)
+    source_fixture_bytes = source_fixture.read_bytes()
 
     swift_stub = stub_bin / "swift"
     swift_stub.write_text(
@@ -1774,20 +2072,13 @@ fi
 if [[ "$1" == "build" ]]; then
     product="${!#}"
     mkdir -p .build/release
-    printf '#!/usr/bin/env sh\\nexit 0\\n' > ".build/release/$product"
-    chmod 0755 ".build/release/$product"
+    cp "${LOCALOCR_TEST_SOURCE_BINARY:?}" ".build/release/$product"
     exit 0
 fi
 exit 64
 """
     )
     swift_stub.chmod(0o755)
-    otool_stub = stub_bin / "otool"
-    otool_stub.write_text("#!/usr/bin/env sh\nexit 0\n")
-    otool_stub.chmod(0o755)
-    install_name_tool_stub = stub_bin / "install_name_tool"
-    install_name_tool_stub.write_text("#!/usr/bin/env sh\nexit 99\n")
-    install_name_tool_stub.chmod(0o755)
 
     default_output = isolated_repo / "dist" / "native-tools"
     explicit_output = direct_release_root / "native-tools"
@@ -1797,6 +2088,7 @@ exit 64
         arguments.extend(("--artifact-dir", str(explicit_output)))
     env = os.environ.copy()
     env["PATH"] = f"{stub_bin}:/usr/bin:/bin"
+    env["LOCALOCR_TEST_SOURCE_BINARY"] = str(source_fixture)
 
     result = subprocess.run(
         arguments,
@@ -1811,8 +2103,86 @@ exit 64
         helper_path = expected_output / helper
         assert helper_path.is_file()
         assert os.access(helper_path, os.X_OK)
+        assert b"/Users/" not in helper_path.read_bytes()
+        assert "/Users/" not in subprocess.run(
+            ["/usr/bin/nm", "-ap", str(helper_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        source_product = isolated_repo / ".build" / "release" / helper
+        assert source_product.read_bytes() == source_fixture_bytes
+        assert b"/Users/" in source_product.read_bytes()
+        assert subprocess.run(
+            ["/usr/bin/lipo", "-archs", str(helper_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip() == "arm64"
+        assert _binary_minimum_macos(helper_path) == "14.0"
+        assert all(
+            dependency.startswith(("/System/Library/", "/usr/lib/"))
+            for dependency in _binary_dependencies(helper_path)
+        )
+        assert all(
+            rpath == "/usr/lib/swift"
+            for rpath in _binary_rpaths(helper_path)
+        )
     unexpected_output = default_output if use_explicit_artifact_dir else explicit_output
     assert not unexpected_output.exists()
+
+
+def test_build_native_tools_rejects_a_symlinked_default_dist_before_cleanup(
+    tmp_path: Path,
+) -> None:
+    isolated_repo = tmp_path / "repo"
+    isolated_scripts = isolated_repo / "scripts"
+    outside_dist = tmp_path / "outside-dist"
+    outside_artifacts = outside_dist / "native-tools"
+    stub_bin = tmp_path / "bin"
+    isolated_scripts.mkdir(parents=True)
+    outside_artifacts.mkdir(parents=True)
+    stub_bin.mkdir()
+    sentinel = outside_artifacts / "must-survive.txt"
+    sentinel.write_text("outside release data")
+    (isolated_repo / "dist").symlink_to(outside_dist, target_is_directory=True)
+    shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
+    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
+    source_fixture = tmp_path / "source-fixture" / "localocr"
+    _compile_macos_debug_path_fixture(source_fixture)
+
+    swift_stub = stub_bin / "swift"
+    swift_stub.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "package" && "$2" == "clean" ]]; then
+    exit 0
+fi
+if [[ "$1" == "build" ]]; then
+    product="${!#}"
+    mkdir -p .build/release
+    cp "${LOCALOCR_TEST_SOURCE_BINARY:?}" ".build/release/$product"
+    exit 0
+fi
+exit 64
+"""
+    )
+    swift_stub.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{stub_bin}:/usr/bin:/bin"
+    env["LOCALOCR_TEST_SOURCE_BINARY"] = str(source_fixture)
+
+    result = subprocess.run(
+        [str(isolated_scripts / "build-native-tools.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "artifact output path contains a symlinked component" in result.stderr
+    assert sentinel.read_text() == "outside release data"
 
 
 @pytest.mark.parametrize("script", ("stage", "verify"))

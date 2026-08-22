@@ -438,6 +438,7 @@ validate_exact_staged_helpers() {
         validate_release_binary "$helpers_dir/$helper"
         validate_binary_dependencies "$helpers_dir/$helper"
         validate_binary_rpaths "$helpers_dir/$helper"
+        release_validate_binary_policy "$helpers_dir/$helper" false true
     done
 }
 
@@ -583,6 +584,16 @@ stage_direct_release() {
         "$staged_app/Contents/Helpers/localocr-mcp"
     remove_removable_framework_rpath \
         "$staged_app/Contents/MacOS/$expected_main_executable_name"
+    sanitize_validated_release_binary \
+        "$staged_app/Contents/MacOS/$expected_main_executable_name" \
+        "$release_root/staged/LocalOCR Studio.app/Contents/MacOS/$expected_main_executable_name" \
+        false
+    for helper in localocr localocr-mcp; do
+        sanitize_validated_release_binary \
+            "$staged_app/Contents/Helpers/$helper" \
+            "$release_root/staged/LocalOCR Studio.app/Contents/Helpers/$helper" \
+            false
+    done
     reject_tree_symlinks "$staged_app"
     clear_staged_app_xattrs "$staged_app"
 
@@ -610,6 +621,10 @@ stage_direct_release() {
         "$staged_app/Contents/MacOS/$expected_main_executable_name"
     validate_binary_rpaths \
         "$staged_app/Contents/MacOS/$expected_main_executable_name"
+    release_validate_binary_policy \
+        "$staged_app/Contents/MacOS/$expected_main_executable_name" \
+        false \
+        true
     validate_exact_staged_helpers "$staged_app"
     validate_nested_code_allowlist "$staged_app" true
     reject_private_user_paths "$staged_app"

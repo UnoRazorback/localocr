@@ -168,6 +168,14 @@ validate_studio_app_bundle() {
     }
 }
 
+validate_sanitized_studio_app_bundle() {
+    local app_path="$1"
+    local executable="$app_path/Contents/MacOS/LocalOCR Studio"
+
+    validate_studio_app_bundle "$app_path" || return 1
+    release_validate_binary_policy "$executable" true true || return 1
+}
+
 validate_staged_app() {
     local staged_app="$1"
     local staged_parent="$build_root/Staged"
@@ -220,7 +228,7 @@ publish_output_candidate() {
     local candidate_app="$1"
 
     validate_output_candidate_path "$candidate_app"
-    validate_studio_app_bundle "$candidate_app"
+    validate_sanitized_studio_app_bundle "$candidate_app"
 
     if [[ -e "$output_app" || -L "$output_app" ]]; then
         [[ -d "$output_app" && ! -L "$output_app" ]] || {
@@ -248,8 +256,14 @@ publish_output_candidate() {
 
 validate_and_publish_staged_app() {
     local staged_app="$1"
+    local staged_executable="$staged_app/Contents/MacOS/LocalOCR Studio"
 
     validate_staged_app "$staged_app"
+    sanitize_validated_release_binary \
+        "$staged_executable" \
+        "$build_root/Staged/LocalOCR Studio.app/Contents/MacOS/LocalOCR Studio" \
+        true
+    validate_sanitized_studio_app_bundle "$staged_app"
     prepare_output_root
     studio_output_candidate="$(
         /usr/bin/mktemp -d \
@@ -260,7 +274,7 @@ validate_and_publish_staged_app() {
         cleanup_output_candidate
         return 1
     }
-    validate_studio_app_bundle "$studio_output_candidate" || {
+    validate_sanitized_studio_app_bundle "$studio_output_candidate" || {
         cleanup_output_candidate
         return 1
     }

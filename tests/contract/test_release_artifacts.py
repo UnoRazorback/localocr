@@ -151,6 +151,20 @@ def test_release_artifacts_expose_only_system_dylibs_and_safe_rpaths() -> None:
             # from the shared cache without a conventional on-disk file.
 
 
+def test_release_artifacts_do_not_ship_absolute_user_paths_or_dsyms() -> None:
+    for binary in (ARTIFACTS / "localocr", ARTIFACTS / "localocr-mcp"):
+        assert b"/Users/" not in binary.read_bytes(), (
+            f"release artifact embeds an absolute user path: {binary}"
+        )
+        assert "/Users/" not in _run("nm", "-ap", str(binary)), (
+            f"release artifact retains an N_SO/N_OSO user path: {binary}"
+        )
+
+    assert not list(ARTIFACTS.rglob("*.dSYM")), (
+        "release artifact directory must not contain dSYM bundles"
+    )
+
+
 def test_release_artifact_policy_rejects_malicious_load_paths_and_rpaths() -> None:
     malicious_dependencies = """\
 /tmp/evil.dylib (compatibility version 1.0.0, current version 1.0.0)

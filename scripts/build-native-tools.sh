@@ -4,6 +4,8 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
+# shellcheck source=scripts/release-toolchain.sh
+source "$script_dir/release-toolchain.sh"
 default_artifact_dir="$repo_root/dist/native-tools"
 direct_release_artifact_dir="$repo_root/dist/direct-release/native-tools"
 artifact_dir="$default_artifact_dir"
@@ -81,6 +83,44 @@ case "$artifact_dir" in
         ;;
 esac
 
+validate_artifact_output_path() {
+    local dist_dir="$repo_root/dist"
+    local artifact_parent
+
+    [[ ! -L "$dist_dir" && ! -L "$artifact_dir" ]] || {
+        echo "artifact output path contains a symlinked component" >&2
+        return 1
+    }
+    if [[ ! -e "$dist_dir" ]]; then
+        [[ "$artifact_dir" == "$default_artifact_dir" ]] || {
+            echo "artifact output parent is missing" >&2
+            return 1
+        }
+        /bin/mkdir "$dist_dir"
+    fi
+    [[ -d "$dist_dir" && "$(cd "$dist_dir" && pwd -P)" == "$dist_dir" ]] || {
+        echo "artifact output path escaped the physical repository" >&2
+        return 1
+    }
+    artifact_parent="$(/usr/bin/dirname "$artifact_dir")"
+    [[ -d "$artifact_parent" && ! -L "$artifact_parent" ]] || {
+        echo "artifact output path contains a symlinked component" >&2
+        return 1
+    }
+    [[ "$(cd "$artifact_parent" && pwd -P)" == "$artifact_parent" ]] || {
+        echo "artifact output path escaped the physical repository" >&2
+        return 1
+    }
+    if [[ -e "$artifact_dir" ]]; then
+        [[ -d "$artifact_dir" && "$(cd "$artifact_dir" && pwd -P)" == "$artifact_dir" ]] || {
+            echo "artifact output directory is not a physical directory" >&2
+            return 1
+        }
+    fi
+}
+
+validate_artifact_output_path
+
 cd "$repo_root"
 swift package clean
 swift build -c release --product localocr
@@ -92,7 +132,7 @@ cp ".build/release/localocr" "$artifact_dir/localocr"
 cp ".build/release/localocr-mcp" "$artifact_dir/localocr-mcp"
 
 release_rpaths() {
-    otool -l "$1" | awk '
+    /usr/bin/otool -l "$1" | /usr/bin/awk '
         $1 == "cmd" && $2 == "LC_RPATH" { expect_path = 1; next }
         expect_path && $1 == "path" { print $2; expect_path = 0 }
     '
@@ -113,9 +153,11 @@ sanitize_copied_artifact() {
     while IFS= read -r rpath; do
         [[ -n "$rpath" ]] || continue
         if [[ "$rpath" != "$system_swift_rpath" ]]; then
-            install_name_tool -delete_rpath "$rpath" "$binary"
+            /usr/bin/install_name_tool -delete_rpath "$rpath" "$binary"
         fi
     done < <(release_rpaths "$binary")
+
+    sanitize_validated_release_binary "$binary" "$binary" false
 }
 
 sanitize_copied_artifact "$artifact_dir/localocr"

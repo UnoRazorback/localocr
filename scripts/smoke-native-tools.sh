@@ -74,6 +74,11 @@ reject_binary_content() {
         # an ordinary on-disk file.
     fi
 
+    if /usr/bin/grep -a -F -q -- '/Users/' "$binary"; then
+        echo "release artifact contains a private /Users/ path: $binary" >&2
+        exit 1
+    fi
+
     raw_strings="$(strings "$binary")"
     for forbidden_string in \
         '.venv' \
