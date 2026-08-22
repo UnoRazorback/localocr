@@ -83,6 +83,11 @@ private struct OpenedFile {
     }
 }
 
+private enum ExpectedDirectory {
+    case missing
+    case existing(DirectoryIdentity)
+}
+
 private enum GuardError: Error, CustomStringConvertible {
     case invalid(String)
     case system(String, Int32)
@@ -151,7 +156,9 @@ private func directoryIdentity(_ path: String) throws -> DirectoryIdentity {
 private func publishDirectory(
     candidate: String,
     target: String,
-    expectedParent: DirectoryIdentity
+    expectedParent: DirectoryIdentity,
+    expectedCandidate: DirectoryIdentity,
+    expectedTarget: ExpectedDirectory
 ) throws -> Bool {
     try requireAbsoluteStandardPath(candidate)
     try requireAbsoluteStandardPath(target)
@@ -206,7 +213,11 @@ private func publishDirectory(
               &namedCandidateStat,
               AT_SYMLINK_NOFOLLOW
           ) == 0,
-          sameObject(candidateStat, namedCandidateStat)
+          sameObject(candidateStat, namedCandidateStat),
+          DirectoryIdentity(
+              device: UInt64(candidateStat.st_dev),
+              inode: UInt64(candidateStat.st_ino)
+          ) == expectedCandidate
     else {
         throw GuardError.invalid("directory publication candidate identity changed")
     }
@@ -218,11 +229,37 @@ private func publishDirectory(
         &existingTargetStat,
         AT_SYMLINK_NOFOLLOW
     )
+    var targetStatAtExchange = stat()
     let exchanged: Bool
-    if targetStatus == 0 {
-        guard (existingTargetStat.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else {
+    switch expectedTarget {
+    case .existing(let expectedTargetIdentity):
+        guard targetStatus == 0,
+              (existingTargetStat.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+              DirectoryIdentity(
+                  device: UInt64(existingTargetStat.st_dev),
+                  inode: UInt64(existingTargetStat.st_ino)
+              ) == expectedTargetIdentity
+        else {
             throw GuardError.invalid("existing directory publication target is invalid")
         }
+        let targetFD = openat(
+            parentFD,
+            targetName,
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        )
+        guard targetFD >= 0 else {
+            throw GuardError.system("open directory publication target", errno)
+        }
+        defer { close(targetFD) }
+        var descriptorTargetStat = stat()
+        guard fstat(targetFD, &descriptorTargetStat) == 0,
+              sameObject(descriptorTargetStat, existingTargetStat),
+              lstat(parentPath, &namedParentStat) == 0,
+              sameObject(parentStat, namedParentStat)
+        else {
+            throw GuardError.invalid("directory publication target identity changed")
+        }
+        targetStatAtExchange = descriptorTargetStat
         guard renameatx_np(
             parentFD,
             candidateName,
@@ -233,17 +270,38 @@ private func publishDirectory(
             throw GuardError.system("exchange published directory", errno)
         }
         exchanged = true
-    } else {
-        guard errno == ENOENT else {
-            throw GuardError.system("inspect directory publication target", errno)
+    case .missing:
+        guard targetStatus != 0, errno == ENOENT,
+              lstat(parentPath, &namedParentStat) == 0,
+              sameObject(parentStat, namedParentStat)
+        else {
+            throw GuardError.invalid("missing directory publication target appeared")
         }
-        guard renameat(parentFD, candidateName, parentFD, targetName) == 0 else {
+        guard renameatx_np(
+            parentFD,
+            candidateName,
+            parentFD,
+            targetName,
+            UInt32(RENAME_EXCL)
+        ) == 0 else {
             throw GuardError.system("publish directory", errno)
         }
         exchanged = false
     }
 
     var publishedStat = stat()
+    var displacedTargetStat = stat()
+    let displacedTargetStatus = fstatat(
+        parentFD,
+        candidateName,
+        &displacedTargetStat,
+        AT_SYMLINK_NOFOLLOW
+    )
+    let displacedTargetError = errno
+    let displacedTargetIsExpected = exchanged
+        ? displacedTargetStatus == 0
+            && sameObject(targetStatAtExchange, displacedTargetStat)
+        : displacedTargetStatus != 0 && displacedTargetError == ENOENT
     guard fstatat(
               parentFD,
               targetName,
@@ -251,15 +309,33 @@ private func publishDirectory(
               AT_SYMLINK_NOFOLLOW
           ) == 0,
           sameObject(candidateStat, publishedStat),
+          displacedTargetIsExpected,
           lstat(parentPath, &namedParentStat) == 0,
           sameObject(parentStat, namedParentStat)
     else {
+        if exchanged {
+            _ = renameatx_np(
+                parentFD,
+                candidateName,
+                parentFD,
+                targetName,
+                UInt32(RENAME_SWAP)
+            )
+        } else {
+            _ = renameatx_np(
+                parentFD,
+                targetName,
+                parentFD,
+                candidateName,
+                UInt32(RENAME_EXCL)
+            )
+        }
         throw GuardError.invalid("published directory identity changed during commit")
     }
     return exchanged
 }
 
-private func openExactFile(_ path: String, writable: Bool = false) throws -> OpenedFile {
+private func openExactFile(_ path: String) throws -> OpenedFile {
     try requireAbsoluteStandardPath(path)
     let parentPath = (path as NSString).deletingLastPathComponent
     let name = (path as NSString).lastPathComponent
@@ -286,8 +362,7 @@ private func openExactFile(_ path: String, writable: Bool = false) throws -> Ope
         throw GuardError.system("verify parent identity", code)
     }
 
-    let flags = (writable ? O_RDWR : O_RDONLY) | O_NOFOLLOW | O_CLOEXEC
-    let fileFD = openat(parentFD, name, flags)
+    let fileFD = openat(parentFD, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
     guard fileFD >= 0 else {
         let code = errno
         close(parentFD)
@@ -397,6 +472,86 @@ private func nameStillReferencesFile(_ opened: OpenedFile) -> Bool {
         && sameObject(opened.fileStat, current)
 }
 
+private let commitTerminationSignals = [SIGHUP, SIGINT, SIGTERM]
+
+private func blockCommitTerminationSignals() throws -> sigset_t {
+    var blockedSignals = sigset_t()
+    guard sigemptyset(&blockedSignals) == 0 else {
+        throw GuardError.system("initialize commit signal mask", errno)
+    }
+    for signalNumber in commitTerminationSignals {
+        guard sigaddset(&blockedSignals, signalNumber) == 0 else {
+            throw GuardError.system("add commit signal", errno)
+        }
+    }
+    var previousSignals = sigset_t()
+    let status = pthread_sigmask(SIG_BLOCK, &blockedSignals, &previousSignals)
+    guard status == 0 else {
+        throw GuardError.system("block commit signals", status)
+    }
+    return previousSignals
+}
+
+private func restoreCommitTerminationSignals(_ previousSignals: inout sigset_t) {
+    _ = pthread_sigmask(SIG_SETMASK, &previousSignals, nil)
+}
+
+private func commitTerminationSignalIsPending() throws -> Bool {
+    var pendingSignals = sigset_t()
+    guard sigpending(&pendingSignals) == 0 else {
+        throw GuardError.system("inspect pending commit signals", errno)
+    }
+    return commitTerminationSignals.contains {
+        sigismember(&pendingSignals, $0) == 1
+    }
+}
+
+private func createCommitSibling(
+    parentFD: Int32,
+    mode: mode_t
+) throws -> (name: String, fd: Int32) {
+    for _ in 0..<64 {
+        let name = ".localocr-commit.\(getpid()).\(UUID().uuidString)"
+        let fd = openat(
+            parentFD,
+            name,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            mode
+        )
+        if fd >= 0 {
+            return (name, fd)
+        }
+        guard errno == EEXIST else {
+            throw GuardError.system("create private commit sibling", errno)
+        }
+    }
+    throw GuardError.invalid("could not allocate a private commit sibling")
+}
+
+private func namedObject(
+    parentFD: Int32,
+    name: String,
+    matches expected: stat
+) -> Bool {
+    var current = stat()
+    return fstatat(parentFD, name, &current, AT_SYMLINK_NOFOLLOW) == 0
+        && sameObject(current, expected)
+}
+
+private func rollbackFileExchange(
+    parentFD: Int32,
+    candidateName: String,
+    targetName: String
+) -> Bool {
+    renameatx_np(
+        parentFD,
+        candidateName,
+        parentFD,
+        targetName,
+        UInt32(RENAME_SWAP)
+    ) == 0
+}
+
 private func commitFile(
     source: String,
     target: String,
@@ -408,25 +563,121 @@ private func commitFile(
     guard openedSource.identity == expectedSource else {
         throw GuardError.invalid("sanitized source identity changed before commit")
     }
-    let openedTarget = try openExactFile(target, writable: true)
+    let openedTarget = try openExactFile(target)
     defer { openedTarget.closeAll() }
     guard openedTarget.identity == expectedTarget else {
         throw GuardError.invalid("release target identity changed before commit")
     }
 
-    guard ftruncate(openedTarget.fileFD, 0) == 0 else {
-        throw GuardError.system("truncate target", errno)
-    }
-    try copyBytes(from: openedSource.fileFD, to: openedTarget.fileFD)
-    guard fchmod(openedTarget.fileFD, openedSource.fileStat.st_mode & mode_t(0o777)) == 0,
-          fsync(openedTarget.fileFD) == 0
-    else {
-        throw GuardError.system("finalize target", errno)
-    }
-    guard pathStillReferencesParent(openedTarget),
-          nameStillReferencesFile(openedTarget)
-    else {
-        throw GuardError.invalid("release target changed during commit")
+    var previousSignals = try blockCommitTerminationSignals()
+    defer { restoreCommitTerminationSignals(&previousSignals) }
+    var commitSiblingName: String?
+    var commitSiblingFD: Int32 = -1
+    var exchangeCompleted = false
+
+    do {
+        let sibling = try createCommitSibling(
+            parentFD: openedTarget.parentFD,
+            mode: openedSource.fileStat.st_mode & mode_t(0o777)
+        )
+        commitSiblingName = sibling.name
+        commitSiblingFD = sibling.fd
+        defer { close(commitSiblingFD) }
+
+        try copyBytes(from: openedSource.fileFD, to: commitSiblingFD)
+        guard fchmod(
+                  commitSiblingFD,
+                  openedSource.fileStat.st_mode & mode_t(0o777)
+              ) == 0,
+              fsync(commitSiblingFD) == 0
+        else {
+            throw GuardError.system("finalize private commit sibling", errno)
+        }
+        var siblingStat = stat()
+        let interruptedBeforePublication = try commitTerminationSignalIsPending()
+        guard fstat(commitSiblingFD, &siblingStat) == 0,
+              namedObject(
+                  parentFD: openedTarget.parentFD,
+                  name: sibling.name,
+                  matches: siblingStat
+              ),
+              pathStillReferencesParent(openedTarget),
+              nameStillReferencesFile(openedTarget),
+              !interruptedBeforePublication
+        else {
+            throw GuardError.invalid("release target changed or commit was interrupted")
+        }
+        guard fsync(openedTarget.parentFD) == 0 else {
+            throw GuardError.system("sync commit parent before publication", errno)
+        }
+        guard renameatx_np(
+            openedTarget.parentFD,
+            sibling.name,
+            openedTarget.parentFD,
+            openedTarget.name,
+            UInt32(RENAME_SWAP)
+        ) == 0 else {
+            throw GuardError.system("atomically publish committed file", errno)
+        }
+        exchangeCompleted = true
+
+        let interruptedDuringPublication = try commitTerminationSignalIsPending()
+        guard namedObject(
+                  parentFD: openedTarget.parentFD,
+                  name: openedTarget.name,
+                  matches: siblingStat
+              ),
+              namedObject(
+                  parentFD: openedTarget.parentFD,
+                  name: sibling.name,
+                  matches: openedTarget.fileStat
+              ),
+              pathStillReferencesParent(openedTarget),
+              !interruptedDuringPublication,
+              fsync(openedTarget.parentFD) == 0
+        else {
+            guard rollbackFileExchange(
+                parentFD: openedTarget.parentFD,
+                candidateName: sibling.name,
+                targetName: openedTarget.name
+            ) else {
+                throw GuardError.invalid("could not roll back interrupted file publication")
+            }
+            exchangeCompleted = false
+            throw GuardError.invalid("file publication changed or was interrupted")
+        }
+        guard unlinkat(openedTarget.parentFD, sibling.name, 0) == 0 else {
+            let unlinkError = errno
+            guard rollbackFileExchange(
+                parentFD: openedTarget.parentFD,
+                candidateName: sibling.name,
+                targetName: openedTarget.name
+            ) else {
+                throw GuardError.invalid("could not roll back incomplete file cleanup")
+            }
+            exchangeCompleted = false
+            throw GuardError.system("remove replaced release target", unlinkError)
+        }
+        commitSiblingName = nil
+        _ = fsync(openedTarget.parentFD)
+    } catch {
+        if exchangeCompleted, let siblingName = commitSiblingName {
+            if rollbackFileExchange(
+                parentFD: openedTarget.parentFD,
+                candidateName: siblingName,
+                targetName: openedTarget.name
+            ) {
+                exchangeCompleted = false
+            }
+        }
+        if !exchangeCompleted, let siblingName = commitSiblingName {
+            if unlinkat(openedTarget.parentFD, siblingName, 0) != 0,
+               errno != ENOENT
+            {
+                throw GuardError.system("clean private commit sibling", errno)
+            }
+        }
+        throw error
     }
 }
 
@@ -467,17 +718,28 @@ private func run() throws {
             expectedSource: expectedSource
         )
     case "publish-directory":
-        guard arguments.count == 5,
-              let expectedParent = DirectoryIdentity(token: arguments[4])
+        guard arguments.count == 7,
+              let expectedParent = DirectoryIdentity(token: arguments[4]),
+              let expectedCandidate = DirectoryIdentity(token: arguments[5])
         else {
             throw GuardError.invalid(
-                "publish-directory requires candidate, target, and parent identity"
+                "publish-directory requires paths and expected directory identities"
             )
+        }
+        let expectedTarget: ExpectedDirectory
+        if arguments[6] == "missing" {
+            expectedTarget = .missing
+        } else if let identity = DirectoryIdentity(token: arguments[6]) {
+            expectedTarget = .existing(identity)
+        } else {
+            throw GuardError.invalid("invalid expected directory target identity")
         }
         let exchanged = try publishDirectory(
             candidate: arguments[2],
             target: arguments[3],
-            expectedParent: expectedParent
+            expectedParent: expectedParent,
+            expectedCandidate: expectedCandidate,
+            expectedTarget: expectedTarget
         )
         print(exchanged ? "exchanged" : "moved")
     default:

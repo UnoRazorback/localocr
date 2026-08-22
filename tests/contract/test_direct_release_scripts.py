@@ -6,8 +6,10 @@ import hashlib
 import os
 import plistlib
 import re
+import resource
 import shlex
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 
@@ -1348,6 +1350,111 @@ def _snapshot_tree_bytes(root: Path) -> dict[Path, bytes]:
     }
 
 
+def _compile_release_path_guard(
+    tmp_path: Path,
+    *,
+    stop_after_private_write: bool = False,
+    stop_before_directory_exchange: bool = False,
+) -> Path:
+    executable = tmp_path / "release-path-guard"
+    source = RELEASE_PATH_GUARD
+    if stop_after_private_write or stop_before_directory_exchange:
+        instrumented_source = tmp_path / "release-path-guard-instrumented.swift"
+        source_text = RELEASE_PATH_GUARD.read_text()
+        if stop_after_private_write:
+            injection_point = "        var siblingStat = stat()\n"
+            assert source_text.count(injection_point) == 1
+            source_text = source_text.replace(
+                injection_point,
+                "        raise(SIGSTOP)\n" + injection_point,
+            )
+        if stop_before_directory_exchange:
+            injection_point = (
+                "        guard renameatx_np(\n"
+                "            parentFD,\n"
+                "            candidateName,\n"
+                "            parentFD,\n"
+                "            targetName,\n"
+                "            UInt32(RENAME_SWAP)\n"
+                "        ) == 0 else {\n"
+                "            throw GuardError.system("
+                '"exchange published directory", errno)\n'
+            )
+            assert source_text.count(injection_point) == 1
+            source_text = source_text.replace(
+                injection_point,
+                "        raise(SIGSTOP)\n" + injection_point,
+            )
+        instrumented_source.write_text(source_text)
+        source = instrumented_source
+    subprocess.run(
+        ["/usr/bin/swiftc", str(source), "-o", str(executable)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return executable
+
+
+def _path_guard_file_token(guard: Path, path: Path) -> str:
+    return subprocess.run(
+        [str(guard), "token-file", str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _path_guard_directory_token(guard: Path, path: Path) -> str:
+    return subprocess.run(
+        [str(guard), "token-directory", str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _start_path_guard_commit(
+    guard: Path,
+    source: Path,
+    target: Path,
+    *,
+    preexec_fn: object | None = None,
+) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        [
+            str(guard),
+            "commit-file",
+            str(source),
+            str(target),
+            _path_guard_file_token(guard, target),
+            _path_guard_file_token(guard, source),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        preexec_fn=preexec_fn,
+    )
+
+
+def _wait_for_process_stop(process: subprocess.Popen[str]) -> None:
+    waited_pid, status = os.waitpid(process.pid, os.WUNTRACED)
+    assert waited_pid == process.pid
+    assert os.WIFSTOPPED(status)
+    assert os.WSTOPSIG(status) == signal.SIGSTOP
+
+
+def _wait_for_guard_private_write_stop(
+    process: subprocess.Popen[str],
+    parent: Path,
+) -> Path:
+    _wait_for_process_stop(process)
+    candidates = list(parent.glob(".localocr-commit.*"))
+    assert len(candidates) == 1
+    assert candidates[0].is_file()
+    return candidates[0]
+
+
 def _binary_minimum_macos(binary: Path) -> str:
     result = subprocess.run(
         ["/usr/bin/otool", "-l", str(binary)],
@@ -2101,6 +2208,214 @@ exec /usr/bin/strip "$@"
         else Path(f"{binary}.detached")
     )
     assert detached_binary.read_bytes() == original_bytes
+
+
+def test_release_path_guard_atomically_replaces_a_large_target(tmp_path: Path) -> None:
+    guard = _compile_release_path_guard(tmp_path)
+    parent = tmp_path / "publication"
+    parent.mkdir()
+    source = tmp_path / "sanitized-large-binary"
+    target = parent / "localocr"
+    source_size = 32 * 1024 * 1024
+    payload_marker = b"complete sanitized payload marker"
+    with source.open("wb") as source_file:
+        source_file.truncate(source_size)
+        source_file.seek(source_size - len(payload_marker))
+        source_file.write(payload_marker)
+    target.write_bytes(b"known-good live target")
+    target_inode = target.stat().st_ino
+
+    result = subprocess.run(
+        [
+            str(guard),
+            "commit-file",
+            str(source),
+            str(target),
+            _path_guard_file_token(guard, target),
+            _path_guard_file_token(guard, source),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert target.stat().st_ino != target_inode
+    assert target.stat().st_size == source_size
+    assert target.read_bytes() == source.read_bytes()
+    assert not list(parent.glob(".localocr-commit.*"))
+
+
+def test_release_path_guard_does_not_touch_a_target_renamed_after_private_write(
+    tmp_path: Path,
+) -> None:
+    guard = _compile_release_path_guard(
+        tmp_path,
+        stop_after_private_write=True,
+    )
+    parent = tmp_path / "publication"
+    outside_parent = tmp_path / "outside"
+    parent.mkdir()
+    outside_parent.mkdir()
+    source = tmp_path / "sanitized-large-binary"
+    target = parent / "localocr"
+    detached_target = parent / "renamed-live-target"
+    outside_target = outside_parent / "localocr"
+    with source.open("wb") as source_file:
+        source_file.truncate(512 * 1024 * 1024)
+    original_bytes = b"the original live target must remain byte-for-byte"
+    outside_bytes = b"outside data must never be published or rewritten"
+    target.write_bytes(original_bytes)
+    outside_target.write_bytes(outside_bytes)
+    process = _start_path_guard_commit(guard, source, target)
+    stopped = False
+
+    try:
+        private_sibling = _wait_for_guard_private_write_stop(process, parent)
+        assert private_sibling.stat().st_size == source.stat().st_size
+        stopped = True
+        target.rename(detached_target)
+        target.symlink_to(outside_target)
+        os.kill(process.pid, signal.SIGCONT)
+        stopped = False
+        stdout, stderr = process.communicate(timeout=30)
+    finally:
+        if process.poll() is None:
+            if stopped:
+                os.kill(process.pid, signal.SIGCONT)
+            process.kill()
+            process.wait()
+
+    assert process.returncode != 0, stdout + stderr
+    assert target.is_symlink()
+    assert detached_target.read_bytes() == original_bytes
+    assert outside_target.read_bytes() == outside_bytes
+    assert not list(parent.glob(".localocr-commit.*"))
+
+
+def test_release_path_guard_write_failure_preserves_the_complete_live_target(
+    tmp_path: Path,
+) -> None:
+    guard = _compile_release_path_guard(tmp_path)
+    parent = tmp_path / "publication"
+    parent.mkdir()
+    source = tmp_path / "sanitized-large-binary"
+    target = parent / "localocr"
+    with source.open("wb") as source_file:
+        source_file.truncate(8 * 1024 * 1024)
+    original_bytes = b"known-good target survives an injected write failure"
+    target.write_bytes(original_bytes)
+
+    def limit_commit_file_size() -> None:
+        signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (64 * 1024, 64 * 1024))
+
+    process = _start_path_guard_commit(
+        guard,
+        source,
+        target,
+        preexec_fn=limit_commit_file_size,
+    )
+    stdout, stderr = process.communicate(timeout=30)
+
+    assert process.returncode != 0, stdout + stderr
+    assert target.read_bytes() == original_bytes
+    assert not list(parent.glob(".localocr-commit.*"))
+
+
+def test_release_path_guard_directory_exchange_rejects_target_replacement_at_commit(
+    tmp_path: Path,
+) -> None:
+    guard = _compile_release_path_guard(
+        tmp_path,
+        stop_before_directory_exchange=True,
+    )
+    parent = tmp_path / "publication"
+    candidate = parent / ".candidate"
+    target = parent / "LocalOCR Studio.app"
+    detached_target = parent / "detached-known-good.app"
+    replacement = parent / "replacement.app"
+    (candidate / "Contents").mkdir(parents=True)
+    (target / "Contents").mkdir(parents=True)
+    (replacement / "Contents").mkdir(parents=True)
+    candidate_marker = candidate / "Contents" / "candidate.txt"
+    target_marker = target / "Contents" / "known-good.txt"
+    replacement_marker = replacement / "Contents" / "outside.txt"
+    candidate_marker.write_bytes(b"validated candidate")
+    target_marker.write_bytes(b"known-good existing target")
+    replacement_marker.write_bytes(b"replacement must remain untouched")
+    process = subprocess.Popen(
+        [
+            str(guard),
+            "publish-directory",
+            str(candidate),
+            str(target),
+            _path_guard_directory_token(guard, parent),
+            _path_guard_directory_token(guard, candidate),
+            _path_guard_directory_token(guard, target),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stopped = False
+
+    try:
+        _wait_for_process_stop(process)
+        stopped = True
+        target.rename(detached_target)
+        replacement.rename(target)
+        os.kill(process.pid, signal.SIGCONT)
+        stopped = False
+        stdout, stderr = process.communicate(timeout=30)
+    finally:
+        if process.poll() is None:
+            if stopped:
+                os.kill(process.pid, signal.SIGCONT)
+            process.kill()
+            process.wait()
+
+    assert process.returncode != 0, stdout + stderr
+    assert candidate_marker.read_bytes() == b"validated candidate"
+    assert (detached_target / "Contents" / "known-good.txt").read_bytes() == (
+        b"known-good existing target"
+    )
+    assert (target / "Contents" / "outside.txt").read_bytes() == (
+        b"replacement must remain untouched"
+    )
+
+
+def test_release_path_guard_interruption_after_private_write_preserves_target(
+    tmp_path: Path,
+) -> None:
+    guard = _compile_release_path_guard(
+        tmp_path,
+        stop_after_private_write=True,
+    )
+    parent = tmp_path / "publication"
+    parent.mkdir()
+    source = tmp_path / "sanitized-large-binary"
+    target = parent / "localocr"
+    with source.open("wb") as source_file:
+        source_file.truncate(512 * 1024 * 1024)
+    original_bytes = b"known-good target survives an interrupted commit"
+    target.write_bytes(original_bytes)
+    process = _start_path_guard_commit(guard, source, target)
+
+    try:
+        private_sibling = _wait_for_guard_private_write_stop(process, parent)
+        assert private_sibling.stat().st_size == source.stat().st_size
+        os.kill(process.pid, signal.SIGTERM)
+        os.kill(process.pid, signal.SIGCONT)
+        stdout, stderr = process.communicate(timeout=30)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+    assert process.returncode != 0, stdout + stderr
+    assert target.read_bytes() == original_bytes
+    assert not list(parent.glob(".localocr-commit.*"))
 
 
 def test_release_binary_sanitizer_fails_closed_in_conditional_context(

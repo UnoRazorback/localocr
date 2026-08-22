@@ -14,6 +14,31 @@ release_path_guard="$release_toolchain_script_dir/release-path-guard.swift"
 release_symbols_root="$release_repo_root/dist/release-symbols"
 release_symbols_root_identity=""
 
+release_publish_directory_atomically() {
+    /usr/bin/swift "$release_path_guard" publish-directory "$@"
+}
+
+release_cleanup_anchored_directory() {
+    local directory_name="${1:-}"
+    local expected_identity="${2:-}"
+    local current_identity
+
+    case "$directory_name" in
+        ""|.|..|*/*) return 1 ;;
+    esac
+    [[ -n "$expected_identity" ]] || return 1
+    if [[ ! -e "./$directory_name" && ! -L "./$directory_name" ]]; then
+        return 0
+    fi
+    [[ -d "./$directory_name" && ! -L "./$directory_name" ]] || return 1
+    current_identity="$(/usr/bin/stat -f '%d:%i' "./$directory_name")" || {
+        return 1
+    }
+    [[ "$current_identity" == "$expected_identity" ]] || return 1
+    /bin/rm -rf -- "./$directory_name"
+    [[ ! -e "./$directory_name" && ! -L "./$directory_name" ]]
+}
+
 release_binary_minimum_macos() {
     /usr/bin/otool -l "$1" |
         /usr/bin/awk '
@@ -442,6 +467,8 @@ release_preserve_matching_dsym() {
         local current_identity
         local candidate_path
         local candidate_name
+        local candidate_identity
+        local target_identity
         local publish_result
 
         cd "$release_symbols_root" || exit 1
@@ -480,19 +507,47 @@ release_preserve_matching_dsym() {
             /bin/rm -rf -- "$candidate_name"
             exit 1
         }
-        publish_result="$(
-            /usr/bin/swift "$release_path_guard" publish-directory \
-                "$release_symbols_root/$candidate_name" \
-                "$output_dsym" \
-                "$symbols_identity"
+        candidate_identity="$(
+            /usr/bin/swift "$release_path_guard" \
+                token-directory "$release_symbols_root/$candidate_name"
         )" || {
             /bin/rm -rf -- "$candidate_name"
             exit 1
         }
+        target_identity="missing"
+        if [[ -e "$output_name" || -L "$output_name" ]]; then
+            [[ -d "$output_name" && ! -L "$output_name" ]] || {
+                release_cleanup_anchored_directory \
+                    "$candidate_name" "$candidate_identity" || true
+                exit 1
+            }
+            target_identity="$(
+                /usr/bin/swift "$release_path_guard" \
+                    token-directory "$output_dsym"
+            )" || {
+                release_cleanup_anchored_directory \
+                    "$candidate_name" "$candidate_identity" || true
+                exit 1
+            }
+        fi
+        if ! publish_result="$(
+            release_publish_directory_atomically \
+                "$release_symbols_root/$candidate_name" \
+                "$output_dsym" \
+                "$symbols_identity" \
+                "$candidate_identity" \
+                "$target_identity"
+        )"; then
+            release_cleanup_anchored_directory \
+                "$candidate_name" "$candidate_identity" || true
+            exit 1
+        fi
         if [[ "$publish_result" == "exchanged" ]]; then
-            /bin/rm -rf -- "$candidate_name"
+            release_cleanup_anchored_directory \
+                "$candidate_name" "$target_identity" || exit 1
         else
             [[ "$publish_result" == "moved" ]] || exit 1
+            [[ ! -e "$candidate_name" && ! -L "$candidate_name" ]] || exit 1
         fi
     ) || {
         release_cleanup_symbol_snapshot_root "$snapshot_root" || true

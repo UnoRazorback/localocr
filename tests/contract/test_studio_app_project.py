@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import plistlib
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).parents[2]
@@ -287,8 +290,8 @@ def test_unsigned_build_script_has_stable_toolchain_and_confined_paths() -> None
     )
     assert set(re.findall(r"\brm\s+-rf\s+--\s+([^\s]+)", script)) == {
         '"$build_root"',
-        '"$studio_output_candidate"',
     }
+    assert "release_cleanup_anchored_directory" in script
 
 
 def test_unsigned_build_root_validation_accepts_physical_macos_tmp_only() -> None:
@@ -634,6 +637,66 @@ def test_staged_app_symlink_is_rejected_before_bundle_inspection(
     assert not canonical_app.exists()
 
 
+@pytest.mark.parametrize("existing_target", (False, True))
+def test_studio_publisher_fails_closed_when_output_parent_is_swapped_at_startup(
+    tmp_path: Path,
+    existing_target: bool,
+) -> None:
+    script, fake_repo = _copy_build_scripts_to_isolated_repo(tmp_path)
+    output_root = fake_repo / "dist" / "unsigned-app"
+    canonical_app = output_root / "LocalOCR Studio.app"
+    detached_root = fake_repo / "dist" / "unsigned-app.detached"
+    outside_root = tmp_path / "outside-output"
+    output_root.mkdir(parents=True)
+    outside_root.mkdir()
+    outside_marker = outside_root / "must-survive.txt"
+    outside_marker.write_bytes(b"outside output must remain byte-for-byte")
+    known_good_bytes: dict[Path, bytes] = {}
+    if existing_target:
+        (canonical_app / "Contents" / "Resources").mkdir(parents=True)
+        (canonical_app / "Contents" / "Resources" / "receipt.txt").write_bytes(
+            b"preserve existing Studio output"
+        )
+        known_good_bytes = _snapshot_file_bytes(canonical_app)
+
+    with tempfile.TemporaryDirectory(
+        prefix="localocr-studio-build.",
+        dir="/tmp",
+    ) as temporary_root:
+        build_root = Path(temporary_root)
+        _write_staged_app(
+            build_root,
+            bundle_identifier="com.rayconsulting.localocr",
+            minimum_os="14.0",
+            compile_arm64_executable=True,
+        )
+        result = _run_sourced_build_function(
+            script,
+            build_root,
+            f"""
+real_release_path_guard="$release_path_guard"
+release_publish_directory_atomically() {{
+    /bin/mv "$output_root" {shlex.quote(str(detached_root))}
+    /bin/ln -s {shlex.quote(str(outside_root))} "$output_root"
+    /usr/bin/swift "$real_release_path_guard" publish-directory "$@"
+}}
+validate_and_publish_staged_app "$build_root/Staged/LocalOCR Studio.app"
+""",
+        )
+
+    assert result.returncode != 0
+    assert output_root.is_symlink()
+    assert outside_marker.read_bytes() == b"outside output must remain byte-for-byte"
+    assert sorted(outside_root.iterdir()) == [outside_marker]
+    assert not list(detached_root.glob(".LocalOCR Studio.app.candidate.*"))
+    if existing_target:
+        assert _snapshot_file_bytes(
+            detached_root / "LocalOCR Studio.app"
+        ) == known_good_bytes
+    else:
+        assert not (detached_root / "LocalOCR Studio.app").exists()
+
+
 def test_publication_failure_preserves_existing_canonical_app(
     tmp_path: Path,
 ) -> None:
@@ -662,12 +725,19 @@ def test_publication_failure_preserves_existing_canonical_app(
             script,
             build_root,
             """
-atomically_exchange_apps() {
+release_publish_directory_atomically() {
+    [[ "$#" -eq 5 ]] || return 99
     case "$1" in
         "$output_root"/.LocalOCR\\ Studio.app.candidate.*) ;;
         *) return 99 ;;
     esac
-    [[ -d "$1" && ! -L "$1" && "$2" == "$output_app" ]] || return 99
+    [[
+        -d "$1" && ! -L "$1" &&
+        "$2" == "$output_app" &&
+        "$3" == "$studio_output_root_identity" &&
+        "$4" == "$studio_output_candidate_identity" &&
+        "$5" != "missing"
+    ]] || return 99
     return 75
 }
 validate_and_publish_staged_app "$build_root/Staged/LocalOCR Studio.app"
