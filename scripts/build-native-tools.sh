@@ -166,7 +166,6 @@ validate_artifact_output_identity() {
 replace_artifact_output_with_empty_directory() {
     local artifact_name
     local current_parent_identity
-    local current_output_identity
 
     artifact_name="$(/usr/bin/basename "$artifact_dir")"
     (
@@ -177,18 +176,21 @@ replace_artifact_output_with_empty_directory() {
             exit 1
         }
         if [[ -e "$artifact_name" || -L "$artifact_name" ]]; then
+            [[ "$artifact_output_identity" != "missing" ]] || {
+                echo "artifact output appeared before cleanup" >&2
+                exit 1
+            }
             [[ -d "$artifact_name" && ! -L "$artifact_name" ]] || {
                 echo "artifact output became invalid before cleanup" >&2
                 exit 1
             }
-            current_output_identity="$(
-                /usr/bin/stat -f '%d:%i' "$artifact_name"
-            )" || exit 1
-            [[ "$current_output_identity" == "$artifact_output_identity" ]] || {
+            release_cleanup_anchored_directory \
+                "$artifact_name" \
+                "$artifact_output_identity" \
+                "$artifact_parent_identity" || {
                 echo "artifact output identity changed before cleanup" >&2
                 exit 1
             }
-            /bin/rm -rf -- "$artifact_name"
         else
             [[ "$artifact_output_identity" == "missing" ]] || {
                 echo "artifact output disappeared before cleanup" >&2

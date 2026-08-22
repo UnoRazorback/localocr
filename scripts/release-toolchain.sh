@@ -21,7 +21,8 @@ release_publish_directory_atomically() {
 release_cleanup_anchored_directory() {
     local directory_name="${1:-}"
     local expected_identity="${2:-}"
-    local current_identity
+    local expected_parent_identity="${3:-}"
+    local parent_path
 
     case "$directory_name" in
         ""|.|..|*/*) return 1 ;;
@@ -31,11 +32,18 @@ release_cleanup_anchored_directory() {
         return 0
     fi
     [[ -d "./$directory_name" && ! -L "./$directory_name" ]] || return 1
-    current_identity="$(/usr/bin/stat -f '%d:%i' "./$directory_name")" || {
-        return 1
-    }
-    [[ "$current_identity" == "$expected_identity" ]] || return 1
-    /bin/rm -rf -- "./$directory_name"
+    parent_path="$(/bin/pwd -P)" || return 1
+    if [[ -z "$expected_parent_identity" ]]; then
+        expected_parent_identity="$(
+            /usr/bin/swift "$release_path_guard" \
+                token-directory "$parent_path"
+        )" || return 1
+    fi
+    /usr/bin/swift "$release_path_guard" \
+        cleanup-directory \
+        "$parent_path/$directory_name" \
+        "$expected_parent_identity" \
+        "$expected_identity" || return 1
     [[ ! -e "./$directory_name" && ! -L "./$directory_name" ]]
 }
 

@@ -7,6 +7,7 @@ import os
 import plistlib
 import re
 import resource
+import select
 import shlex
 import shutil
 import signal
@@ -1396,6 +1397,41 @@ def _compile_release_path_guard(
     return executable
 
 
+def _write_cleanup_pausing_path_guard(destination: Path) -> None:
+    source = RELEASE_PATH_GUARD.read_text()
+    injection_point = (
+        "    // The checked public leaf is quarantined through the anchored parent descriptor.\n"
+    )
+    assert source.count(injection_point) == 1
+    pause = r'''    if let fifoPath = ProcessInfo.processInfo.environment[
+        "LOCALOCR_TEST_CLEANUP_READY_FIFO"
+    ] {
+        let descriptor = open(fifoPath, O_WRONLY | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw GuardError.system("open cleanup test rendezvous", errno)
+        }
+        let payload = "\(getpid())\n"
+        let result = payload.withCString { pointer in
+            Darwin.write(descriptor, pointer, strlen(pointer))
+        }
+        close(descriptor)
+        guard result == payload.utf8.count else {
+            throw GuardError.system("write cleanup test rendezvous", errno)
+        }
+        raise(SIGSTOP)
+    }
+'''
+    destination.write_text(source.replace(injection_point, pause + injection_point))
+
+
+def _wait_for_cleanup_validation(ready_descriptor: int) -> int:
+    readable, _, _ = select.select([ready_descriptor], [], [], 30)
+    assert readable, "cleanup guard never reached its post-validation rendezvous"
+    payload = os.read(ready_descriptor, 64)
+    assert re.fullmatch(rb"\d+\n", payload), payload
+    return int(payload)
+
+
 def _path_guard_file_token(guard: Path, path: Path) -> str:
     return subprocess.run(
         [str(guard), "token-file", str(path)],
@@ -2418,6 +2454,76 @@ def test_release_path_guard_interruption_after_private_write_preserves_target(
     assert not list(parent.glob(".localocr-commit.*"))
 
 
+def test_shared_release_cleanup_rejects_a_post_validation_leaf_swap(
+    tmp_path: Path,
+) -> None:
+    scripts = tmp_path / "scripts"
+    parent = tmp_path / "cleanup-parent"
+    target = parent / "candidate"
+    detached_target = parent / "detached-candidate"
+    replacement = parent / "replacement"
+    outside = tmp_path / "outside"
+    scripts.mkdir()
+    (target / "nested").mkdir(parents=True)
+    (replacement / "nested").mkdir(parents=True)
+    outside.mkdir()
+    original_marker = target / "nested" / "original.bin"
+    replacement_marker = replacement / "nested" / "replacement.bin"
+    outside_marker = outside / "outside.bin"
+    original_marker.write_bytes(b"original cleanup target")
+    replacement_marker.write_bytes(b"replacement must remain byte-for-byte")
+    outside_marker.write_bytes(b"outside must remain byte-for-byte")
+    (replacement / "outside-link").symlink_to(outside, target_is_directory=True)
+    shutil.copy2(SCRIPTS / "release-toolchain.sh", scripts)
+    _write_cleanup_pausing_path_guard(scripts / "release-path-guard.swift")
+    expected_identity = f"{target.stat().st_dev}:{target.stat().st_ino}"
+    ready_fifo = tmp_path / "cleanup-ready.fifo"
+    os.mkfifo(ready_fifo)
+    ready_descriptor = os.open(ready_fifo, os.O_RDWR | os.O_NONBLOCK)
+    env = os.environ.copy()
+    env["LOCALOCR_TEST_CLEANUP_READY_FIFO"] = str(ready_fifo)
+    process = subprocess.Popen(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; cd "$2"; release_cleanup_anchored_directory "$3" "$4"',
+            "shared-cleanup-leaf-swap",
+            str(scripts / "release-toolchain.sh"),
+            str(parent),
+            target.name,
+            expected_identity,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    guard_pid: int | None = None
+
+    try:
+        guard_pid = _wait_for_cleanup_validation(ready_descriptor)
+        target.rename(detached_target)
+        replacement.rename(target)
+        os.kill(guard_pid, signal.SIGCONT)
+        guard_pid = None
+        stdout, stderr = process.communicate(timeout=30)
+    finally:
+        if guard_pid is not None:
+            os.kill(guard_pid, signal.SIGCONT)
+        os.close(ready_descriptor)
+
+    assert process.returncode != 0, stdout + stderr
+    assert (detached_target / "nested" / "original.bin").read_bytes() == (
+        b"original cleanup target"
+    )
+    assert (target / "nested" / "replacement.bin").read_bytes() == (
+        b"replacement must remain byte-for-byte"
+    )
+    assert (target / "outside-link").is_symlink()
+    assert outside_marker.read_bytes() == b"outside must remain byte-for-byte"
+    assert not list(parent.glob(".localocr-cleanup.*"))
+
+
 def test_release_binary_sanitizer_fails_closed_in_conditional_context(
     tmp_path: Path,
 ) -> None:
@@ -2928,6 +3034,95 @@ exit 64
     assert (
         isolated_repo / "dist-before-swap" / "native-tools" / "known-good.txt"
     ).read_text() == "preserve original release output"
+
+
+def test_build_native_tools_rejects_a_post_validation_artifact_leaf_swap(
+    tmp_path: Path,
+) -> None:
+    isolated_repo = tmp_path / "repo"
+    isolated_scripts = isolated_repo / "scripts"
+    dist = isolated_repo / "dist"
+    artifacts = dist / "native-tools"
+    detached_artifacts = dist / "native-tools.detached"
+    replacement = dist / "replacement-native-tools"
+    outside = tmp_path / "outside"
+    stub_bin = tmp_path / "bin"
+    isolated_scripts.mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    replacement.mkdir()
+    outside.mkdir()
+    stub_bin.mkdir()
+    original_marker = artifacts / "known-good.bin"
+    replacement_marker = replacement / "replacement.bin"
+    outside_marker = outside / "outside.bin"
+    original_marker.write_bytes(b"preserve original artifact output")
+    replacement_marker.write_bytes(b"preserve replacement artifact output")
+    outside_marker.write_bytes(b"preserve outside data")
+    (replacement / "outside-link").symlink_to(outside, target_is_directory=True)
+    shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
+    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
+    _write_cleanup_pausing_path_guard(isolated_scripts / "release-path-guard.swift")
+    source_fixture = tmp_path / "source" / "localocr"
+    source_fixture.parent.mkdir()
+    source_fixture.write_bytes(b"native helper fixture")
+    source_fixture.chmod(0o755)
+    swift_stub = stub_bin / "swift"
+    swift_stub.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "package" && "$2" == "clean" ]]; then exit 0; fi
+if [[ "$1" == "build" ]]; then
+    product="${!#}"
+    mkdir -p .build/release
+    cp "${LOCALOCR_TEST_SOURCE_BINARY:?}" ".build/release/$product"
+    exit 0
+fi
+exit 64
+"""
+    )
+    swift_stub.chmod(0o755)
+    ready_fifo = tmp_path / "native-cleanup-ready.fifo"
+    os.mkfifo(ready_fifo)
+    ready_descriptor = os.open(ready_fifo, os.O_RDWR | os.O_NONBLOCK)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{stub_bin}:/usr/bin:/bin",
+            "LOCALOCR_TEST_SOURCE_BINARY": str(source_fixture),
+            "LOCALOCR_TEST_CLEANUP_READY_FIFO": str(ready_fifo),
+        }
+    )
+    process = subprocess.Popen(
+        [str(isolated_scripts / "build-native-tools.sh")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    guard_pid: int | None = None
+
+    try:
+        guard_pid = _wait_for_cleanup_validation(ready_descriptor)
+        artifacts.rename(detached_artifacts)
+        replacement.rename(artifacts)
+        os.kill(guard_pid, signal.SIGCONT)
+        guard_pid = None
+        stdout, stderr = process.communicate(timeout=30)
+    finally:
+        if guard_pid is not None:
+            os.kill(guard_pid, signal.SIGCONT)
+        os.close(ready_descriptor)
+
+    assert process.returncode != 0, stdout + stderr
+    assert (detached_artifacts / "known-good.bin").read_bytes() == (
+        b"preserve original artifact output"
+    )
+    assert (artifacts / "replacement.bin").read_bytes() == (
+        b"preserve replacement artifact output"
+    )
+    assert (artifacts / "outside-link").is_symlink()
+    assert outside_marker.read_bytes() == b"preserve outside data"
+    assert not list(dist.glob(".localocr-cleanup.*"))
 
 
 @pytest.mark.parametrize("script", ("stage", "verify"))

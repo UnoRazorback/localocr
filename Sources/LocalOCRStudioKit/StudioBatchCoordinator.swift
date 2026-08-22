@@ -85,11 +85,19 @@ public final class StudioBatchCoordinator {
     public func cancel() {
         guard phase == .processing else { return }
 
-        generation = UUID()
+        let hasActiveExecutor = items.contains { item in
+            if case .processing = item.state {
+                return true
+            }
+            return false
+        }
         processingTask?.cancel()
-        markPendingItemsCancelled()
+        markQueuedItemsCancelled()
         actionError = nil
-        phase = .complete
+        if !hasActiveExecutor {
+            generation = UUID()
+            phase = .complete
+        }
     }
 
     public func retryFailed() {
@@ -294,7 +302,7 @@ public final class StudioBatchCoordinator {
                 guard var item = self?.queuedItem(
                     at: index,
                     generation: processingGeneration
-                ) else { return }
+                ) else { break }
 
                 let itemID = item.id
                 if refreshReservations {
@@ -519,6 +527,14 @@ public final class StudioBatchCoordinator {
             case .completed, .skipped, .failed, .cancelled:
                 break
             }
+        }
+        items = cancelledItems
+    }
+
+    private func markQueuedItemsCancelled() {
+        var cancelledItems = items
+        for index in cancelledItems.indices where cancelledItems[index].state == .queued {
+            cancelledItems[index].state = .cancelled
         }
         items = cancelledItems
     }

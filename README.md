@@ -181,6 +181,8 @@ PyMuPDF, Homebrew, or a network service at runtime.
 
 LocalOCR currently targets local, on-device PDF and image OCR. It does not
 provide cloud OCR, cloud document storage, automatic client configuration, or
-cross-platform support. During Beta 1, collect desktop and advanced-MCP
-feedback, preserve local-only behavior, and use that evidence to choose the
-Beta 2 scope.
+cross-platform support. Beta 1 remains the current published release. The
+implemented desktop-batch Beta 2 candidate is unpublished and still requires
+fresh post-fix verification. Continue collecting desktop and advanced-MCP
+feedback as input to later product decisions while preserving local-only
+behavior.

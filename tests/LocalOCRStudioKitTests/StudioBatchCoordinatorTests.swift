@@ -457,7 +457,63 @@ import Testing
         #expect(coordinator.actionError == nil)
     }
 
-    @Test @MainActor func cancellationBetweenItemsPreservesCompletionAndRejectsLateError() async {
+    @Test @MainActor func cancellationAfterExclusiveCommitWaitsForTheExecutorOutcome() async throws {
+        let fixture = try CoordinatorExecutionFixture(itemNames: ["committed.png", "later.png"])
+        defer { fixture.remove() }
+        let committer = PostCommitSuspendingCommitter()
+        let coordinator = await fixture.readyCoordinator(committer: committer)
+        let committedURL = try #require(coordinator.items.first?.reservation.finalURL)
+
+        coordinator.start()
+        await committer.waitUntilCommitted()
+        await coordinator.waitUntilProgressDeliveredForTesting()
+
+        #expect(FileManager.default.fileExists(atPath: committedURL.path))
+        #expect(coordinator.items[0].state == .processing(.recognizing(page: 1, total: 1)))
+        #expect(coordinator.items[1].state == .queued)
+
+        coordinator.cancel()
+
+        #expect(coordinator.phase == .processing)
+        #expect(coordinator.items[0].state == .processing(.recognizing(page: 1, total: 1)))
+        #expect(coordinator.items[1].state == .cancelled)
+
+        await committer.resumeAfterCommit()
+        await coordinator.waitUntilIdleForTesting()
+
+        #expect(coordinator.phase == .complete)
+        #expect(coordinator.items[0].state == .completed(committedURL))
+        #expect(coordinator.items[1].state == .cancelled)
+        #expect(coordinator.summary.completed == 1)
+        #expect(coordinator.summary.cancelled == 1)
+        #expect(try String(contentsOf: committedURL, encoding: .utf8) == "recognized")
+    }
+
+    @Test @MainActor func cancellationBeforeExclusiveCommitCancelsTheActiveRowWithoutOutput() async throws {
+        let fixture = try CoordinatorExecutionFixture(itemNames: ["uncommitted.png"])
+        defer { fixture.remove() }
+        let committer = PreCommitSuspendingCommitter()
+        let coordinator = await fixture.readyCoordinator(committer: committer)
+        let finalURL = try #require(coordinator.items.first?.reservation.finalURL)
+
+        coordinator.start()
+        await committer.waitUntilCommitRequested()
+        await coordinator.waitUntilProgressDeliveredForTesting()
+
+        #expect(coordinator.items[0].state == .processing(.recognizing(page: 1, total: 1)))
+        #expect(!FileManager.default.fileExists(atPath: finalURL.path))
+
+        coordinator.cancel()
+        await coordinator.waitUntilIdleForTesting()
+
+        #expect(coordinator.phase == .complete)
+        #expect(coordinator.items[0].state == .cancelled)
+        #expect(coordinator.summary.completed == 0)
+        #expect(coordinator.summary.cancelled == 1)
+        #expect(!FileManager.default.fileExists(atPath: finalURL.path))
+    }
+
+    @Test @MainActor func cancellationBetweenItemsPreservesCompletionAndAcceptsActiveExecutorFailure() async {
         let executor = ControlledBatchExecutor()
         let coordinator = await readyCoordinator(
             itemNames: ["one.pdf", "two.pdf", "three.pdf"],
@@ -481,11 +537,15 @@ import Testing
         #expect(coordinator.items[0].state == .completed(
             coordinator.items[0].reservation.finalURL
         ))
-        #expect(coordinator.items[1].state == .cancelled)
+        #expect(coordinator.items[1].state == .failed(StudioBatchIssue(
+            title: "Couldn’t Process Document",
+            message: "The document could not be processed. Please try again.",
+            details: "Technical details are hidden to protect your privacy."
+        )))
         #expect(coordinator.items[2].state == .cancelled)
         #expect(coordinator.summary.completed == 1)
-        #expect(coordinator.summary.cancelled == 2)
-        #expect(coordinator.summary.failed == 0)
+        #expect(coordinator.summary.cancelled == 1)
+        #expect(coordinator.summary.failed == 1)
     }
 
     @Test @MainActor func doubleStartCancelAndResetAreIdempotentAgainstALateSuccess() async {
@@ -503,7 +563,8 @@ import Testing
 
         coordinator.cancel()
         coordinator.cancel()
-        #expect(coordinator.items.allSatisfy { $0.state == .cancelled })
+        #expect(coordinator.items[0].state == .processing(.inspecting))
+        #expect(coordinator.items[1].state == .cancelled)
 
         coordinator.startNewBatch()
         coordinator.startNewBatch()
@@ -1067,6 +1128,206 @@ private actor ControlledBatchExecutor: StudioBatchItemExecuting {
         let ready = requestWaiters.filter { items.count >= $0.0 }
         requestWaiters.removeAll { items.count >= $0.0 }
         ready.forEach { $0.1.resume() }
+    }
+}
+
+private actor CoordinatorImageClient: StudioOCRClient {
+    func processDocument(
+        at sourceURL: URL,
+        progress: @escaping @Sendable (StudioProgress) -> Void
+    ) async throws -> StudioDocumentResult {
+        progress(.inspecting)
+        progress(.recognizing(page: 1, total: 1))
+        return StudioDocumentResult(
+            sourceURL: sourceURL,
+            sourceSHA256: "test-hash",
+            kind: .image,
+            pageCount: 1,
+            searchablePages: 0,
+            ocrNeededPages: 1,
+            text: "recognized",
+            failedPages: []
+        )
+    }
+
+    func makeSearchablePDF(
+        sourceURL _: URL,
+        destinationURL _: URL,
+        progress _: @escaping @Sendable (StudioProgress) -> Void
+    ) async throws -> URL {
+        throw LocalOCRError.outputValidationFailed
+    }
+}
+
+private actor PostCommitSuspendingCommitter: StudioBatchOutputCommitting {
+    private let base = AtomicStudioBatchOutputCommitter()
+    private var committed = false
+    private var mayReturn = false
+    private var commitWaiters: [CheckedContinuation<Void, Never>] = []
+    private var returnWaiter: CheckedContinuation<Void, Never>?
+
+    func temporaryURL(for finalURL: URL, outputRoot: URL) async throws -> URL {
+        try await base.temporaryURL(for: finalURL, outputRoot: outputRoot)
+    }
+
+    func adoptPDF(at temporaryURL: URL, outputRoot: URL) async throws {
+        try await base.adoptPDF(at: temporaryURL, outputRoot: outputRoot)
+    }
+
+    func writeText(_ text: String, to temporaryURL: URL, outputRoot: URL) async throws {
+        try await base.writeText(text, to: temporaryURL, outputRoot: outputRoot)
+    }
+
+    func commit(_ temporaryURL: URL, to finalURL: URL, outputRoot: URL) async throws {
+        try await base.commit(temporaryURL, to: finalURL, outputRoot: outputRoot)
+        committed = true
+        let pending = commitWaiters
+        commitWaiters.removeAll()
+        pending.forEach { $0.resume() }
+        guard !mayReturn else { return }
+        await withCheckedContinuation { returnWaiter = $0 }
+    }
+
+    func discard(_ temporaryURL: URL, outputRoot: URL) async {
+        await base.discard(temporaryURL, outputRoot: outputRoot)
+    }
+
+    func waitUntilCommitted() async {
+        guard !committed else { return }
+        await withCheckedContinuation { commitWaiters.append($0) }
+    }
+
+    func resumeAfterCommit() {
+        mayReturn = true
+        returnWaiter?.resume()
+        returnWaiter = nil
+    }
+}
+
+private actor PreCommitSuspendingCommitter: StudioBatchOutputCommitting {
+    private let base = AtomicStudioBatchOutputCommitter()
+    private let gate = CancellableTestGate()
+
+    func temporaryURL(for finalURL: URL, outputRoot: URL) async throws -> URL {
+        try await base.temporaryURL(for: finalURL, outputRoot: outputRoot)
+    }
+
+    func adoptPDF(at temporaryURL: URL, outputRoot: URL) async throws {
+        try await base.adoptPDF(at: temporaryURL, outputRoot: outputRoot)
+    }
+
+    func writeText(_ text: String, to temporaryURL: URL, outputRoot: URL) async throws {
+        try await base.writeText(text, to: temporaryURL, outputRoot: outputRoot)
+    }
+
+    func commit(_ temporaryURL: URL, to finalURL: URL, outputRoot: URL) async throws {
+        try await gate.suspend()
+        try await base.commit(temporaryURL, to: finalURL, outputRoot: outputRoot)
+    }
+
+    func discard(_ temporaryURL: URL, outputRoot: URL) async {
+        await base.discard(temporaryURL, outputRoot: outputRoot)
+    }
+
+    func waitUntilCommitRequested() async {
+        await gate.waitUntilSuspended()
+    }
+}
+
+private final class CancellableTestGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isSuspended = false
+    private var isCancelled = false
+    private var suspensionWaiters: [CheckedContinuation<Void, Never>] = []
+    private var continuation: CheckedContinuation<Void, any Error>?
+
+    func suspend() async throws {
+        let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            isSuspended = true
+            let pending = suspensionWaiters
+            suspensionWaiters.removeAll()
+            return pending
+        }
+        waiters.forEach { $0.resume() }
+        try Task.checkCancellation()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let cancelled = lock.withLock { () -> Bool in
+                    guard !isCancelled else { return true }
+                    self.continuation = continuation
+                    return false
+                }
+                if cancelled {
+                    continuation.resume(throwing: CancellationError())
+                }
+            }
+        } onCancel: {
+            let continuation = self.lock.withLock { () -> CheckedContinuation<Void, any Error>? in
+                self.isCancelled = true
+                let pending = self.continuation
+                self.continuation = nil
+                return pending
+            }
+            continuation?.resume(throwing: CancellationError())
+        }
+    }
+
+    func waitUntilSuspended() async {
+        let ready = lock.withLock { isSuspended }
+        guard !ready else { return }
+        await withCheckedContinuation { continuation in
+            let ready = lock.withLock { () -> Bool in
+                guard !isSuspended else { return true }
+                suspensionWaiters.append(continuation)
+                return false
+            }
+            if ready {
+                continuation.resume()
+            }
+        }
+    }
+}
+
+private struct CoordinatorExecutionFixture {
+    let baseURL: URL
+    let outputRoot: URL
+    let sourceURLs: [URL]
+
+    init(itemNames: [String]) throws {
+        let createdBaseURL = FileManager.default.temporaryDirectory.appending(
+            path: "StudioBatchCoordinatorExecution-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        baseURL = createdBaseURL
+        outputRoot = createdBaseURL.appending(path: "output", directoryHint: .isDirectory)
+        sourceURLs = itemNames.map { createdBaseURL.appending(path: $0) }
+        try FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
+        for sourceURL in sourceURLs {
+            try Data("input".utf8).write(to: sourceURL)
+        }
+    }
+
+    @MainActor
+    func readyCoordinator(
+        committer: any StudioBatchOutputCommitting
+    ) async -> StudioBatchCoordinator {
+        let coordinator = StudioBatchCoordinator(
+            enumerator: BatchInputEnumerator(),
+            planner: BatchOutputPlanner(),
+            executor: StudioBatchExecutor(
+                client: CoordinatorImageClient(),
+                committer: committer
+            )
+        )
+        coordinator.addSelections(sourceURLs)
+        await coordinator.waitUntilIdleForTesting()
+        coordinator.chooseOutputRoot(outputRoot)
+        await coordinator.waitUntilIdleForTesting()
+        return coordinator
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: baseURL)
     }
 }
 

@@ -3,6 +3,17 @@
 import Darwin
 import Foundation
 
+@_silgen_name("removefileat")
+private func removeFileAt(
+    _ descriptor: Int32,
+    _ path: UnsafePointer<CChar>,
+    _ state: OpaquePointer?,
+    _ flags: UInt32
+) -> Int32
+
+private let removeFileRecursive = UInt32(1 << 0)
+private let removeFileKeepParent = UInt32(1 << 1)
+
 private struct Identity: Equatable {
     let parentDevice: UInt64
     let parentInode: UInt64
@@ -119,6 +130,10 @@ private func sameObject(_ first: stat, _ second: stat) -> Bool {
 
 private func isRegularFile(_ value: stat) -> Bool {
     (value.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG)
+}
+
+private func isDirectory(_ value: stat) -> Bool {
+    (value.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
 }
 
 private func physicalPath(_ path: String) throws -> String {
@@ -333,6 +348,194 @@ private func publishDirectory(
         throw GuardError.invalid("published directory identity changed during commit")
     }
     return exchanged
+}
+
+private func unusedCleanupName(parentFD: Int32) throws -> String {
+    for _ in 0..<64 {
+        let name = ".localocr-cleanup.\(getpid()).\(UUID().uuidString)"
+        var metadata = stat()
+        let status = name.withCString { candidate in
+            fstatat(parentFD, candidate, &metadata, AT_SYMLINK_NOFOLLOW)
+        }
+        if status != 0, errno == ENOENT {
+            return name
+        }
+        if status != 0 {
+            throw GuardError.system("inspect private cleanup name", errno)
+        }
+    }
+    throw GuardError.invalid("could not allocate a private cleanup name")
+}
+
+private func restoreQuarantinedDirectory(
+    parentFD: Int32,
+    quarantineName: String,
+    publicName: String
+) {
+    _ = quarantineName.withCString { quarantine in
+        publicName.withCString { target in
+            renameatx_np(
+                parentFD,
+                quarantine,
+                parentFD,
+                target,
+                UInt32(RENAME_EXCL)
+            )
+        }
+    }
+}
+
+private func cleanupDirectory(
+    path: String,
+    expectedParent: DirectoryIdentity,
+    expectedDirectory: DirectoryIdentity
+) throws {
+    try requireAbsoluteStandardPath(path)
+    let parentPath = (path as NSString).deletingLastPathComponent
+    let directoryName = (path as NSString).lastPathComponent
+    guard !directoryName.isEmpty,
+          directoryName != ".",
+          directoryName != "..",
+          !directoryName.contains("/")
+    else {
+        throw GuardError.invalid("directory cleanup requires one safe leaf name")
+    }
+    guard try physicalPath(parentPath) == parentPath else {
+        throw GuardError.invalid("directory cleanup parent is not physical")
+    }
+
+    let parentFD = open(parentPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    guard parentFD >= 0 else {
+        throw GuardError.system("open directory cleanup parent", errno)
+    }
+    defer { close(parentFD) }
+
+    var parentStat = stat()
+    var namedParentStat = stat()
+    guard fstat(parentFD, &parentStat) == 0,
+          lstat(parentPath, &namedParentStat) == 0,
+          sameObject(parentStat, namedParentStat),
+          DirectoryIdentity(
+              device: UInt64(parentStat.st_dev),
+              inode: UInt64(parentStat.st_ino)
+          ) == expectedParent
+    else {
+        throw GuardError.invalid("directory cleanup parent identity changed")
+    }
+
+    let directoryFD = directoryName.withCString { name in
+        openat(parentFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    }
+    guard directoryFD >= 0 else {
+        throw GuardError.system("open directory cleanup target", errno)
+    }
+    defer { close(directoryFD) }
+
+    var directoryStat = stat()
+    var namedDirectoryStat = stat()
+    guard fstat(directoryFD, &directoryStat) == 0,
+          isDirectory(directoryStat),
+          directoryName.withCString({ name in
+              fstatat(parentFD, name, &namedDirectoryStat, AT_SYMLINK_NOFOLLOW)
+          }) == 0,
+          sameObject(directoryStat, namedDirectoryStat),
+          DirectoryIdentity(
+              device: UInt64(directoryStat.st_dev),
+              inode: UInt64(directoryStat.st_ino)
+          ) == expectedDirectory
+    else {
+        throw GuardError.invalid("directory cleanup target identity changed")
+    }
+
+    let quarantineName = try unusedCleanupName(parentFD: parentFD)
+    var previousSignals = try blockCommitTerminationSignals()
+    defer { restoreCommitTerminationSignals(&previousSignals) }
+    guard lstat(parentPath, &namedParentStat) == 0,
+          sameObject(parentStat, namedParentStat),
+          directoryName.withCString({ name in
+              fstatat(parentFD, name, &namedDirectoryStat, AT_SYMLINK_NOFOLLOW)
+          }) == 0,
+          sameObject(directoryStat, namedDirectoryStat),
+          try !commitTerminationSignalIsPending()
+    else {
+        throw GuardError.invalid("directory cleanup target changed or cleanup was interrupted")
+    }
+
+    // The checked public leaf is quarantined through the anchored parent descriptor.
+    let renameStatus = directoryName.withCString { publicName in
+        quarantineName.withCString { quarantine in
+            renameatx_np(
+                parentFD,
+                publicName,
+                parentFD,
+                quarantine,
+                UInt32(RENAME_EXCL)
+            )
+        }
+    }
+    guard renameStatus == 0 else {
+        throw GuardError.system("quarantine directory for cleanup", errno)
+    }
+
+    var quarantinedStat = stat()
+    var publicStat = stat()
+    let quarantineStatus = quarantineName.withCString { name in
+        fstatat(parentFD, name, &quarantinedStat, AT_SYMLINK_NOFOLLOW)
+    }
+    let publicStatus = directoryName.withCString { name in
+        fstatat(parentFD, name, &publicStat, AT_SYMLINK_NOFOLLOW)
+    }
+    let publicError = errno
+    guard quarantineStatus == 0,
+          sameObject(directoryStat, quarantinedStat),
+          publicStatus != 0,
+          publicError == ENOENT,
+          lstat(parentPath, &namedParentStat) == 0,
+          sameObject(parentStat, namedParentStat)
+    else {
+        restoreQuarantinedDirectory(
+            parentFD: parentFD,
+            quarantineName: quarantineName,
+            publicName: directoryName
+        )
+        throw GuardError.invalid("quarantined directory identity changed")
+    }
+    guard try !commitTerminationSignalIsPending() else {
+        throw GuardError.invalid("directory cleanup was interrupted after quarantine")
+    }
+
+    let removalStatus = ".".withCString { currentDirectory in
+        removeFileAt(
+            directoryFD,
+            currentDirectory,
+            nil,
+            removeFileRecursive | removeFileKeepParent
+        )
+    }
+    guard removalStatus == 0 else {
+        throw GuardError.system("remove quarantined directory contents", errno)
+    }
+
+    guard fstat(directoryFD, &namedDirectoryStat) == 0,
+          sameObject(directoryStat, namedDirectoryStat),
+          quarantineName.withCString({ name in
+              fstatat(parentFD, name, &quarantinedStat, AT_SYMLINK_NOFOLLOW)
+          }) == 0,
+          sameObject(directoryStat, quarantinedStat),
+          lstat(parentPath, &namedParentStat) == 0,
+          sameObject(parentStat, namedParentStat)
+    else {
+        throw GuardError.invalid("private cleanup quarantine changed before removal")
+    }
+    let unlinkStatus = quarantineName.withCString { name in
+        unlinkat(parentFD, name, AT_REMOVEDIR)
+    }
+    guard unlinkStatus == 0 else {
+        throw GuardError.system("remove private cleanup quarantine", errno)
+    }
+    guard fsync(parentFD) == 0 else {
+        throw GuardError.system("sync directory cleanup parent", errno)
+    }
 }
 
 private func openExactFile(_ path: String) throws -> OpenedFile {
@@ -742,6 +945,20 @@ private func run() throws {
             expectedTarget: expectedTarget
         )
         print(exchanged ? "exchanged" : "moved")
+    case "cleanup-directory":
+        guard arguments.count == 5,
+              let expectedParent = DirectoryIdentity(token: arguments[3]),
+              let expectedDirectory = DirectoryIdentity(token: arguments[4])
+        else {
+            throw GuardError.invalid(
+                "cleanup-directory requires path and expected parent/directory identities"
+            )
+        }
+        try cleanupDirectory(
+            path: arguments[2],
+            expectedParent: expectedParent,
+            expectedDirectory: expectedDirectory
+        )
     default:
         throw GuardError.invalid("unknown release path guard mode")
     }
