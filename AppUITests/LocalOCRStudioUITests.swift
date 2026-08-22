@@ -2,6 +2,7 @@ import AppKit
 import XCTest
 
 final class LocalOCRStudioUITests: XCTestCase {
+    private static let appBundleIdentifier = "com.rayconsulting.localocr"
     private static let resultText = """
     LOCALOCR UI FIXTURE
     Quarterly planning is complete.
@@ -184,8 +185,11 @@ final class LocalOCRStudioUITests: XCTestCase {
     func testSingleWindowLaunchAndReopenNeverCreatesASecondDocumentWindow() {
         let app = launch(state: "empty")
         let dropZone = element("studio.drop-zone", in: app)
+        guard let runningApplication = runningLocalOCRApplication() else { return }
+        let processIdentifier = runningApplication.processIdentifier
 
         XCTAssertEqual(app.state, .runningForeground)
+        XCTAssertGreaterThan(processIdentifier, 0)
         XCTAssertTrue(dropZone.waitForExistence(timeout: 5))
         XCTAssertEqual(app.windows.count, 1)
 
@@ -204,9 +208,31 @@ final class LocalOCRStudioUITests: XCTestCase {
         finder.activate()
         XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))
 
-        app.activate()
+        requestReopen(expectedProcessIdentifier: processIdentifier)
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
         XCTAssertTrue(dropZone.waitForExistence(timeout: 5))
+        guard runningLocalOCRApplication(
+            expectedProcessIdentifier: processIdentifier
+        ) != nil else { return }
+        XCTAssertEqual(app.state, .runningForeground)
+        XCTAssertEqual(app.windows.count, 1)
+
+        app.typeKey("w", modifierFlags: .command)
+        let reopenedWindowClosed = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in app.windows.count == 0 },
+            object: nil
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [reopenedWindowClosed], timeout: 5), .completed)
+
+        finder.activate()
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))
+
+        requestReopen(expectedProcessIdentifier: processIdentifier)
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
+        XCTAssertTrue(dropZone.waitForExistence(timeout: 5))
+        guard runningLocalOCRApplication(
+            expectedProcessIdentifier: processIdentifier
+        ) != nil else { return }
         XCTAssertEqual(app.state, .runningForeground)
         XCTAssertEqual(app.windows.count, 1)
     }
@@ -333,5 +359,98 @@ final class LocalOCRStudioUITests: XCTestCase {
         app.descendants(matching: .any)
             .matching(identifier: identifier)
             .firstMatch
+    }
+
+    private func requestReopen(
+        expectedProcessIdentifier: pid_t
+    ) {
+        guard let runningApplication = runningLocalOCRApplication(
+            expectedProcessIdentifier: expectedProcessIdentifier
+        ), let bundleURL = runningApplication.bundleURL else {
+            XCTFail(
+                "Could not resolve running LocalOCR PID \(expectedProcessIdentifier) "
+                    + "to an application bundle before requesting reopen"
+            )
+            return
+        }
+
+        let reopenEvent = NSAppleEventDescriptor(
+            eventClass: AEEventClass(kCoreEventClass),
+            eventID: AEEventID(kAEReopenApplication),
+            targetDescriptor: NSAppleEventDescriptor(
+                processIdentifier: expectedProcessIdentifier
+            ),
+            returnID: AEReturnID(kAutoGenerateReturnID),
+            transactionID: AETransactionID(kAnyTransactionID)
+        )
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.createsNewApplicationInstance = false
+        configuration.allowsRunningApplicationSubstitution = false
+        configuration.appleEvent = reopenEvent
+
+        let completed = expectation(
+            description: "NSWorkspace reopened LocalOCR PID \(expectedProcessIdentifier)"
+        )
+        var reopenedApplication: NSRunningApplication?
+        var reopenError: Error?
+        NSWorkspace.shared.openApplication(
+            at: bundleURL,
+            configuration: configuration
+        ) { application, error in
+            reopenedApplication = application
+            reopenError = error
+            completed.fulfill()
+        }
+
+        guard XCTWaiter.wait(for: [completed], timeout: 5) == .completed else {
+            XCTFail(
+                "Timed out requesting kAEReopenApplication for LocalOCR PID "
+                    + "\(expectedProcessIdentifier) at \(bundleURL.path)"
+            )
+            return
+        }
+        guard reopenError == nil, let reopenedApplication else {
+            XCTFail(
+                "NSWorkspace failed to request kAEReopenApplication for LocalOCR PID "
+                    + "\(expectedProcessIdentifier) at \(bundleURL.path): "
+                    + "\(reopenError?.localizedDescription ?? "no running application returned")"
+            )
+            return
+        }
+        XCTAssertEqual(
+            reopenedApplication.processIdentifier,
+            expectedProcessIdentifier,
+            "NSWorkspace targeted PID \(reopenedApplication.processIdentifier) instead of "
+                + "the existing LocalOCR PID \(expectedProcessIdentifier)"
+        )
+    }
+
+    private func runningLocalOCRApplication(
+        expectedProcessIdentifier: pid_t? = nil
+    ) -> NSRunningApplication? {
+        let applications = NSRunningApplication
+            .runningApplications(withBundleIdentifier: Self.appBundleIdentifier)
+            .filter { !$0.isTerminated }
+        let processIdentifiers = applications
+            .map(\.processIdentifier)
+            .sorted()
+
+        guard applications.count == 1, let application = applications.first else {
+            XCTFail(
+                "Expected one running LocalOCR process for \(Self.appBundleIdentifier); "
+                    + "found PIDs \(processIdentifiers)"
+            )
+            return nil
+        }
+        if let expectedProcessIdentifier,
+           application.processIdentifier != expectedProcessIdentifier {
+            XCTFail(
+                "LocalOCR changed PID from \(expectedProcessIdentifier) to "
+                    + "\(application.processIdentifier)"
+            )
+            return nil
+        }
+        return application
     }
 }
