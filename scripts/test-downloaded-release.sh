@@ -473,6 +473,18 @@ download_verify_no_forbidden_strings() {
     local binary="$1"
     local strings_output
     local forbidden
+    local raw_scan_status
+
+    if /usr/bin/grep -a -F -q -- "/Users/" "$binary"; then
+        echo "private /Users/ path found in release binary bytes" >&2
+        return 1
+    else
+        raw_scan_status=$?
+        if [[ "$raw_scan_status" -ne 1 ]]; then
+            echo "could not scan release binary bytes for private paths" >&2
+            return 1
+        fi
+    fi
 
     strings_output="$("$download_strings" -a "$binary")" || return
     for forbidden in \

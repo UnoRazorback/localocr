@@ -256,14 +256,21 @@ publish_output_candidate() {
 
 validate_and_publish_staged_app() {
     local staged_app="$1"
+    local source_dsym="${2:-}"
     local staged_executable="$staged_app/Contents/MacOS/LocalOCR Studio"
 
     validate_staged_app "$staged_app"
+    if [[ -n "$source_dsym" ]]; then
+        release_validate_dsym_matches_binary "$staged_executable" "$source_dsym"
+    fi
     sanitize_validated_release_binary \
         "$staged_executable" \
         "$build_root/Staged/LocalOCR Studio.app/Contents/MacOS/LocalOCR Studio" \
         true
     validate_sanitized_studio_app_bundle "$staged_app"
+    if [[ -n "$source_dsym" ]]; then
+        release_validate_dsym_matches_binary "$staged_executable" "$source_dsym"
+    fi
     prepare_output_root
     studio_output_candidate="$(
         /usr/bin/mktemp -d \
@@ -278,12 +285,23 @@ validate_and_publish_staged_app() {
         cleanup_output_candidate
         return 1
     }
+    if [[ -n "$source_dsym" ]]; then
+        release_preserve_matching_dsym \
+            "$staged_executable" \
+            "$source_dsym" \
+            "LocalOCR-Studio" || {
+            cleanup_output_candidate
+            return 1
+        }
+    fi
     publish_output_candidate "$studio_output_candidate"
 }
 
 run_studio_build() {
     local built_app
+    local built_dsym
     local derived_data
+    local produced_dsym=""
     local staged_app
     local staging_root
     local temporary_build_root
@@ -322,12 +340,20 @@ run_studio_build() {
         echo "unsigned Studio app was not produced: $built_app" >&2
         exit 1
     }
+    built_dsym="$derived_data/Build/Products/Release/LocalOCR Studio.app.dSYM"
+    if [[ -e "$built_dsym" || -L "$built_dsym" ]]; then
+        [[ -d "$built_dsym" && ! -L "$built_dsym" ]] || {
+            echo "Studio dSYM output is invalid: $built_dsym" >&2
+            exit 1
+        }
+        produced_dsym="$built_dsym"
+    fi
 
     staging_root="$build_root/Staged"
     staged_app="$staging_root/LocalOCR Studio.app"
     /bin/mkdir "$staging_root"
     /usr/bin/ditto "$built_app" "$staged_app"
-    validate_and_publish_staged_app "$staged_app"
+    validate_and_publish_staged_app "$staged_app" "$produced_dsym"
 
     printf 'Built unsigned Studio app: %s\n' "$output_app"
 }

@@ -10,6 +10,9 @@ release_plist_buddy="/usr/libexec/PlistBuddy"
 release_xcodebuild_path=""
 release_system_swift_rpath="/usr/lib/swift"
 release_removable_framework_rpath="@executable_path/../Frameworks"
+release_path_guard="$release_toolchain_script_dir/release-path-guard.swift"
+release_symbols_root="$release_repo_root/dist/release-symbols"
+release_symbols_root_identity=""
 
 release_binary_minimum_macos() {
     /usr/bin/otool -l "$1" |
@@ -206,13 +209,334 @@ release_validate_binary_policy() {
     fi
 }
 
+release_macho_arm64_uuid() {
+    local binary_or_dsym="${1:-}"
+    local uuid_output
+    local uuid_line
+    local uuid=""
+    local uuid_count=0
+
+    [[ -n "$binary_or_dsym" ]] || return 1
+    uuid_output="$(/usr/bin/dwarfdump --uuid "$binary_or_dsym")" || {
+        echo "could not read Mach-O UUID: $binary_or_dsym" >&2
+        return 1
+    }
+    while IFS= read -r uuid_line; do
+        [[ -n "$uuid_line" ]] || continue
+        if [[ "$uuid_line" =~ ^UUID:\ ([0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})\ \(arm64\)\ .+$ ]]; then
+            uuid="${BASH_REMATCH[1]}"
+            uuid_count=$((uuid_count + 1))
+        else
+            echo "unexpected Mach-O UUID record: $uuid_line" >&2
+            return 1
+        fi
+    done <<< "$uuid_output"
+    [[ "$uuid_count" -eq 1 ]] || {
+        echo "release symbols require exactly one arm64 Mach-O UUID" >&2
+        return 1
+    }
+    printf '%s\n' "$uuid"
+}
+
+release_validate_symbol_tree() {
+    local dsym="${1:-}"
+    local invalid_entry
+
+    [[ -d "$dsym" && ! -L "$dsym" ]] || {
+        echo "release dSYM is missing or symlinked: $dsym" >&2
+        return 1
+    }
+    if ! invalid_entry="$(
+        /usr/bin/find "$dsym" \! -type d \! -type f -print -quit
+    )"; then
+        echo "could not inspect release dSYM tree: $dsym" >&2
+        return 1
+    fi
+    [[ -z "$invalid_entry" ]] || {
+        echo "release dSYM contains a symlink or special file: $invalid_entry" >&2
+        return 1
+    }
+}
+
+release_validate_physical_dsym() {
+    local dsym="${1:-}"
+    local physical_dsym
+
+    [[ "$dsym" == /* ]] || {
+        echo "release dSYM path must be absolute" >&2
+        return 1
+    }
+    release_validate_symbol_tree "$dsym" || return 1
+    physical_dsym="$(cd "$dsym" && pwd -P)" || return 1
+    [[ "$physical_dsym" == "$dsym" ]] || {
+        echo "release dSYM escaped its validated physical path: $dsym" >&2
+        return 1
+    }
+}
+
+release_validate_dsym_matches_binary() {
+    local binary="${1:-}"
+    local dsym="${2:-}"
+    local binary_uuid
+    local dsym_uuid
+
+    [[ -f "$binary" && ! -L "$binary" ]] || {
+        echo "release binary for dSYM validation is missing or symlinked" >&2
+        return 1
+    }
+    release_validate_physical_dsym "$dsym" || return 1
+    binary_uuid="$(release_macho_arm64_uuid "$binary")" || return 1
+    dsym_uuid="$(release_macho_arm64_uuid "$dsym")" || return 1
+    [[ "$binary_uuid" == "$dsym_uuid" ]] || {
+        echo "dSYM UUID does not match release binary UUID" >&2
+        return 1
+    }
+}
+
+release_prepare_symbols_root() {
+    local dist_root="$release_repo_root/dist"
+    local dist_identity
+    local current_identity
+
+    [[ -d "$dist_root" && ! -L "$dist_root" ]] || {
+        echo "release symbols parent must be a physical dist directory" >&2
+        return 1
+    }
+    [[ "$(cd "$dist_root" && pwd -P)" == "$dist_root" ]] || {
+        echo "release symbols parent escaped the physical repository" >&2
+        return 1
+    }
+    [[ ! -L "$release_symbols_root" ]] || {
+        echo "release symbols directory must not be a symlink" >&2
+        return 1
+    }
+    if [[ ! -e "$release_symbols_root" ]]; then
+        dist_identity="$(
+            /usr/bin/swift "$release_path_guard" token-directory "$dist_root"
+        )" || return 1
+        (
+            cd "$dist_root" || exit 1
+            current_identity="$(/usr/bin/stat -f '%d:%i' .)" || exit 1
+            [[ "$current_identity" == "$dist_identity" ]] || {
+                echo "release symbols parent identity changed before creation" >&2
+                exit 1
+            }
+            [[ ! -e release-symbols && ! -L release-symbols ]] || {
+                echo "release symbols output appeared before creation" >&2
+                exit 1
+            }
+            /bin/mkdir release-symbols
+        ) || return 1
+    fi
+    [[ -d "$release_symbols_root" && ! -L "$release_symbols_root" ]] || {
+        echo "release symbols output must be a physical directory" >&2
+        return 1
+    }
+    [[ "$(cd "$release_symbols_root" && pwd -P)" == "$release_symbols_root" ]] || {
+        echo "release symbols directory escaped the repository" >&2
+        return 1
+    }
+    release_symbols_root_identity="$(
+        /usr/bin/swift "$release_path_guard" \
+            token-directory "$release_symbols_root"
+    )"
+}
+
+release_validate_symbols_root_identity() {
+    local expected_identity="${1:-}"
+    local current_identity
+
+    [[ -n "$expected_identity" ]] || return 1
+    [[ -d "$release_symbols_root" && ! -L "$release_symbols_root" ]] || {
+        echo "release symbols directory disappeared or became a symlink" >&2
+        return 1
+    }
+    [[ "$(cd "$release_symbols_root" && pwd -P)" == "$release_symbols_root" ]] || {
+        echo "release symbols directory escaped the repository" >&2
+        return 1
+    }
+    current_identity="$(
+        /usr/bin/swift "$release_path_guard" \
+            token-directory "$release_symbols_root"
+    )" || return 1
+    [[ "$current_identity" == "$expected_identity" ]] || {
+        echo "release symbols directory identity changed during publication" >&2
+        return 1
+    }
+}
+
+release_cleanup_symbol_snapshot_root() {
+    local snapshot_root="${1:-}"
+
+    case "$snapshot_root" in
+        /private/tmp/localocr-release-symbols.*) ;;
+        *) return 1 ;;
+    esac
+    [[ -d "$snapshot_root" && ! -L "$snapshot_root" ]] || return 1
+    [[ "$(cd "$snapshot_root" && pwd -P)" == "$snapshot_root" ]] || return 1
+    /bin/rm -rf -- "$snapshot_root"
+}
+
+release_preserve_matching_dsym() {
+    local binary="${1:-}"
+    local source_dsym="${2:-}"
+    local symbol_label="${3:-}"
+    local binary_uuid
+    local source_identity
+    local snapshot_root
+    local snapshot_dsym
+    local symbols_identity
+    local output_name
+    local output_dsym
+
+    [[ -n "$source_dsym" ]] || return 0
+    case "$symbol_label" in
+        localocr|localocr-mcp|LocalOCR-Studio) ;;
+        *)
+            echo "unexpected release symbol label: $symbol_label" >&2
+            return 1
+            ;;
+    esac
+    release_validate_dsym_matches_binary "$binary" "$source_dsym" || return 1
+    binary_uuid="$(release_macho_arm64_uuid "$binary")" || return 1
+    source_identity="$(
+        /usr/bin/swift "$release_path_guard" \
+            token-directory "$source_dsym"
+    )" || return 1
+    snapshot_root="$(
+        /usr/bin/mktemp -d /private/tmp/localocr-release-symbols.XXXXXX
+    )" || {
+        echo "could not create a private dSYM snapshot directory" >&2
+        return 1
+    }
+    /bin/chmod 700 "$snapshot_root" || {
+        release_cleanup_symbol_snapshot_root "$snapshot_root" || true
+        return 1
+    }
+    snapshot_dsym="$snapshot_root/symbol.dSYM"
+    /usr/bin/ditto "$source_dsym" "$snapshot_dsym" || {
+        release_cleanup_symbol_snapshot_root "$snapshot_root" || true
+        return 1
+    }
+    [[ "$source_identity" == "$(
+        /usr/bin/swift "$release_path_guard" \
+            token-directory "$source_dsym"
+    )" ]] || {
+        echo "release dSYM source identity changed during snapshot" >&2
+        release_cleanup_symbol_snapshot_root "$snapshot_root" || true
+        return 1
+    }
+    release_validate_dsym_matches_binary "$binary" "$snapshot_dsym" || {
+        release_cleanup_symbol_snapshot_root "$snapshot_root" || true
+        return 1
+    }
+
+    release_prepare_symbols_root || {
+        release_cleanup_symbol_snapshot_root "$snapshot_root" || true
+        return 1
+    }
+    symbols_identity="$release_symbols_root_identity"
+    output_name="$binary_uuid-$symbol_label.dSYM"
+    output_dsym="$release_symbols_root/$output_name"
+    (
+        local current_identity
+        local candidate_path
+        local candidate_name
+        local publish_result
+
+        cd "$release_symbols_root" || exit 1
+        current_identity="$(/usr/bin/stat -f '%d:%i' .)" || exit 1
+        [[ "$current_identity" == "$symbols_identity" ]] || {
+            echo "release symbols directory identity changed before copy" >&2
+            exit 1
+        }
+        candidate_path="$(
+            /usr/bin/mktemp -d ".release-symbol.$binary_uuid.$symbol_label.XXXXXX"
+        )" || exit 1
+        candidate_name="${candidate_path#./}"
+        case "$candidate_name" in
+            .release-symbol."$binary_uuid"."$symbol_label".*) ;;
+            *) exit 1 ;;
+        esac
+        [[ ! -e "$candidate_name.dSYM" && ! -L "$candidate_name.dSYM" ]] || {
+            /bin/rm -rf -- "$candidate_name"
+            exit 1
+        }
+        /bin/mv "$candidate_name" "$candidate_name.dSYM" || {
+            /bin/rm -rf -- "$candidate_name"
+            exit 1
+        }
+        candidate_name="$candidate_name.dSYM"
+        /usr/bin/ditto "$snapshot_dsym" "$candidate_name" || {
+            /bin/rm -rf -- "$candidate_name"
+            exit 1
+        }
+        release_validate_symbol_tree "$candidate_name" || {
+            /bin/rm -rf -- "$candidate_name"
+            exit 1
+        }
+        [[ "$(release_macho_arm64_uuid "$candidate_name")" == "$binary_uuid" ]] || {
+            echo "copied dSYM UUID changed before publication" >&2
+            /bin/rm -rf -- "$candidate_name"
+            exit 1
+        }
+        publish_result="$(
+            /usr/bin/swift "$release_path_guard" publish-directory \
+                "$release_symbols_root/$candidate_name" \
+                "$output_dsym" \
+                "$symbols_identity"
+        )" || {
+            /bin/rm -rf -- "$candidate_name"
+            exit 1
+        }
+        if [[ "$publish_result" == "exchanged" ]]; then
+            /bin/rm -rf -- "$candidate_name"
+        else
+            [[ "$publish_result" == "moved" ]] || exit 1
+        fi
+    ) || {
+        release_cleanup_symbol_snapshot_root "$snapshot_root" || true
+        return 1
+    }
+    release_validate_symbols_root_identity "$symbols_identity" || {
+        release_cleanup_symbol_snapshot_root "$snapshot_root" || true
+        return 1
+    }
+    release_validate_dsym_matches_binary "$binary" "$output_dsym" || {
+        release_cleanup_symbol_snapshot_root "$snapshot_root" || true
+        return 1
+    }
+    release_cleanup_symbol_snapshot_root "$snapshot_root" || {
+        echo "could not clean private dSYM snapshot directory" >&2
+        return 1
+    }
+}
+
 sanitize_validated_release_binary() {
     local binary="${1:-}"
     local expected_binary="${2:-}"
     local allow_framework_rpath="${3:-false}"
+    local remove_non_system_rpaths="${4:-false}"
     local parent
     local physical_parent
     local physical_binary
+    local rpath
+    local sanitize_root
+    local working_binary
+    local target_identity
+    local working_identity
+
+    cleanup_sanitize_root() {
+        local candidate_root="${1:-}"
+
+        case "$candidate_root" in
+            /private/tmp/localocr-release-sanitize.*) ;;
+            *) return 1 ;;
+        esac
+        [[ -d "$candidate_root" && ! -L "$candidate_root" ]] || return 1
+        [[ "$(cd "$candidate_root" && pwd -P)" == "$candidate_root" ]] || return 1
+        /bin/rm -rf -- "$candidate_root"
+    }
 
     [[ -n "$binary" && "$binary" == "$expected_binary" ]] || {
         echo "refusing to sanitize an unexpected release binary" >&2
@@ -237,13 +561,86 @@ sanitize_validated_release_binary() {
         echo "release binary copy escaped its validated path: $binary" >&2
         return 1
     }
-
-    release_validate_binary_policy "$binary" "$allow_framework_rpath" false || return 1
-    /usr/bin/strip -S "$binary" || {
-        echo "could not strip copied release binary: $binary" >&2
+    [[ -f "$release_path_guard" && ! -L "$release_path_guard" ]] || {
+        echo "release path guard is missing or symlinked" >&2
         return 1
     }
-    release_validate_binary_policy "$binary" "$allow_framework_rpath" true || return 1
+
+    sanitize_root="$(/usr/bin/mktemp -d /private/tmp/localocr-release-sanitize.XXXXXX)" || {
+        echo "could not create a private release sanitizer directory" >&2
+        return 1
+    }
+    /bin/chmod 700 "$sanitize_root" || {
+        cleanup_sanitize_root "$sanitize_root" || true
+        return 1
+    }
+    working_binary="$sanitize_root/binary"
+    target_identity="$(
+        /usr/bin/swift "$release_path_guard" \
+            snapshot-file "$binary" "$working_binary"
+    )" || {
+        cleanup_sanitize_root "$sanitize_root" || true
+        return 1
+    }
+    if [[ "$remove_non_system_rpaths" == true ]]; then
+        while IFS= read -r rpath; do
+            [[ -n "$rpath" ]] || continue
+            if [[ "$rpath" != "$release_system_swift_rpath" ]]; then
+                /usr/bin/install_name_tool \
+                    -delete_rpath "$rpath" "$working_binary" || {
+                    cleanup_sanitize_root "$sanitize_root" || true
+                    return 1
+                }
+            fi
+        done < <(release_binary_rpaths "$working_binary")
+    fi
+    working_identity="$(
+        /usr/bin/swift "$release_path_guard" token-file "$working_binary"
+    )" || {
+        cleanup_sanitize_root "$sanitize_root" || true
+        return 1
+    }
+    release_validate_binary_policy \
+        "$working_binary" "$allow_framework_rpath" false || {
+        cleanup_sanitize_root "$sanitize_root" || true
+        return 1
+    }
+    [[ "$(/usr/bin/swift "$release_path_guard" token-file "$working_binary")" == "$working_identity" ]] || {
+        echo "release sanitizer working copy changed before strip" >&2
+        cleanup_sanitize_root "$sanitize_root" || true
+        return 1
+    }
+    /usr/bin/strip -S "$working_binary" || {
+        echo "could not strip private release working copy" >&2
+        cleanup_sanitize_root "$sanitize_root" || true
+        return 1
+    }
+    working_identity="$(
+        /usr/bin/swift "$release_path_guard" token-file "$working_binary"
+    )" || {
+        cleanup_sanitize_root "$sanitize_root" || true
+        return 1
+    }
+    release_validate_binary_policy \
+        "$working_binary" "$allow_framework_rpath" true || {
+        cleanup_sanitize_root "$sanitize_root" || true
+        return 1
+    }
+    /usr/bin/swift "$release_path_guard" \
+        commit-file "$working_binary" "$binary" \
+        "$target_identity" "$working_identity" || {
+        echo "release binary identity changed before sanitized commit: $binary" >&2
+        cleanup_sanitize_root "$sanitize_root" || true
+        return 1
+    }
+    release_validate_binary_policy "$binary" "$allow_framework_rpath" true || {
+        cleanup_sanitize_root "$sanitize_root" || true
+        return 1
+    }
+    cleanup_sanitize_root "$sanitize_root" || {
+        echo "could not clean private release sanitizer directory" >&2
+        return 1
+    }
 }
 
 release_evidence_dir() {

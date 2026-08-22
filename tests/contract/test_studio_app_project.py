@@ -30,6 +30,7 @@ BATCH_WORKSPACE = ROOT / "Sources" / "LocalOCRStudioKit" / "BatchWorkspaceView.s
 BATCH_STATUS_VIEWS = ROOT / "Sources" / "LocalOCRStudioKit" / "BatchStatusViews.swift"
 BUILD_SCRIPT = ROOT / "scripts" / "build-unsigned-studio-app.sh"
 RELEASE_TOOLCHAIN = ROOT / "scripts" / "release-toolchain.sh"
+RELEASE_PATH_GUARD = ROOT / "scripts" / "release-path-guard.swift"
 
 EXPECTED_SETTINGS = {
     "PRODUCT_BUNDLE_IDENTIFIER": "com.rayconsulting.localocr",
@@ -357,6 +358,151 @@ def test_unsigned_build_strips_only_the_validated_staged_executable(
     ).stdout
     assert "/Users/" not in symbols
     assert not list(canonical_app.rglob("*.dSYM"))
+    assert not (fake_repo / "dist" / "release-symbols").exists()
+
+
+def test_unsigned_build_preserves_a_matching_dsym_by_uuid_outside_the_app(
+    tmp_path: Path,
+) -> None:
+    script, fake_repo = _copy_build_scripts_to_isolated_repo(tmp_path)
+    canonical_app = fake_repo / "dist" / "unsigned-app" / "LocalOCR Studio.app"
+    source_dsym = tmp_path / "LocalOCR Studio.app.dSYM"
+
+    with tempfile.TemporaryDirectory(
+        prefix="localocr-studio-build.",
+        dir="/tmp",
+    ) as temporary_root:
+        build_root = Path(temporary_root)
+        source_product = build_root / "SourceProducts" / "LocalOCR Studio"
+        _compile_debug_path_fixture(source_product)
+        _create_matching_dsym(source_product, source_dsym)
+        source_symbol_bytes = _snapshot_file_bytes(source_dsym)
+        expected_uuid = _macho_uuid(source_product)
+        staged_app = _write_staged_app(
+            build_root,
+            bundle_identifier="com.rayconsulting.localocr",
+            minimum_os="14.0",
+        )
+        shutil.copy2(
+            source_product,
+            staged_app / "Contents" / "MacOS" / "LocalOCR Studio",
+        )
+
+        result = _run_sourced_build_function(
+            script,
+            build_root,
+            (
+                'validate_and_publish_staged_app '
+                '"$build_root/Staged/LocalOCR Studio.app" '
+                f'{str(source_dsym)!r}'
+            ),
+        )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    published_executable = canonical_app / "Contents" / "MacOS" / "LocalOCR Studio"
+    retained_dsym = (
+        fake_repo
+        / "dist"
+        / "release-symbols"
+        / f"{expected_uuid}-LocalOCR-Studio.dSYM"
+    )
+    assert retained_dsym.is_dir()
+    assert _macho_uuid(retained_dsym) == _macho_uuid(published_executable)
+    assert _snapshot_file_bytes(source_dsym) == source_symbol_bytes
+    assert not list(canonical_app.rglob("*.dSYM"))
+    assert not list((fake_repo / "dist" / "unsigned-app").glob("*.dSYM"))
+
+
+def test_unsigned_build_rejects_a_mismatched_dsym_before_publication(
+    tmp_path: Path,
+) -> None:
+    script, fake_repo = _copy_build_scripts_to_isolated_repo(tmp_path)
+    canonical_app = fake_repo / "dist" / "unsigned-app" / "LocalOCR Studio.app"
+    source_dsym = tmp_path / "mismatched.dSYM"
+    other_binary = tmp_path / "other" / "LocalOCR Studio"
+    _compile_debug_path_fixture(
+        other_binary,
+        "int helper(void) { return 1; } int main(void) { return helper(); }\n",
+    )
+    _create_matching_dsym(other_binary, source_dsym)
+
+    with tempfile.TemporaryDirectory(
+        prefix="localocr-studio-build.",
+        dir="/tmp",
+    ) as temporary_root:
+        build_root = Path(temporary_root)
+        staged_app = _write_staged_app(
+            build_root,
+            bundle_identifier="com.rayconsulting.localocr",
+            minimum_os="14.0",
+        )
+        staged_executable = staged_app / "Contents" / "MacOS" / "LocalOCR Studio"
+        _compile_debug_path_fixture(staged_executable)
+        assert _macho_uuid(staged_executable) != _macho_uuid(source_dsym)
+
+        result = _run_sourced_build_function(
+            script,
+            build_root,
+            (
+                'validate_and_publish_staged_app '
+                '"$build_root/Staged/LocalOCR Studio.app" '
+                f'{str(source_dsym)!r}'
+            ),
+        )
+
+    assert result.returncode != 0
+    assert "dSYM UUID does not match release binary UUID" in result.stderr
+    assert not canonical_app.exists()
+    assert not (fake_repo / "dist" / "release-symbols").exists()
+
+
+def test_unsigned_build_rejects_a_symlinked_release_symbols_root(
+    tmp_path: Path,
+) -> None:
+    script, fake_repo = _copy_build_scripts_to_isolated_repo(tmp_path)
+    outside_symbols = tmp_path / "outside-symbols"
+    outside_symbols.mkdir()
+    outside_marker = outside_symbols / "must-survive.txt"
+    outside_marker.write_text("do not copy symbols here")
+    (fake_repo / "dist").mkdir()
+    (fake_repo / "dist" / "release-symbols").symlink_to(
+        outside_symbols,
+        target_is_directory=True,
+    )
+    source_dsym = tmp_path / "LocalOCR Studio.app.dSYM"
+
+    with tempfile.TemporaryDirectory(
+        prefix="localocr-studio-build.",
+        dir="/tmp",
+    ) as temporary_root:
+        build_root = Path(temporary_root)
+        source_product = build_root / "SourceProducts" / "LocalOCR Studio"
+        _compile_debug_path_fixture(source_product)
+        _create_matching_dsym(source_product, source_dsym)
+        staged_app = _write_staged_app(
+            build_root,
+            bundle_identifier="com.rayconsulting.localocr",
+            minimum_os="14.0",
+        )
+        shutil.copy2(
+            source_product,
+            staged_app / "Contents" / "MacOS" / "LocalOCR Studio",
+        )
+
+        result = _run_sourced_build_function(
+            script,
+            build_root,
+            (
+                'validate_and_publish_staged_app '
+                '"$build_root/Staged/LocalOCR Studio.app" '
+                f'{str(source_dsym)!r}'
+            ),
+        )
+
+    assert result.returncode != 0
+    assert "release symbols directory must not be a symlink" in result.stderr
+    assert outside_marker.read_text() == "do not copy symbols here"
+    assert sorted(outside_symbols.iterdir()) == [outside_marker]
 
 
 def test_unsigned_build_rejects_a_symlinked_staged_executable_without_editing_target(
@@ -592,6 +738,10 @@ def _copy_build_scripts_to_isolated_repo(
         RELEASE_TOOLCHAIN,
         scripts_directory / RELEASE_TOOLCHAIN.name,
     )
+    shutil.copy2(
+        RELEASE_PATH_GUARD,
+        scripts_directory / RELEASE_PATH_GUARD.name,
+    )
     return copied_build_script, fake_repo
 
 
@@ -639,10 +789,13 @@ def _write_staged_app(
     return staged_app
 
 
-def _compile_debug_path_fixture(output: Path) -> None:
+def _compile_debug_path_fixture(
+    output: Path,
+    source_text: str = "int main(void) { return 0; }\n",
+) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     source = output.parent / "debug-path-fixture.c"
-    source.write_text("int main(void) { return 0; }\n")
+    source.write_text(source_text)
     subprocess.run(
         [
             "/usr/bin/clang",
@@ -659,6 +812,33 @@ def _compile_debug_path_fixture(output: Path) -> None:
         capture_output=True,
         text=True,
     )
+
+
+def _macho_uuid(binary_or_dsym: Path) -> str:
+    output = subprocess.run(
+        ["/usr/bin/dwarfdump", "--uuid", str(binary_or_dsym)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    matches = re.findall(
+        r"(?m)^UUID: ([0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}) "
+        r"\(arm64\) ",
+        output,
+    )
+    assert len(matches) == 1, output
+    return matches[0]
+
+
+def _create_matching_dsym(binary: Path, output: Path) -> None:
+    subprocess.run(
+        ["/usr/bin/dsymutil", str(binary), "-o", str(output)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert output.is_dir()
+    assert _macho_uuid(output) == _macho_uuid(binary)
 
 
 def _snapshot_file_bytes(root: Path) -> dict[Path, bytes]:
