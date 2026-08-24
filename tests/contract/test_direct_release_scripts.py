@@ -3712,19 +3712,29 @@ if [[ "${1:-}" == "--version" ]]; then
     exit 0
 fi
 case "${1:-}" in
-    ocr|image)
-        if [[ "${LOCALOCR_TEST_SMOKE_MUTATE:-}" == "1" ]]; then
-            printf 'mutated-by-controlled-cli\\n' >> "$2"
+    ocr)
+        if [[ "$#" -ne 4 || "${3:-}" != "--no-cache" || "${4:-}" != "--json" ]]; then
+            printf 'error: unsupported ocr smoke arguments\\n' >&2
+            exit 64
         fi
-        if [[ "${LOCALOCR_TEST_SMOKE_FAIL:-}" == "1" ]]; then
-            exit 74
+        ;;
+    image)
+        if [[ "$#" -ne 3 || "${3:-}" != "--json" ]]; then
+            printf 'error: unsupported image smoke arguments\\n' >&2
+            exit 64
         fi
-        printf '{"text":"controlled fixture output"}\\n'
         ;;
     *)
         exit 64
         ;;
 esac
+if [[ "${LOCALOCR_TEST_SMOKE_MUTATE:-}" == "1" ]]; then
+    printf 'mutated-by-controlled-cli\\n' >> "$2"
+fi
+if [[ "${LOCALOCR_TEST_SMOKE_FAIL:-}" == "1" ]]; then
+    exit 74
+fi
+printf '{"text":"controlled fixture output"}\\n'
 """
     )
     cli.chmod(0o755)
@@ -4081,6 +4091,29 @@ def test_downloaded_release_optional_smoke_records_type_not_content_or_paths(
         "PRIVATE-DOCUMENT-CONTENT-DO-NOT-RECORD",
     ):
         assert forbidden not in evidence
+
+
+def test_downloaded_release_image_smoke_uses_supported_cli_contract(
+    tmp_path: Path,
+) -> None:
+    archive, checksum = _create_download_release_fixture(tmp_path)
+    smoke_input = tmp_path / "controlled-smoke.png"
+    smoke_input.write_text("controlled image fixture")
+
+    result, trace_file, _ = _run_download_release_fixture(
+        tmp_path,
+        archive,
+        checksum,
+        extra_env={"LOCALOCR_SMOKE_INPUT": str(smoke_input)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    image_invocations = [
+        line
+        for line in trace_file.read_text().splitlines()
+        if line.startswith("localocr image ")
+    ]
+    assert image_invocations == [f"localocr image {smoke_input} --json"]
 
 
 @pytest.mark.parametrize(
