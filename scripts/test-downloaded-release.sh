@@ -681,7 +681,7 @@ download_smoke_input_type() {
 download_run_optional_smoke() {
     local input="${LOCALOCR_SMOKE_INPUT:-}"
     local input_type
-    local command
+    local -a command_arguments
     local checksum_before
     local checksum_after
     local command_status=0
@@ -724,13 +724,13 @@ download_run_optional_smoke() {
         return 1
     }
     if [[ "$input_type" == "PDF" ]]; then
-        command="ocr"
+        command_arguments=("ocr" "$input" "--no-cache" "--json")
     else
-        command="image"
+        command_arguments=("image" "$input" "--json")
     fi
     if LOCALOCR_CACHE_DIR="$download_extraction_root/ocr-cache" \
         "$download_extracted_app/Contents/Helpers/localocr" \
-        "$command" "$input" --no-cache --json > "$output_file"
+        "${command_arguments[@]}" > "$output_file"
     then
         command_status=0
     else
