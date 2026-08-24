@@ -1,11 +1,57 @@
 import AppKit
 import LocalOCRCore
+import Observation
 import SwiftUI
 import UniformTypeIdentifiers
+
+public enum StudioWorkspaceMode: Sendable, Equatable {
+    case single
+    case batch
+}
+
+@MainActor
+@Observable
+final class StudioWorkspaceSession {
+    private(set) var mode: StudioWorkspaceMode
+    let batchCoordinator: StudioBatchCoordinator
+
+    init(
+        batchCoordinator: StudioBatchCoordinator,
+        initialMode: StudioWorkspaceMode = .single
+    ) {
+        self.batchCoordinator = batchCoordinator
+        self.mode = initialMode
+    }
+
+    func enterBatch() {
+        batchCoordinator.startNewBatch()
+        mode = .batch
+    }
+
+    @discardableResult
+    func returnToSingle() -> Bool {
+        departBatch(cancelProcessing: false)
+    }
+
+    func handleDisappearance() {
+        _ = departBatch(cancelProcessing: true)
+    }
+
+    private func departBatch(cancelProcessing: Bool) -> Bool {
+        if batchCoordinator.phase == .processing {
+            guard cancelProcessing else { return false }
+            batchCoordinator.cancel()
+        }
+        batchCoordinator.startNewBatch()
+        mode = .single
+        return true
+    }
+}
 
 @MainActor
 public struct LocalOCRStudioView: View {
     @State private var model: StudioViewModel
+    @State private var workspaceSession: StudioWorkspaceSession
     private let actions: StudioDocumentActions
 
     @State private var actionError: StudioPresentedError?
@@ -16,8 +62,15 @@ public struct LocalOCRStudioView: View {
     @State private var pendingDropLoad: Progress?
     @State private var isDropTargeted = false
 
-    public init(model: StudioViewModel, actions: StudioDocumentActions) {
+    public init(
+        model: StudioViewModel,
+        actions: StudioDocumentActions,
+        batchCoordinator: StudioBatchCoordinator
+    ) {
         self._model = State(initialValue: model)
+        self._workspaceSession = State(initialValue: StudioWorkspaceSession(
+            batchCoordinator: batchCoordinator
+        ))
         self.actions = actions
     }
 
@@ -26,10 +79,16 @@ public struct LocalOCRStudioView: View {
     public init(
         model: StudioViewModel,
         actions: StudioDocumentActions,
+        batchCoordinator: StudioBatchCoordinator,
+        workspaceMode: StudioWorkspaceMode = .single,
         isCreatingSearchablePDF: Bool,
         searchableProgress: StudioProgress?
     ) {
         self._model = State(initialValue: model)
+        self._workspaceSession = State(initialValue: StudioWorkspaceSession(
+            batchCoordinator: batchCoordinator,
+            initialMode: workspaceMode
+        ))
         self.actions = actions
         self._isCreatingSearchablePDF = State(
             initialValue: isCreatingSearchablePDF
@@ -43,44 +102,56 @@ public struct LocalOCRStudioView: View {
             header
 
             Group {
-                switch model.state {
-                case .empty:
-                    StudioDropZoneView(
-                        isTargeted: isDropTargeted,
-                        onOpen: showOpenPanel
+                switch workspaceSession.mode {
+                case .single:
+                    Group {
+                        switch model.state {
+                        case .empty:
+                            StudioDropZoneView(
+                                isTargeted: isDropTargeted,
+                                onOpen: showOpenPanel,
+                                onNewBatch: enterBatch
+                            )
+
+                        case let .processing(sourceURL, progress):
+                            StudioProcessingView(
+                                sourceURL: sourceURL,
+                                progress: progress,
+                                onCancel: model.cancel
+                            )
+
+                        case let .result(result):
+                            StudioResultView(
+                                result: result,
+                                isCreatingSearchablePDF: isCreatingSearchablePDF,
+                                searchableProgress: searchableProgress,
+                                onProcessAnother: resetToEmpty,
+                                onCopy: { actions.copy(result) },
+                                onSaveText: { showTextSavePanel(for: result) },
+                                onCreateSearchablePDF: { showSearchablePDFSavePanel(for: result) }
+                            )
+
+                        case let .failure(_, error):
+                            StudioErrorView(
+                                error: error,
+                                onRetry: model.retry,
+                                onChooseAnother: showOpenPanel
+                            )
+                        }
+                    }
+                    .onDrop(
+                        of: [UTType.fileURL],
+                        isTargeted: $isDropTargeted,
+                        perform: acceptDrop
                     )
 
-                case let .processing(sourceURL, progress):
-                    StudioProcessingView(
-                        sourceURL: sourceURL,
-                        progress: progress,
-                        onCancel: model.cancel
-                    )
-
-                case let .result(result):
-                    StudioResultView(
-                        result: result,
-                        isCreatingSearchablePDF: isCreatingSearchablePDF,
-                        searchableProgress: searchableProgress,
-                        onProcessAnother: resetToEmpty,
-                        onCopy: { actions.copy(result) },
-                        onSaveText: { showTextSavePanel(for: result) },
-                        onCreateSearchablePDF: { showSearchablePDFSavePanel(for: result) }
-                    )
-
-                case let .failure(_, error):
-                    StudioErrorView(
-                        error: error,
-                        onRetry: model.retry,
-                        onChooseAnother: showOpenPanel
+                case .batch:
+                    BatchWorkspaceView(
+                        coordinator: batchCoordinator,
+                        onReturnToSingle: { workspaceSession.returnToSingle() }
                     )
                 }
             }
-            .onDrop(
-                of: [UTType.fileURL],
-                isTargeted: $isDropTargeted,
-                perform: acceptDrop
-            )
         }
         .padding(24)
         .frame(minWidth: 760, minHeight: 520)
@@ -97,18 +168,25 @@ public struct LocalOCRStudioView: View {
                 Text(alertMessage(for: actionError))
             }
         }
-        .onDisappear {
-            lifecycle.invalidateForDisappearance()
-            pendingDropLoad?.cancel()
-            pendingDropLoad = nil
-            actionError = nil
-            isCreatingSearchablePDF = false
-            searchableProgress = nil
-            let task = searchablePDFTask
-            searchablePDFTask = nil
-            task?.cancel()
-            model.clear()
-        }
+        .onDisappear(perform: handleDisappearance)
+    }
+
+    private var batchCoordinator: StudioBatchCoordinator {
+        workspaceSession.batchCoordinator
+    }
+
+    private func handleDisappearance() {
+        lifecycle.invalidateForDisappearance()
+        pendingDropLoad?.cancel()
+        pendingDropLoad = nil
+        actionError = nil
+        isCreatingSearchablePDF = false
+        searchableProgress = nil
+        let task = searchablePDFTask
+        searchablePDFTask = nil
+        task?.cancel()
+        model.clear()
+        workspaceSession.handleDisappearance()
     }
 
     private var header: some View {
@@ -142,6 +220,13 @@ public struct LocalOCRStudioView: View {
                 }
             }
         )
+    }
+
+    private func enterBatch() {
+        pendingDropLoad?.cancel()
+        pendingDropLoad = nil
+        isDropTargeted = false
+        workspaceSession.enterBatch()
     }
 
     private func showOpenPanel() {

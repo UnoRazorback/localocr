@@ -13,7 +13,7 @@ import Testing
         try await server.start(transport: serverTransport)
         let initialization = try await client.connect(transport: clientTransport)
         #expect(initialization.serverInfo.name == "localocr")
-        #expect(initialization.serverInfo.version == "0.2.0")
+        #expect(initialization.serverInfo.version == "0.3.0")
 
         let (tools, _) = try await client.listTools()
         #expect(tools.map(\.name).sorted() == MCPToolCatalog.tools.map(\.name).sorted())

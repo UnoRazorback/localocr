@@ -74,6 +74,11 @@ reject_binary_content() {
         # an ordinary on-disk file.
     fi
 
+    if /usr/bin/grep -a -F -q -- '/Users/' "$binary"; then
+        echo "release artifact contains a private /Users/ path: $binary" >&2
+        exit 1
+    fi
+
     raw_strings="$(strings "$binary")"
     for forbidden_string in \
         '.venv' \
@@ -124,8 +129,8 @@ if ! printf '%s\n' "$initialize_response" | grep -q '"serverInfo"'; then
     echo "native MCP server did not complete initialization" >&2
     exit 1
 fi
-if ! printf '%s\n' "$initialize_response" | grep -q '"version":"0.2.0"'; then
-    echo "native MCP server did not negotiate version 0.2.0" >&2
+if ! printf '%s\n' "$initialize_response" | grep -q '"version":"0.3.0"'; then
+    echo "native MCP server did not negotiate version 0.3.0" >&2
     exit 1
 fi
 if [[ -s "$stderr_file" ]]; then

@@ -1,3 +1,4 @@
+import LocalOCRService
 import MCP
 
 public protocol MCPToolDispatching: Sendable {
@@ -16,7 +17,7 @@ public struct MCPServerRunner: Sendable {
     public func makeServer() async -> Server {
         let server = Server(
             name: "localocr",
-            version: "0.2.0",
+            version: LocalOCRRuntime.version,
             capabilities: .init(tools: .init())
         )
 

@@ -5,6 +5,7 @@ struct StudioDropZoneView: View {
 
     let isTargeted: Bool
     let onOpen: () -> Void
+    let onNewBatch: () -> Void
 
     var body: some View {
         VStack(spacing: 24) {
@@ -46,11 +47,18 @@ struct StudioDropZoneView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Button("Open Document", action: onOpen)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .keyboardShortcut("o", modifiers: .command)
-                .accessibilityIdentifier("studio.open")
+            HStack(spacing: 10) {
+                Button("Open Document", action: onOpen)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .keyboardShortcut("o", modifiers: .command)
+                    .accessibilityIdentifier("studio.open")
+
+                Button("New Batch…", action: onNewBatch)
+                    .controlSize(.large)
+                    .accessibilityHint("Review and process multiple documents one at a time.")
+                    .accessibilityIdentifier("studio.new-batch")
+            }
 
             Label("Processed locally on this Mac.", systemImage: "lock.fill")
                 .font(.callout)
@@ -72,7 +80,9 @@ struct StudioDropZoneView: View {
         .contentShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Document drop zone")
-        .accessibilityHint("Drop one PDF or image here, or choose Open Document.")
+        .accessibilityHint(
+            "Drop one PDF or image here, choose Open Document, or start a new batch."
+        )
         .accessibilityIdentifier("studio.drop-zone")
     }
 }

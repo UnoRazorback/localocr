@@ -4,10 +4,16 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
+# shellcheck source=scripts/release-toolchain.sh
+source "$script_dir/release-toolchain.sh"
 default_artifact_dir="$repo_root/dist/native-tools"
 direct_release_artifact_dir="$repo_root/dist/direct-release/native-tools"
 artifact_dir="$default_artifact_dir"
-system_swift_rpath="/usr/lib/swift"
+artifact_parent=""
+artifact_parent_identity=""
+artifact_output_identity=""
+native_release_dir=""
+native_release_identity=""
 
 validate_direct_release_artifact_dir() {
     local candidate="${1:-}"
@@ -81,26 +87,203 @@ case "$artifact_dir" in
         ;;
 esac
 
+validate_artifact_output_path() {
+    local dist_dir="$repo_root/dist"
+
+    [[ ! -L "$dist_dir" && ! -L "$artifact_dir" ]] || {
+        echo "artifact output path contains a symlinked component" >&2
+        return 1
+    }
+    if [[ ! -e "$dist_dir" ]]; then
+        [[ "$artifact_dir" == "$default_artifact_dir" ]] || {
+            echo "artifact output parent is missing" >&2
+            return 1
+        }
+        /bin/mkdir "$dist_dir"
+    fi
+    [[ -d "$dist_dir" && "$(cd "$dist_dir" && pwd -P)" == "$dist_dir" ]] || {
+        echo "artifact output path escaped the physical repository" >&2
+        return 1
+    }
+    artifact_parent="$(/usr/bin/dirname "$artifact_dir")"
+    [[ -d "$artifact_parent" && ! -L "$artifact_parent" ]] || {
+        echo "artifact output path contains a symlinked component" >&2
+        return 1
+    }
+    [[ "$(cd "$artifact_parent" && pwd -P)" == "$artifact_parent" ]] || {
+        echo "artifact output path escaped the physical repository" >&2
+        return 1
+    }
+    if [[ -e "$artifact_dir" ]]; then
+        [[ -d "$artifact_dir" && "$(cd "$artifact_dir" && pwd -P)" == "$artifact_dir" ]] || {
+            echo "artifact output directory is not a physical directory" >&2
+            return 1
+        }
+    fi
+}
+
+validate_artifact_output_path
+artifact_parent="$(/usr/bin/dirname "$artifact_dir")"
+artifact_parent_identity="$(
+    /usr/bin/swift "$release_path_guard" token-directory "$artifact_parent"
+)"
+if [[ -e "$artifact_dir" ]]; then
+    artifact_output_identity="$(
+        /usr/bin/swift "$release_path_guard" token-directory "$artifact_dir"
+    )"
+else
+    artifact_output_identity="missing"
+fi
+
+validate_artifact_output_identity() {
+    local current_parent_identity
+    local current_output_identity
+
+    validate_artifact_output_path || return 1
+    current_parent_identity="$(
+        /usr/bin/swift "$release_path_guard" token-directory "$artifact_parent"
+    )" || return 1
+    [[ "$current_parent_identity" == "$artifact_parent_identity" ]] || {
+        echo "artifact output parent identity changed during the build" >&2
+        return 1
+    }
+    if [[ "$artifact_output_identity" == "missing" ]]; then
+        [[ ! -e "$artifact_dir" && ! -L "$artifact_dir" ]] || {
+            echo "artifact output appeared during the build" >&2
+            return 1
+        }
+        return 0
+    fi
+    current_output_identity="$(
+        /usr/bin/swift "$release_path_guard" token-directory "$artifact_dir"
+    )" || return 1
+    [[ "$current_output_identity" == "$artifact_output_identity" ]] || {
+        echo "artifact output identity changed during the build" >&2
+        return 1
+    }
+}
+
+replace_artifact_output_with_empty_directory() {
+    local artifact_name
+    local current_parent_identity
+
+    artifact_name="$(/usr/bin/basename "$artifact_dir")"
+    (
+        cd "$artifact_parent" || exit 1
+        current_parent_identity="$(/usr/bin/stat -f '%d:%i' .)" || exit 1
+        [[ "$current_parent_identity" == "$artifact_parent_identity" ]] || {
+            echo "artifact output parent identity changed before cleanup" >&2
+            exit 1
+        }
+        if [[ -e "$artifact_name" || -L "$artifact_name" ]]; then
+            [[ "$artifact_output_identity" != "missing" ]] || {
+                echo "artifact output appeared before cleanup" >&2
+                exit 1
+            }
+            [[ -d "$artifact_name" && ! -L "$artifact_name" ]] || {
+                echo "artifact output became invalid before cleanup" >&2
+                exit 1
+            }
+            release_cleanup_anchored_directory \
+                "$artifact_name" \
+                "$artifact_output_identity" \
+                "$artifact_parent_identity" || {
+                echo "artifact output identity changed before cleanup" >&2
+                exit 1
+            }
+        else
+            [[ "$artifact_output_identity" == "missing" ]] || {
+                echo "artifact output disappeared before cleanup" >&2
+                exit 1
+            }
+        fi
+        /bin/mkdir "$artifact_name"
+    )
+}
+
+copy_native_products_to_artifact_output() {
+    local current_output_identity
+
+    (
+        cd "$artifact_dir" || exit 1
+        current_output_identity="$(/usr/bin/stat -f '%d:%i' .)" || exit 1
+        [[ "$current_output_identity" == "$artifact_output_identity" ]] || {
+            echo "artifact output identity changed before copy" >&2
+            exit 1
+        }
+        /bin/cp "$native_release_dir/localocr" ./localocr
+        /bin/cp "$native_release_dir/localocr-mcp" ./localocr-mcp
+    )
+}
+
 cd "$repo_root"
 swift package clean
 swift build -c release --product localocr
 swift build -c release --product localocr-mcp
 
-rm -rf -- "$artifact_dir"
-mkdir -p "$artifact_dir"
-cp ".build/release/localocr" "$artifact_dir/localocr"
-cp ".build/release/localocr-mcp" "$artifact_dir/localocr-mcp"
-
-release_rpaths() {
-    otool -l "$1" | awk '
-        $1 == "cmd" && $2 == "LC_RPATH" { expect_path = 1; next }
-        expect_path && $1 == "path" { print $2; expect_path = 0 }
-    '
+[[ -d "$repo_root/.build" && ! -L "$repo_root/.build" ]] || {
+    echo "SwiftPM build root is missing or symlinked" >&2
+    exit 1
 }
+[[ "$(cd "$repo_root/.build" && pwd -P)" == "$repo_root/.build" ]] || {
+    echo "SwiftPM build root escaped the physical repository" >&2
+    exit 1
+}
+native_release_dir="$(cd "$repo_root/.build/release" && pwd -P)" || {
+    echo "SwiftPM release output directory is missing" >&2
+    exit 1
+}
+case "$native_release_dir" in
+    "$repo_root/.build/"*) ;;
+    *)
+        echo "SwiftPM release output escaped the build root" >&2
+        exit 1
+        ;;
+esac
+native_release_identity="$(
+    /usr/bin/swift "$release_path_guard" token-directory "$native_release_dir"
+)"
+
+validate_native_release_identity() {
+    local current_identity
+
+    [[ -d "$native_release_dir" && ! -L "$native_release_dir" ]] || {
+        echo "SwiftPM release output changed during artifact publication" >&2
+        return 1
+    }
+    current_identity="$(
+        /usr/bin/swift "$release_path_guard" token-directory "$native_release_dir"
+    )" || return 1
+    [[ "$current_identity" == "$native_release_identity" ]] || {
+        echo "SwiftPM release output identity changed during artifact publication" >&2
+        return 1
+    }
+}
+
+for product in localocr localocr-mcp; do
+    product_dsym="$native_release_dir/$product.dSYM"
+    if [[ -e "$product_dsym" || -L "$product_dsym" ]]; then
+        release_validate_dsym_matches_binary \
+            "$native_release_dir/$product" \
+            "$product_dsym"
+    fi
+done
+
+validate_artifact_output_identity
+validate_native_release_identity
+replace_artifact_output_with_empty_directory
+validate_artifact_output_path
+artifact_output_identity="$(
+    /usr/bin/swift "$release_path_guard" token-directory "$artifact_dir"
+)"
+validate_artifact_output_identity
+validate_native_release_identity
+copy_native_products_to_artifact_output
+validate_artifact_output_identity
+validate_native_release_identity
 
 sanitize_copied_artifact() {
     local binary="$1"
-    local rpath
 
     case "$binary" in
         "$artifact_dir/localocr"|"$artifact_dir/localocr-mcp") ;;
@@ -109,14 +292,21 @@ sanitize_copied_artifact() {
             exit 1
             ;;
     esac
-
-    while IFS= read -r rpath; do
-        [[ -n "$rpath" ]] || continue
-        if [[ "$rpath" != "$system_swift_rpath" ]]; then
-            install_name_tool -delete_rpath "$rpath" "$binary"
-        fi
-    done < <(release_rpaths "$binary")
+    validate_artifact_output_identity
+    sanitize_validated_release_binary "$binary" "$binary" false true
 }
 
 sanitize_copied_artifact "$artifact_dir/localocr"
 sanitize_copied_artifact "$artifact_dir/localocr-mcp"
+validate_artifact_output_identity
+
+for product in localocr localocr-mcp; do
+    product_dsym="$native_release_dir/$product.dSYM"
+    if [[ -e "$product_dsym" || -L "$product_dsym" ]]; then
+        release_preserve_matching_dsym \
+            "$artifact_dir/$product" \
+            "$product_dsym" \
+            "$product"
+        validate_artifact_output_identity
+    fi
+done

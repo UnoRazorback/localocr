@@ -2,6 +2,7 @@ import AppKit
 import XCTest
 
 final class LocalOCRStudioUITests: XCTestCase {
+    private static let appBundleIdentifier = "com.rayconsulting.localocr"
     private static let resultText = """
     LOCALOCR UI FIXTURE
     Quarterly planning is complete.
@@ -19,14 +20,176 @@ final class LocalOCRStudioUITests: XCTestCase {
         XCTAssertTrue(dropZone.waitForExistence(timeout: 5))
         XCTAssertEqual(dropZone.label, "Document drop zone")
         XCTAssertTrue(app.buttons["studio.open"].exists)
+        XCTAssertTrue(app.buttons["studio.new-batch"].exists)
         XCTAssertTrue(app.staticTexts["Processed locally on this Mac."].exists)
+    }
+
+    func testBatchNavigationReturnsToTheUnchangedSingleDocumentStart() {
+        let app = launch(state: "batchReview")
+        let firstRow = element(
+            "studio.batch.row.00000000-0000-0000-0000-000000000001",
+            in: app
+        )
+
+        let workspace = element("studio.batch.workspace", in: app)
+        XCTAssertTrue(workspace.waitForExistence(timeout: 5))
+        XCTAssertTrue(firstRow.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["studio.batch.add-files"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.add-folder"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.choose-output"].isEnabled)
+
+        let returnToSingle = app.buttons["studio.batch.return-single"]
+        XCTAssertTrue(returnToSingle.waitForExistence(timeout: 5))
+        XCTAssertTrue(returnToSingle.isEnabled)
+        returnToSingle.click()
+
+        XCTAssertTrue(element("studio.drop-zone", in: app).waitForExistence(timeout: 5))
+        XCTAssertFalse(workspace.exists)
+
+        let newBatch = app.buttons["studio.new-batch"]
+        XCTAssertTrue(newBatch.waitForExistence(timeout: 5))
+        newBatch.click()
+
+        XCTAssertTrue(workspace.waitForExistence(timeout: 5))
+        XCTAssertFalse(firstRow.exists)
+        let start = app.buttons["studio.batch.start"]
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        XCTAssertFalse(start.isEnabled)
+    }
+
+    func testBatchReviewFixtureExposesOrderedQueueAndExplicitStart() {
+        let app = launch(state: "batchReview")
+
+        XCTAssertTrue(element("studio.batch.workspace", in: app).waitForExistence(timeout: 5))
+        let firstRow = element(
+            "studio.batch.row.00000000-0000-0000-0000-000000000001",
+            in: app
+        )
+        let secondRow = element(
+            "studio.batch.row.00000000-0000-0000-0000-000000000002",
+            in: app
+        )
+        XCTAssertTrue(firstRow.waitForExistence(timeout: 5))
+        XCTAssertTrue(secondRow.waitForExistence(timeout: 5))
+        XCTAssertLessThan(firstRow.frame.minY, secondRow.frame.minY)
+        XCTAssertTrue(app.buttons["studio.batch.add-files"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.add-folder"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.choose-output"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.start"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.copy-diagnostics"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.return-single"].isEnabled)
+    }
+
+    func testBatchRowKeepsItsIdentifierWhileWrittenStatusAndProgressUpdate() {
+        let app = launch(state: "batchReview")
+        let rowID = "studio.batch.row.00000000-0000-0000-0000-000000000001"
+        let row = element(rowID, in: app)
+
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        XCTAssertEqual(row.identifier, rowID)
+        XCTAssertTrue(row.label.contains("Queued"), row.debugDescription)
+
+        let start = app.buttons["studio.batch.start"]
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        XCTAssertTrue(start.isEnabled)
+        start.click()
+
+        let updatedStatus = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                row.label.contains("Processing")
+                    && row.label.contains("Recognizing page 1 of 2")
+            },
+            object: nil
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [updatedStatus], timeout: 5), .completed)
+        XCTAssertEqual(row.identifier, rowID)
+    }
+
+    func testSkippedOnlyBatchIsReviewableAndDiagnosticButCannotStart() {
+        let app = launch(state: "batchSkippedOnly")
+
+        XCTAssertTrue(element("studio.batch.workspace", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            element(
+                "studio.batch.row.00000000-0000-0000-0000-000000000003",
+                in: app
+            ).waitForExistence(timeout: 5)
+        )
+        XCTAssertTrue(
+            app.staticTexts["Batch summary: 0 supported • 1 skipped"]
+                .waitForExistence(timeout: 5)
+        )
+        let start = app.buttons["studio.batch.start"]
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        XCTAssertFalse(start.isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.copy-diagnostics"].isEnabled)
+    }
+
+    func testPlanningFailureKeepsReviewVisibleButStartDisabled() {
+        let app = launch(state: "batchPlanningFailure")
+
+        XCTAssertTrue(element("studio.batch.workspace", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(element("studio.batch.action-error", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            element(
+                "studio.batch.row.00000000-0000-0000-0000-000000000001",
+                in: app
+            ).waitForExistence(timeout: 5)
+        )
+        let start = app.buttons["studio.batch.start"]
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        XCTAssertFalse(start.isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.copy-diagnostics"].isEnabled)
+    }
+
+    func testBatchProcessingFixtureMakesCancelTheSafeExit() {
+        let app = launch(state: "batchProcessing")
+
+        XCTAssertTrue(element("studio.batch.workspace", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["studio.batch.cancel"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["studio.batch.cancel"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.batch.copy-diagnostics"].isEnabled)
+        let returnToSingle = app.buttons["studio.batch.return-single"]
+        XCTAssertTrue(returnToSingle.waitForExistence(timeout: 5))
+        XCTAssertFalse(returnToSingle.isEnabled)
+        NSPasteboard.general.clearContents()
+        app.buttons["studio.batch.copy-diagnostics"].click()
+        let diagnostics = NSPasteboard.general.string(forType: .string) ?? "No diagnostics"
+        XCTAssertTrue(diagnostics.contains("State: processing"), diagnostics)
+        XCTAssertFalse(diagnostics.contains(Self.resultText), diagnostics)
+        XCTAssertTrue(
+            app.staticTexts["Status: Processing"].waitForExistence(timeout: 5),
+            diagnostics + "\n" + app.debugDescription
+        )
+    }
+
+    func testBatchCompleteFixtureExposesRecoveryAndCompletionActions() {
+        let app = launch(state: "batchComplete")
+
+        XCTAssertTrue(element("studio.batch.workspace", in: app).waitForExistence(timeout: 5))
+        let retry = app.buttons["studio.batch.retry-failed"]
+        let reveal = app.buttons["studio.batch.reveal-output"]
+        let copy = app.buttons["studio.batch.copy-diagnostics"]
+        let newBatch = app.buttons["studio.batch.new"]
+        let returnToSingle = app.buttons["studio.batch.return-single"]
+        for control in [retry, reveal, copy, newBatch, returnToSingle] {
+            XCTAssertTrue(control.waitForExistence(timeout: 5))
+            XCTAssertTrue(control.isEnabled)
+        }
+        XCTAssertTrue(
+            app.staticTexts["Status: Failed"].waitForExistence(timeout: 5),
+            app.debugDescription
+        )
     }
 
     func testSingleWindowLaunchAndReopenNeverCreatesASecondDocumentWindow() {
         let app = launch(state: "empty")
         let dropZone = element("studio.drop-zone", in: app)
+        guard let runningApplication = runningLocalOCRApplication() else { return }
+        let processIdentifier = runningApplication.processIdentifier
 
         XCTAssertEqual(app.state, .runningForeground)
+        XCTAssertGreaterThan(processIdentifier, 0)
         XCTAssertTrue(dropZone.waitForExistence(timeout: 5))
         XCTAssertEqual(app.windows.count, 1)
 
@@ -41,8 +204,35 @@ final class LocalOCRStudioUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter.wait(for: [windowClosed], timeout: 5), .completed)
 
-        app.activate()
+        let finder = XCUIApplication(bundleIdentifier: "com.apple.finder")
+        finder.activate()
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))
+
+        requestReopen(expectedProcessIdentifier: processIdentifier)
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
         XCTAssertTrue(dropZone.waitForExistence(timeout: 5))
+        guard runningLocalOCRApplication(
+            expectedProcessIdentifier: processIdentifier
+        ) != nil else { return }
+        XCTAssertEqual(app.state, .runningForeground)
+        XCTAssertEqual(app.windows.count, 1)
+
+        app.typeKey("w", modifierFlags: .command)
+        let reopenedWindowClosed = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in app.windows.count == 0 },
+            object: nil
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [reopenedWindowClosed], timeout: 5), .completed)
+
+        finder.activate()
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))
+
+        requestReopen(expectedProcessIdentifier: processIdentifier)
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
+        XCTAssertTrue(dropZone.waitForExistence(timeout: 5))
+        guard runningLocalOCRApplication(
+            expectedProcessIdentifier: processIdentifier
+        ) != nil else { return }
         XCTAssertEqual(app.state, .runningForeground)
         XCTAssertEqual(app.windows.count, 1)
     }
@@ -169,5 +359,98 @@ final class LocalOCRStudioUITests: XCTestCase {
         app.descendants(matching: .any)
             .matching(identifier: identifier)
             .firstMatch
+    }
+
+    private func requestReopen(
+        expectedProcessIdentifier: pid_t
+    ) {
+        guard let runningApplication = runningLocalOCRApplication(
+            expectedProcessIdentifier: expectedProcessIdentifier
+        ), let bundleURL = runningApplication.bundleURL else {
+            XCTFail(
+                "Could not resolve running LocalOCR PID \(expectedProcessIdentifier) "
+                    + "to an application bundle before requesting reopen"
+            )
+            return
+        }
+
+        let reopenEvent = NSAppleEventDescriptor(
+            eventClass: AEEventClass(kCoreEventClass),
+            eventID: AEEventID(kAEReopenApplication),
+            targetDescriptor: NSAppleEventDescriptor(
+                processIdentifier: expectedProcessIdentifier
+            ),
+            returnID: AEReturnID(kAutoGenerateReturnID),
+            transactionID: AETransactionID(kAnyTransactionID)
+        )
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.createsNewApplicationInstance = false
+        configuration.allowsRunningApplicationSubstitution = false
+        configuration.appleEvent = reopenEvent
+
+        let completed = expectation(
+            description: "NSWorkspace reopened LocalOCR PID \(expectedProcessIdentifier)"
+        )
+        var reopenedApplication: NSRunningApplication?
+        var reopenError: Error?
+        NSWorkspace.shared.openApplication(
+            at: bundleURL,
+            configuration: configuration
+        ) { application, error in
+            reopenedApplication = application
+            reopenError = error
+            completed.fulfill()
+        }
+
+        guard XCTWaiter.wait(for: [completed], timeout: 5) == .completed else {
+            XCTFail(
+                "Timed out requesting kAEReopenApplication for LocalOCR PID "
+                    + "\(expectedProcessIdentifier) at \(bundleURL.path)"
+            )
+            return
+        }
+        guard reopenError == nil, let reopenedApplication else {
+            XCTFail(
+                "NSWorkspace failed to request kAEReopenApplication for LocalOCR PID "
+                    + "\(expectedProcessIdentifier) at \(bundleURL.path): "
+                    + "\(reopenError?.localizedDescription ?? "no running application returned")"
+            )
+            return
+        }
+        XCTAssertEqual(
+            reopenedApplication.processIdentifier,
+            expectedProcessIdentifier,
+            "NSWorkspace targeted PID \(reopenedApplication.processIdentifier) instead of "
+                + "the existing LocalOCR PID \(expectedProcessIdentifier)"
+        )
+    }
+
+    private func runningLocalOCRApplication(
+        expectedProcessIdentifier: pid_t? = nil
+    ) -> NSRunningApplication? {
+        let applications = NSRunningApplication
+            .runningApplications(withBundleIdentifier: Self.appBundleIdentifier)
+            .filter { !$0.isTerminated }
+        let processIdentifiers = applications
+            .map(\.processIdentifier)
+            .sorted()
+
+        guard applications.count == 1, let application = applications.first else {
+            XCTFail(
+                "Expected one running LocalOCR process for \(Self.appBundleIdentifier); "
+                    + "found PIDs \(processIdentifiers)"
+            )
+            return nil
+        }
+        if let expectedProcessIdentifier,
+           application.processIdentifier != expectedProcessIdentifier {
+            XCTFail(
+                "LocalOCR changed PID from \(expectedProcessIdentifier) to "
+                    + "\(application.processIdentifier)"
+            )
+            return nil
+        }
+        return application
     }
 }
