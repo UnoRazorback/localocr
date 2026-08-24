@@ -1,10 +1,15 @@
 LocalOCR Beta 2 Pre-Release Verification
 =========================================
 
-Status: PASS -- pre-release verification only
-Run window: 2026-08-22T08:27:00-0500 through 2026-08-22T09:03:03-0500
+Status: PASS -- Task 8B pre-release verification only
+Verification window: 2026-08-22T11:42:45-0500 through
+2026-08-24T09:58:53-0500
 Branch: feature/desktop-batch-beta2
-Tested source commit: 2d0c8f9ec53630108f992aeaf7230a5ecde5a2f9
+Tested source commit: ecfbb8e145ebaadcc50b9a789d4419d396f230e0
+
+This record supersedes the earlier pre-fix verification record for commit
+2d0c8f9ec53630108f992aeaf7230a5ecde5a2f9. That earlier record is historical
+only and is not evidence for the post-final-fix candidate.
 
 Toolchain
 ---------
@@ -14,76 +19,93 @@ Xcode: 26.6 (17F113)
 Apple Swift: 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)
 Host: macOS 27.0 (26A5416b), arm64
 
-Fresh required sequence
------------------------
+Required sequence
+-----------------
+
+Gates 1-4 were freshly completed at the exact fixed commit on 2026-08-22.
+Their immutable logs, timestamps, and digests were independently rechecked
+before resuming. HEAD and every source/release input remained unchanged, so
+those four results were retained and Gates 5-8 resumed in order.
 
 1. swift test
-   PASS: 274 tests in 23 suites, 0 failures.
+   PASS: 276 tests in 23 suites, 0 failures.
 
 2. scripts/build-native-tools.sh
-   PASS: localocr and localocr-mcp production builds completed.
+   PASS: production localocr built in 20.98 seconds; production localocr-mcp
+   built in 69.69 seconds.
 
 3. scripts/smoke-native-tools.sh
-   PASS: arm64 native tools, CLI version 0.3.0, MCP version 0.3.0,
-   approved dependencies/RPATHs, and private-path/runtime-string checks.
+   PASS: arm64 native tools, CLI version 0.3.0, MCP initialization version
+   0.3.0 with zero stderr, approved dependencies/RPATHs, and private-path and
+   runtime-string policies.
 
 4. scripts/release-toolchain.sh
    PASS: stable release toolchain selection exited 0 with no output.
 
 5. Full LocalOCR Studio scheme on platform=macOS,arch=arm64
-   PASS: 15 UI tests, 0 failures, 95.394 seconds.
-   Result bundle: Test-LocalOCR Studio-2026.08.22_08-29-06--0500.xcresult
+   PASS: 15 UI tests, 0 failures, 94.575 seconds.
+   Result bundle: Test-LocalOCR Studio-2026.08.24_08-56-55--0500.xcresult
 
 6. scripts/build-unsigned-studio-app.sh, normal invocation, no reuse override
-   PASS: 15 UI tests, 0 failures, 94.419 seconds; Release build succeeded.
-   Result bundle: Test-LocalOCR Studio-2026.08.22_08-31-18--0500.xcresult
+   PASS: 15 UI tests, 0 failures, 93.720 seconds; Release build succeeded.
+   Result bundle: Test-LocalOCR Studio-2026.08.24_08-58-58--0500.xcresult
 
-7. Full Python suite, no reuse override
-   PASS: 329 passed, 5 SWIG deprecation warnings, 0 failures, 554.60 seconds.
-   The preserved duplicate candidate-documentation fixture was collected and
-   all 9 of its tests passed.
+7. Exact full workspace Python suite, no reuse override
+   PASS: 331 passed, 5 SWIG deprecation warnings, 0 failures, 732.48 seconds.
+   The preserved untracked duplicate candidate-documentation fixture was
+   collected, and all 9 of its tests passed.
 
-8. Focused artifact/direct-release/native-compatibility contracts,
+   Additional committed-tree reproducibility run, excluding only the exact
+   preserved untracked duplicate and using no reuse override:
+   PASS: 322 passed, 5 SWIG deprecation warnings, 0 failures, 707.18 seconds.
+   The duplicate remained in place and byte-for-byte unchanged throughout.
+
+8. Exact focused artifact/direct-release/native-compatibility contracts,
    no reuse override
-   PASS: 225 passed, 5 SWIG deprecation warnings, 0 failures, 552.34 seconds.
+   PASS: 227 passed, 5 SWIG deprecation warnings, 0 failures, 708.03 seconds.
 
-The host remained unlocked and on-console during every UI-owning gate. Live
-process checks found only the active gate's Xcode/UI descendants; no unrelated
-runner or authentication UI contended with a gate.
+The host remained unlocked and on-console throughout every countable UI-owning
+gate. Live checks before and during each run found only that gate's own
+Xcode/UI descendants; no unrelated runner or authentication UI overlapped a
+countable result.
 
 Fresh artifacts
 ---------------
 
-Standalone native tools (built 2026-08-22T08:27:58-0500 and
-2026-08-22T08:28:02-0500):
+Standalone native tools retained from required Gate 2:
 
 - dist/native-tools/localocr
-  SHA-256: 75e3ba758b869a47d57acc1f3b7d034cc7ab1410ba134d0f1bb91d4d7aca91b6
-  UUID: E864E073-9816-35D0-AE78-8CB9CB1A7A06
+  Built: 2026-08-22T11:44:44-0500
+  SHA-256: 432b3c361dba756f47f171ce236ba659efd71652fe750fa917c24721c1040a76
+  UUID: 89F0A281-ADC1-30BF-95C0-C49B63714F6F
 - dist/native-tools/localocr-mcp
-  SHA-256: af07fa1e7fe1df912adddc3b4828ce6997490de93c49f40c1d7b6e4545ef39eb
-  UUID: 4EEC51C4-58DC-3FFE-81BF-2946DC7E0D79
+  Built: 2026-08-22T11:44:50-0500
+  SHA-256: e7f3a2ad69006fb8820fd97e181aeb2aaa63cccc18193fe0ce08b8b789a9802d
+  UUID: 7CF8BA52-A865-3480-BFED-64FB8D9A658B
 
-Unsigned Studio app (built 2026-08-22T08:46:20-0500):
+Final current unsigned Studio executable, freshly rebuilt by the required
+no-reuse test fixtures:
 
 - dist/unsigned-app/LocalOCR Studio.app/Contents/MacOS/LocalOCR Studio
-  SHA-256: 0c90c05c2311beac58e5df87c6fb611630c5f309a1e542c747add2b0c2dd46bb
-  UUID: 7B7F15E7-7171-3D3C-B5BF-F7C9AA34A88C
+  Built: 2026-08-24T09:29:31-0500
+  SHA-256: d491e69bfbe789b4c46a75a6c74ba2d80eff6955b3b410fd343b6bca21587aaa
+  UUID: 3DABAAAD-FBC0-35C1-8D64-AFB47026AE63
 
-Fresh real non-signing stage (built 2026-08-22T08:55:06-0500 through
-2026-08-22T08:55:13-0500):
+Fresh real non-signing direct-release stage started at
+2026-08-24T09:38:52-0500 and produced its final helper by
+2026-08-24T09:41:21-0500:
 
 - staged Studio executable
-  SHA-256: 5f7a9e16fabfb6fdf429b4aece0a47394359a4c258ee75d59ddb5cffd50e618d
-  UUID: 7B7F15E7-7171-3D3C-B5BF-F7C9AA34A88C
+  SHA-256: 6b686a7e5afd316fc67a2357c8e43e65b4c0dc72ef28c35dfc5af76a2b8379f6
+  UUID: 3DABAAAD-FBC0-35C1-8D64-AFB47026AE63
 - staged localocr helper
-  SHA-256: 002bddd593cd04ee1049591a8efb049fb1c6fd5770b29c823d7a081742812c0f
-  UUID: 41B657EF-CD2B-3412-AA9F-381714421AB6
+  SHA-256: 4ca47adb93116878323197e5c0ae5485fedfc1779544142e10cea93574ec94fc
+  UUID: C8EDAB9F-9E5A-3A25-9E4E-7785889DDB55
 - staged localocr-mcp helper
-  SHA-256: a322990f18bd4bd805db6bc675323d11d65ac32c323286b9f633d5f45b177e6a
-  UUID: F9FEEAD5-B2AD-33C1-8012-C6D054A646F1
+  SHA-256: 5d7588bbd02e43e3797d567df68b7670bff8559d7ed7ea7445d4cfb691cd48c4
+  UUID: 062609CB-CF8C-336B-B90F-C853FE127E9F
 
-The three staged SHA-256 values exactly match the post-sanitization
+All three staged SHA-256 values exactly validate against the post-sanitization
 pre-signing hash record.
 
 Metadata and artifact policy
@@ -93,31 +115,35 @@ PASS:
 
 - Bundle identifier com.rayconsulting.localocr; version 0.3.0; build 2;
   LSMinimumSystemVersion 14.0.
-- Every inspected Mach-O is arm64-only with LC_BUILD_VERSION minOS 14.0.
-- Dynamic dependencies are Apple/system install names only. Approved RPATHs
-  are /usr/lib/swift, plus @executable_path/../Frameworks only in the
-  pre-stage unsigned Studio executable; the real staged copy contains only
+- All eight inspected shipped Mach-O paths are arm64-only with
+  LC_BUILD_VERSION minimum macOS 14.0.
+- Dynamic dependencies use approved Apple/system install names only. Approved
+  RPATHs are /usr/lib/swift, plus @executable_path/../Frameworks only in the
+  pre-stage unsigned Studio executable; the staged copy has only
   /usr/lib/swift.
-- Raw-byte and nm -ap scans found zero /Users/ records in all shipped Mach-O
-  files.
-- Canonical shipped trees and release diagnostics contain no personal path,
-  OCR/document content, user document filename, document-derived hash,
-  thumbnail, secret, test fixture sentinel, or untraced URL.
-- Product source contains no network-client API reference; the MCP server
-  starts StdioTransport only. Fresh staged MCP initialization returned
-  version 0.3.0 with zero stderr bytes.
-- No dSYM exists inside a shipped tree. Every current Mach-O UUID has a
-  matching UUID-keyed dSYM in the separate ignored symbol archive.
-- Native source build products retain their debug-path records and differ
-  from sanitized shipped copies, proving no in-place strip. The unsigned
-  Studio source hash remained unchanged by staging.
-- No symlink exists in a canonical shipped tree. Filesystem-managed xattrs
-  contained no private data; the future signer owns fail-closed xattr cleanup.
+- Raw-byte and nm -ap scans found zero /Users/ records in every shipped
+  Mach-O.
+- Shipped artifacts, release evidence, and xattr content contain no embedded
+  personal path, OCR/document content value, user filename, document-derived
+  hash, thumbnail, secret, or fixture sentinel. Release evidence contains only
+  artifact hashes and toolchain data.
+- The pinned MCP SDK contributes only its two traced loopback-origin string
+  prefixes. No untraced URL was found. Product source constructs no network
+  client and starts exactly StdioTransport().
+- No dSYM or symlink exists inside a shipped tree. Every current Mach-O UUID
+  has a matching UUID-keyed dSYM in the separate ignored symbol archive.
+- Native source build products retain their debug-path records, differ from
+  sanitized shipped copies, and retain their UUIDs. The unsigned Studio source
+  hash was unchanged by staging, proving no source build product was stripped
+  in place.
+- Filesystem-managed provenance/quarantine/file-provider xattrs contained no
+  private data. The future signing workflow owns fail-closed xattr cleanup.
 - Hardened Runtime is enabled in project.yml and both generated Xcode build
   configurations. The future signing command is configured with runtime and
   timestamp options. Network and debug entitlements are absent.
-- Studio and helpers have only ad-hoc/linker-generated signatures;
-  TeamIdentifier is not set and no Developer ID authority is present.
+- Studio and helper code objects have only ad-hoc/linker-generated signatures:
+  Signature=adhoc, TeamIdentifier is not set, and no Developer ID authority or
+  trusted timestamp is present.
 
 Static validation
 -----------------
@@ -127,16 +153,56 @@ PASS:
 - bash -n: 9 scripts.
 - ShellCheck with sourced-script resolution: 9 scripts.
 - release-path-guard.swift typecheck.
-- Python bytecode compilation: 13 contract modules.
+- Python bytecode compilation: 13 workspace contract modules, comprising 12
+  tracked modules plus the one preserved untracked duplicate.
 - Artifact plist, generated Xcode project, and XcodeGen resolved-spec checks.
-- Project absolute-user-path scan.
+- Generated-project absolute-user-path scan.
 - Post-sanitization staged hash validation.
 - git diff --check.
+
+Discarded extra Gatekeeper diagnostics
+--------------------------------------
+
+Execution from inside the intentionally unsigned, quarantined staged app was
+not a Task 8B requirement and is not counted as PASS evidence. Two extra
+staged localocr --version probes presented this Gatekeeper message:
+
+  “LocalOCR Studio” is damaged and can’t be opened. You should move it to the
+  Trash.
+
+The dialog offered no Open action. Move to Trash was selected twice; each
+selection killed its launched-suspended probe, and each deletion failed with
+Resource deadlock avoided. The staged app remained present, and all three
+post-sanitization hashes still matched afterward. These attempts are discarded
+diagnostics, not successful runtime verification.
+
+Runtime verification of the staged copy remains pending for the future signed
+and notarized build-Mac and second-Mac acceptance gates. That acceptance is a
+release blocker before publication and is not claimed by this Task 8B PASS.
+
+Evidence log digests
+--------------------
+
+- Gate 1 Swift: 2840a879855c395216bea6be1f7846e802471ef460cc75c20e19849fc3789458
+- Gate 2 native build: a8f0725ce771b4060569133f47fa1b6082f5c23a6714896cc3baaf7f4b9ae5ae
+- Gate 3 native smoke: 088e3cc4b0845ee6e434f61b509a2d6fbe7b4ebca72d670eaa6e09da3efd4faa
+- Gate 4 toolchain: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+- Gate 5 Studio: a0a621cfc2a18e7f7d1d042ff9368ff56847dfc145da748887885de5da0669e4
+- Gate 6 unsigned build: 11998a3e89ec2c6d3a6b42cf9aae9f0a3f9cda115799cac0a9ad131f7d31af03
+- Gate 7 workspace: caad1561b8fcba69c60477d01bba2a74ffcec2aa36d9159837e8239b18442134
+- Committed-tree reproduction: b7827361122eed1f51b027821d2e8ef14f1ac6ba7a9540d03e8802bd9f0fb741
+- Gate 8 focused contracts: 50e1cd9382eaec5a8a4bbcc002b8ab8c5baf8f9854a57f90ef3db63e706f8b6a
+- Real non-signing stage: 9b32107b482dfd69d5e230f25df2f0c389b660086bbbdd00ee9a5d7c2c9e64b7
+- Binary inspection: f6d232f570d3c7c5cccb7ef006cfba2fed7be93bab9c4990cda07fcc0417397f
+- Symbol/source inspection: d3863f4e4cd322671d947a9711056937dd23f3eeb197e0a1708a3a9dd22e658f
+- Tree/privacy inspection: bc472b7400d1364c51a1b0e96f151a7c7dab0f31446da68d3a356c77076cdbff
+- Required metadata boundary: 9a3246a473a691f0f219878dcf039d28f8bf157cee4a2089cbfb3f9308f8427a
+- Static validators: a12f274253ed215c92fc6d94a5e5a169d8f34ed9d1179692ac4f949919ad60a2
 
 Scope exclusions
 ----------------
 
-No Developer ID signing, notarization, stapling, packaging, Gatekeeper
-assessment, publication, upload, pull request, merge, push, second-Mac install,
+No Developer ID signing, notarization, stapling, final packaging, Gatekeeper
+acceptance, publication, upload, pull request, merge, push, second-Mac install,
 campaign action, or business-record edit was performed. This PASS record does
 not claim any of those later release gates.
