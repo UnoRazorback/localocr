@@ -87,9 +87,7 @@ struct StudioProcessingView: View {
                 .frame(maxWidth: 360)
                 .accessibilityIdentifier("studio.progress")
 
-            Label("Processing locally on this Mac.", systemImage: "lock.fill")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            StudioOnDeviceBadge()
 
             Button("Cancel", action: onCancel)
                 .keyboardShortcut(.cancelAction)

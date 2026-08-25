@@ -155,7 +155,8 @@ public struct LocalOCRStudioView: View {
         }
         .padding(24)
         .frame(minWidth: 760, minHeight: 520)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color.localOCRStudioGround)
+        .tint(.localOCRStudioOlive)
         .alert(
             actionError?.title ?? "Action Failed",
             isPresented: actionErrorIsPresented
@@ -191,24 +192,23 @@ public struct LocalOCRStudioView: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("LocalOCR Studio")
-                    .font(.system(.title2, design: .rounded, weight: .semibold))
+            StudioCornerMark(pointSize: 46)
 
-                Text("Readable text from documents, without the cloud.")
+            VStack(alignment: .leading, spacing: 2) {
+                Text("LocalOCR")
+                    .font(.system(.title2, design: .default, weight: .semibold))
+
+                Text("Studio · Readable text from documents, without the cloud.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
 
-            Label("Documents stay on this Mac", systemImage: "lock.shield.fill")
-                .font(.callout.weight(.medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(.thinMaterial, in: Capsule())
+            StudioOnDeviceBadge()
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("studio.identity")
     }
 
     private var actionErrorIsPresented: Binding<Bool> {

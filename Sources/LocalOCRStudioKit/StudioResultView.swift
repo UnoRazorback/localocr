@@ -32,9 +32,9 @@ struct StudioResultView: View {
             HStack(spacing: 13) {
                 Image(systemName: result.kind == .pdf ? "doc.richtext" : "photo")
                     .font(.system(size: 22, weight: .medium))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(Color.localOCRStudioOlive)
                     .frame(width: 40, height: 40)
-                    .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
+                    .background(Color.localOCRStudioOlive.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(contract.primaryTitle)
@@ -49,9 +49,7 @@ struct StudioResultView: View {
 
                 Spacer()
 
-                Label("On this Mac", systemImage: "lock.fill")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                StudioOnDeviceBadge()
             }
 
             ScrollView {
@@ -107,7 +105,7 @@ struct StudioResultView: View {
         .padding(24)
         .background {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
+                .fill(Color.localOCRStudioSurface)
         }
     }
 }
