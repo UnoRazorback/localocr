@@ -39,7 +39,7 @@ public struct BatchWorkspaceView: View {
         .overlay {
             if isDropTargeted && contract.canAddInputs {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                    .strokeBorder(Color.localOCRStudioOlive, lineWidth: 2)
                     .padding(1)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
@@ -65,10 +65,13 @@ public struct BatchWorkspaceView: View {
 
             Spacer()
 
-            Label("Sequential processing", systemImage: "arrow.down.to.line.compact")
-                .font(.callout.weight(.medium))
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("Documents are processed one at a time")
+            VStack(alignment: .trailing, spacing: 7) {
+                StudioOnDeviceBadge()
+                Label("Sequential processing", systemImage: "arrow.down.to.line.compact")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Documents are processed one at a time")
+            }
         }
     }
 
@@ -184,7 +187,7 @@ public struct BatchWorkspaceView: View {
             }
             .frame(maxWidth: .infinity)
         }
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(Color.localOCRStudioSurface)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
