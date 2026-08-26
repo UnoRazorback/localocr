@@ -21,7 +21,16 @@ final class LocalOCRStudioUITests: XCTestCase {
         XCTAssertEqual(dropZone.label, "Document drop zone")
         XCTAssertTrue(app.buttons["studio.open"].exists)
         XCTAssertTrue(app.buttons["studio.new-batch"].exists)
-        XCTAssertTrue(app.staticTexts["Processed locally on this Mac."].exists)
+        let onDeviceBadge = dropZone.descendants(matching: .any)
+            .matching(
+                NSPredicate(
+                    format: "label == %@",
+                    "On device, documents stay on this Mac"
+                )
+            )
+            .firstMatch
+        XCTAssertTrue(onDeviceBadge.exists)
+        XCTAssertNotEqual(onDeviceBadge.elementType, .button)
     }
 
     func testBatchNavigationReturnsToTheUnchangedSingleDocumentStart() {
