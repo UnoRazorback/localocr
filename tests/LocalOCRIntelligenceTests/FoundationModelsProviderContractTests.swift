@@ -58,7 +58,7 @@ import FoundationModels
         )
         let provider = FoundationModelsIntelligenceProvider(
             availability: { .available },
-            contextSize: 1_800,
+            contextSize: 4_096,
             sessionDriver: driver
         )
 
@@ -97,7 +97,7 @@ import FoundationModels
         )
         let provider = FoundationModelsIntelligenceProvider(
             availability: { .available },
-            contextSize: 1_800,
+            contextSize: 4_096,
             sessionDriver: driver
         )
 
@@ -112,6 +112,59 @@ import FoundationModels
                 .init(page: 2, quote: "Beta fact")
             ]
         ))
+    }
+
+    @Test func summaryAggregationStopsAtTwelveGroundedItemsAcrossChunks() async throws {
+        guard #available(macOS 26.0, *) else { return }
+
+        let driver = ClosureFoundationModelsSessionDriver(
+            summarize: { prompt in
+                let page = prompt.contains("page number=\"1\"") ? 1 : 2
+                let evidence = page == 1 ? "Alpha fact" : "Beta fact"
+                return .init(items: (1...8).map { item in
+                    .init(text: "Page \(page) item \(item).", page: page, evidence: evidence)
+                })
+            }
+        )
+        let provider = FoundationModelsIntelligenceProvider(
+            availability: { .available },
+            contextSize: 4_096,
+            sessionDriver: driver
+        )
+
+        let result = try await provider.summarize(Self.document)
+        let statements = result.text.components(separatedBy: "\n\n")
+
+        #expect(statements.count == 12)
+        #expect(statements.first == "Page 1 item 1.")
+        #expect(statements.last == "Page 2 item 4.")
+    }
+
+    @Test func organizationAggregationStopsAtFiveUniqueGroundedTagsAcrossChunks() async throws {
+        guard #available(macOS 26.0, *) else { return }
+
+        let driver = ClosureFoundationModelsSessionDriver(
+            organize: { prompt in
+                let page = prompt.contains("page number=\"1\"") ? 1 : 2
+                let evidence = page == 1 ? "Alpha fact" : "Beta fact"
+                return .init(
+                    title: .init(value: "Document", page: page, evidence: evidence),
+                    category: .init(value: "Facts", page: page, evidence: evidence),
+                    tags: (1...4).map { tag in
+                        .init(value: "p\(page)-\(tag)", page: page, evidence: evidence)
+                    }
+                )
+            }
+        )
+        let provider = FoundationModelsIntelligenceProvider(
+            availability: { .available },
+            contextSize: 4_096,
+            sessionDriver: driver
+        )
+
+        let result = try await provider.organize(Self.document)
+
+        #expect(result.tags == ["p1-1", "p1-2", "p1-3", "p1-4", "p2-1"])
     }
 
     @Test func extractionReturnsEveryRequestedNameOnceInInputOrderAndNullsUngroundedValues() async throws {
@@ -185,6 +238,59 @@ import FoundationModels
         ))
     }
 
+    @Test func extractionTrimsAndDeduplicatesRequestedNamesByFirstOccurrence() async throws {
+        guard #available(macOS 26.0, *) else { return }
+
+        let driver = ClosureFoundationModelsSessionDriver(
+            extract: { names, prompt in
+                guard
+                    names == ["total", "date"],
+                    prompt.components(separatedBy: "1. total").count == 2,
+                    prompt.components(separatedBy: "2. date").count == 2
+                else {
+                    return .init(fields: [])
+                }
+                return .init(fields: [
+                    .init(name: "total", value: "$42.00", page: 1, evidence: "Total: $42.00"),
+                    .init(name: "date", value: "2026-08-27", page: 1, evidence: "Date: 2026-08-27")
+                ])
+            }
+        )
+        let provider = FoundationModelsIntelligenceProvider(
+            availability: { .available },
+            contextSize: 4_096,
+            sessionDriver: driver
+        )
+        let document = IntelligenceDocument(pages: [
+            .init(number: 1, text: "Total: $42.00\nDate: 2026-08-27")
+        ])
+
+        let result = try await provider.extract(
+            [" total ", "total", " date ", "date"],
+            from: document
+        )
+
+        #expect(result == [
+            .init(name: "total", value: "$42.00", sourcePage: 1, evidence: "Total: $42.00"),
+            .init(name: "date", value: "2026-08-27", sourcePage: 1, evidence: "Date: 2026-08-27")
+        ])
+    }
+
+    @Test(arguments: [[], [" ", "\n"]])
+    func extractionRejectsEmptyOrAllWhitespaceRequests(names: [String]) async {
+        guard #available(macOS 26.0, *) else { return }
+
+        let provider = FoundationModelsIntelligenceProvider(
+            availability: { .available },
+            contextSize: 4_096,
+            sessionDriver: ClosureFoundationModelsSessionDriver()
+        )
+
+        await #expect(throws: IntelligenceError.invalidFields) {
+            try await provider.extract(names, from: Self.document)
+        }
+    }
+
     @Test func unavailableStatusPreventsGeneration() async {
         guard #available(macOS 26.0, *) else { return }
 
@@ -217,6 +323,31 @@ import FoundationModels
         }
     }
 
+    @Test func cancellationAfterNonCooperativeDriverSuccessExposesNoAggregate() async {
+        guard #available(macOS 26.0, *) else { return }
+
+        let driver = SuspendedSuccessSessionDriver()
+        let provider = FoundationModelsIntelligenceProvider(
+            availability: { .available },
+            contextSize: 4_096,
+            sessionDriver: driver
+        )
+        let document = IntelligenceDocument(pages: [
+            .init(number: 1, text: "Alpha fact")
+        ])
+        let operation = Task {
+            try await provider.summarize(document)
+        }
+
+        await driver.waitUntilSuspended()
+        operation.cancel()
+        await driver.resumeWithSuccess()
+
+        await #expect(throws: IntelligenceError.cancelled) {
+            try await operation.value
+        }
+    }
+
     @Test func aContextOverflowSplitsAndRetriesOnlyTheOverflowingChunk() async throws {
         guard #available(macOS 26.0, *) else { return }
 
@@ -236,12 +367,65 @@ import FoundationModels
         #expect(await driver.callCount == 3)
     }
 
+    @Test func legacyBudgetBoundsEscapedCompletePromptsAndItsSingleRetry() async throws {
+        guard #available(macOS 26.0, *) else { return }
+
+        let driver = PromptLengthGuardSessionDriver(
+            maximumPromptCharacters: 4_608,
+            overflowFirstCall: true
+        )
+        let provider = FoundationModelsIntelligenceProvider(
+            availability: { .available },
+            contextSize: 4_096,
+            sessionDriver: driver
+        )
+        let document = IntelligenceDocument(pages: [
+            .init(number: 1, text: String(repeating: "&", count: 2_000))
+        ])
+
+        let result = try await provider.summarize(document)
+
+        #expect(!result.text.isEmpty)
+        #expect(await driver.acceptedPromptCount > 1)
+    }
+
+    @Test func legacyBudgetIncludesLongExtractionFieldNamesOutsideDocumentMarkup() async throws {
+        guard #available(macOS 26.0, *) else { return }
+
+        let longName = "field-" + String(repeating: "x", count: 1_800)
+        let driver = ClosureFoundationModelsSessionDriver(
+            extract: { _, prompt in
+                guard prompt.count <= 4_608 else {
+                    throw IntelligenceError.contextOverflow
+                }
+                return .init(fields: [])
+            }
+        )
+        let provider = FoundationModelsIntelligenceProvider(
+            availability: { .available },
+            contextSize: 4_096,
+            sessionDriver: driver
+        )
+        let document = IntelligenceDocument(pages: [
+            .init(number: 1, text: String(repeating: "&", count: 1_000))
+        ])
+
+        let result = try await provider.extract([longName], from: document)
+
+        #expect(result == [
+            .init(name: longName, value: nil, sourcePage: nil, evidence: nil)
+        ])
+    }
+
     @Test(
         "Opt-in live Foundation Models smoke",
-        .enabled(if: ProcessInfo.processInfo.environment["LOCALOCR_RUN_FOUNDATION_MODELS_TESTS"] == "1")
+        .enabled(if: FoundationModelsLiveSmokeGate.isEnabledForCurrentProcess)
     )
     func optInLiveFoundationModelsSmokeUsesOnlySyntheticText() async throws {
-        guard #available(macOS 26.0, *) else { return }
+        guard #available(macOS 26.0, *) else {
+            Issue.record("Live Foundation Models smoke gate admitted macOS earlier than 26")
+            return
+        }
 
         let provider = FoundationModelsIntelligenceProvider()
         let availability = await provider.availability
@@ -261,10 +445,30 @@ import FoundationModels
         #expect(result.first?.evidence != nil)
     }
 
+    @Test func liveSmokeGateRequiresBothExplicitOptInAndMacOS26() {
+        #expect(!FoundationModelsLiveSmokeGate.isEnabled(flag: nil, macOSMajorVersion: 26))
+        #expect(!FoundationModelsLiveSmokeGate.isEnabled(flag: "0", macOSMajorVersion: 26))
+        #expect(!FoundationModelsLiveSmokeGate.isEnabled(flag: "1", macOSMajorVersion: 25))
+        #expect(FoundationModelsLiveSmokeGate.isEnabled(flag: "1", macOSMajorVersion: 26))
+    }
+
     private static let document = IntelligenceDocument(pages: [
         .init(number: 2, text: "Beta fact"),
         .init(number: 1, text: "Alpha fact")
     ])
+}
+
+private enum FoundationModelsLiveSmokeGate {
+    static var isEnabledForCurrentProcess: Bool {
+        isEnabled(
+            flag: ProcessInfo.processInfo.environment["LOCALOCR_RUN_FOUNDATION_MODELS_TESTS"],
+            macOSMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        )
+    }
+
+    static func isEnabled(flag: String?, macOSMajorVersion: Int) -> Bool {
+        flag == "1" && macOSMajorVersion >= 26
+    }
 }
 
 @available(macOS 26.0, *)
@@ -312,6 +516,78 @@ private actor OverflowOnceSessionDriver: FoundationModelsSessionDriving {
         }
         return .init(items: [
             .init(text: "Second half.", page: 1, evidence: "ta gamma")
+        ])
+    }
+
+    func organize(prompt: String) async throws -> FoundationModelsGeneratedOrganization {
+        .init(title: nil, category: nil, tags: [])
+    }
+
+    func extract(names: [String], prompt: String) async throws -> FoundationModelsGeneratedExtraction {
+        .init(fields: [])
+    }
+}
+
+@available(macOS 26.0, *)
+private actor PromptLengthGuardSessionDriver: FoundationModelsSessionDriving {
+    private let maximumPromptCharacters: Int
+    private let overflowFirstCall: Bool
+    private var callCount = 0
+    private(set) var acceptedPromptCount = 0
+
+    init(maximumPromptCharacters: Int, overflowFirstCall: Bool) {
+        self.maximumPromptCharacters = maximumPromptCharacters
+        self.overflowFirstCall = overflowFirstCall
+    }
+
+    func summarize(prompt: String) async throws -> FoundationModelsGeneratedSummary {
+        callCount += 1
+        if overflowFirstCall && callCount == 1 {
+            throw IntelligenceError.contextOverflow
+        }
+        guard prompt.count <= maximumPromptCharacters else {
+            throw IntelligenceError.contextOverflow
+        }
+        acceptedPromptCount += 1
+        return .init(items: [
+            .init(text: "Grounded ampersand.", page: 1, evidence: "&")
+        ])
+    }
+
+    func organize(prompt: String) async throws -> FoundationModelsGeneratedOrganization {
+        .init(title: nil, category: nil, tags: [])
+    }
+
+    func extract(names: [String], prompt: String) async throws -> FoundationModelsGeneratedExtraction {
+        .init(fields: [])
+    }
+}
+
+@available(macOS 26.0, *)
+private actor SuspendedSuccessSessionDriver: FoundationModelsSessionDriving {
+    private var responseContinuation: CheckedContinuation<Void, Never>?
+    private var suspensionWaiter: CheckedContinuation<Void, Never>?
+
+    func waitUntilSuspended() async {
+        guard responseContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            suspensionWaiter = continuation
+        }
+    }
+
+    func resumeWithSuccess() {
+        responseContinuation?.resume()
+        responseContinuation = nil
+    }
+
+    func summarize(prompt: String) async throws -> FoundationModelsGeneratedSummary {
+        await withCheckedContinuation { continuation in
+            responseContinuation = continuation
+            suspensionWaiter?.resume()
+            suspensionWaiter = nil
+        }
+        return .init(items: [
+            .init(text: "Late success.", page: 1, evidence: "Alpha fact")
         ])
     }
 

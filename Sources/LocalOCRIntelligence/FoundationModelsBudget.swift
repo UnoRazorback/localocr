@@ -3,6 +3,7 @@ public enum FoundationModelsBudget {
     static let responseHeadroomTokens = 1_024
     private static let conservativeCharactersPerToken = 2
     private static let maximumCharacterBudget = 8_192
+    private static let worstCaseMarkupExpansion = 6
 
     /// A deterministic fallback for macOS 26.0-26.3, where token counting is unavailable.
     public static func characterBudget(contextSize: Int) -> Int {
@@ -25,16 +26,38 @@ public enum FoundationModelsBudget {
         return availableForPrompt >= 0 && promptTokens <= availableForPrompt
     }
 
-    static func retrySplit(_ chunk: IntelligenceChunk) throws -> [IntelligenceChunk] {
-        guard chunk.text.count > 1 else {
+    static func sourceCharacterBudget(
+        completePromptCharacterBudget: Int,
+        fixedPromptCharacterCount: Int
+    ) throws -> Int {
+        let charactersAvailable = completePromptCharacterBudget - fixedPromptCharacterCount
+        guard charactersAvailable >= worstCaseMarkupExpansion else {
+            throw IntelligenceError.contextOverflow
+        }
+        return charactersAvailable / worstCaseMarkupExpansion
+    }
+
+    static func retryChunks(
+        _ chunk: IntelligenceChunk,
+        sourceCharacterBudget: Int
+    ) throws -> [IntelligenceChunk] {
+        guard chunk.text.count > 1, sourceCharacterBudget > 0 else {
             throw IntelligenceError.contextOverflow
         }
 
-        let firstCount = (chunk.text.count + 1) / 2
-        let splitIndex = chunk.text.index(chunk.text.startIndex, offsetBy: firstCount)
-        return [
-            IntelligenceChunk(page: chunk.page, text: String(chunk.text[..<splitIndex])),
-            IntelligenceChunk(page: chunk.page, text: String(chunk.text[splitIndex...]))
-        ]
+        let retryBudget = min(sourceCharacterBudget, (chunk.text.count + 1) / 2)
+        var remaining = chunk.text
+        var chunks: [IntelligenceChunk] = []
+        while !remaining.isEmpty {
+            let count = min(retryBudget, remaining.count)
+            let end = remaining.index(remaining.startIndex, offsetBy: count)
+            chunks.append(IntelligenceChunk(page: chunk.page, text: String(remaining[..<end])))
+            remaining = String(remaining[end...])
+        }
+        return chunks
+    }
+
+    static func retrySplit(_ chunk: IntelligenceChunk) throws -> [IntelligenceChunk] {
+        try retryChunks(chunk, sourceCharacterBudget: Int.max)
     }
 }

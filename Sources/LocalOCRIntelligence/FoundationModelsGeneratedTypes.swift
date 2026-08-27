@@ -82,7 +82,7 @@ struct FoundationModelsLiveOrganization {
     @Guide(description: "A grounded document category, or nil when unsupported")
     var category: FoundationModelsLiveFact?
 
-    @Guide(description: "Grounded document tags", .maximumCount(10))
+    @Guide(description: "Grounded document tags", .maximumCount(5))
     var tags: [FoundationModelsLiveFact]
 }
 

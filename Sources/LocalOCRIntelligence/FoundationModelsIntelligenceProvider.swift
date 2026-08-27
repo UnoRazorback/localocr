@@ -4,6 +4,12 @@ import FoundationModels
 
 @available(macOS 26.0, *)
 public actor FoundationModelsIntelligenceProvider: DocumentIntelligenceProviding {
+    private static let summaryTask = "Summarize the OCR text as discrete factual statements."
+    private static let organizationTask = "Suggest a concise title, category, and tags for the OCR text."
+    private static let groundingRequirement = "Return only the requested source-grounded structured result. Every factual value must include its one-based source page and an exact evidence quote. Use nil when an extraction is absent or unsupported."
+    private static let maximumSummaryItems = 12
+    private static let maximumOrganizationTags = 5
+
     private let availabilityCheck: @Sendable () -> IntelligenceAvailability
     private let contextSize: Int
     private let sessionDriver: any FoundationModelsSessionDriving
@@ -56,17 +62,23 @@ public actor FoundationModelsIntelligenceProvider: DocumentIntelligenceProviding
             try requireAvailable(document)
             var items: [FoundationModelsGeneratedSummaryItem] = []
 
-            for chunk in try chunks(for: document) {
+            summaryChunks: for chunk in try chunks(for: document, task: Self.summaryTask) {
                 let responses = try await responses(
                     for: chunk,
-                    task: "Summarize the OCR text as discrete factual statements."
+                    task: Self.summaryTask
                 ) { prompt in
                     try await sessionDriver.summarize(prompt: prompt)
                 }
                 for response in responses {
-                    items.append(contentsOf: response.items.filter { item in
-                        isGrounded(page: item.page, evidence: item.evidence, in: document)
-                    })
+                    for item in response.items {
+                        guard isGrounded(page: item.page, evidence: item.evidence, in: document) else {
+                            continue
+                        }
+                        items.append(item)
+                        if items.count == Self.maximumSummaryItems {
+                            break summaryChunks
+                        }
+                    }
                 }
             }
 
@@ -74,12 +86,14 @@ public actor FoundationModelsIntelligenceProvider: DocumentIntelligenceProviding
                 throw IntelligenceError.ungroundedOutput
             }
 
-            return IntelligenceSummary(
+            let result = IntelligenceSummary(
                 text: items.map(\.text).joined(separator: "\n\n"),
                 citations: uniqueCitations(
                     items.map { IntelligenceCitation(page: $0.page, quote: $0.evidence) }
                 )
             )
+            try Task.checkCancellation()
+            return result
         } catch is CancellationError {
             throw IntelligenceError.cancelled
         }
@@ -93,10 +107,10 @@ public actor FoundationModelsIntelligenceProvider: DocumentIntelligenceProviding
             var tags: [String] = []
             var citations: [IntelligenceCitation] = []
 
-            for chunk in try chunks(for: document) {
+            for chunk in try chunks(for: document, task: Self.organizationTask) {
                 let responses = try await responses(
                     for: chunk,
-                    task: "Suggest a concise title, category, and tags for the OCR text."
+                    task: Self.organizationTask
                 ) { prompt in
                     try await sessionDriver.organize(prompt: prompt)
                 }
@@ -110,11 +124,12 @@ public actor FoundationModelsIntelligenceProvider: DocumentIntelligenceProviding
                         appendUnique(grounded.citation, to: &citations)
                     }
                     for tag in response.tags {
+                        guard tags.count < Self.maximumOrganizationTags else { break }
                         guard let grounded = grounded(tag, in: document) else { continue }
                         if !tags.contains(grounded.value) {
                             tags.append(grounded.value)
+                            appendUnique(grounded.citation, to: &citations)
                         }
-                        appendUnique(grounded.citation, to: &citations)
                     }
                 }
             }
@@ -123,12 +138,14 @@ public actor FoundationModelsIntelligenceProvider: DocumentIntelligenceProviding
                 throw IntelligenceError.ungroundedOutput
             }
 
-            return OrganizationSuggestion(
+            let result = OrganizationSuggestion(
                 title: title ?? "",
                 category: category ?? "",
                 tags: tags,
                 citations: citations
             )
+            try Task.checkCancellation()
+            return result
         } catch is CancellationError {
             throw IntelligenceError.cancelled
         }
@@ -140,24 +157,23 @@ public actor FoundationModelsIntelligenceProvider: DocumentIntelligenceProviding
     ) async throws -> [ExtractedDocumentField] {
         do {
             try requireAvailable(document)
-            guard !names.isEmpty, names.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
-                throw IntelligenceError.invalidFields
-            }
+            let requestedNames = try normalizedFieldNames(names)
 
             var groundedByName: [String: ExtractedDocumentField] = [:]
-            let requestedFields = names.enumerated().map { index, name in
+            let requestedFields = requestedNames.enumerated().map { index, name in
                 "\(index + 1). \(name)"
             }.joined(separator: "\n")
-            for chunk in try chunks(for: document) {
+            let extractionTask = """
+                Extract only these requested field names, preserving each name exactly:
+                Requested field names:
+                \(requestedFields)
+                """
+            for chunk in try chunks(for: document, task: extractionTask) {
                 let responses = try await responses(
                     for: chunk,
-                    task: """
-                        Extract only these requested field names, preserving each name exactly:
-                        Requested field names:
-                        \(requestedFields)
-                        """
+                    task: extractionTask
                 ) { prompt in
-                    try await sessionDriver.extract(names: names, prompt: prompt)
+                    try await sessionDriver.extract(names: requestedNames, prompt: prompt)
                 }
                 for response in responses {
                     let candidates = response.fields.map {
@@ -170,7 +186,7 @@ public actor FoundationModelsIntelligenceProvider: DocumentIntelligenceProviding
                     }
                     for field in IntelligenceGroundingValidator.validExtractedFields(candidates, in: document) {
                         guard
-                            names.contains(field.name),
+                            requestedNames.contains(field.name),
                             field.value != nil,
                             groundedByName[field.name] == nil
                         else { continue }
@@ -179,7 +195,7 @@ public actor FoundationModelsIntelligenceProvider: DocumentIntelligenceProviding
                 }
             }
 
-            return names.map { name in
+            let result = requestedNames.map { name in
                 groundedByName[name] ?? ExtractedDocumentField(
                     name: name,
                     value: nil,
@@ -187,9 +203,30 @@ public actor FoundationModelsIntelligenceProvider: DocumentIntelligenceProviding
                     evidence: nil
                 )
             }
+            try Task.checkCancellation()
+            return result
         } catch is CancellationError {
             throw IntelligenceError.cancelled
         }
+    }
+
+    private func normalizedFieldNames(_ names: [String]) throws -> [String] {
+        guard !names.isEmpty else {
+            throw IntelligenceError.invalidFields
+        }
+
+        var seen: Set<String> = []
+        var normalized: [String] = []
+        for name in names {
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                throw IntelligenceError.invalidFields
+            }
+            if seen.insert(trimmed).inserted {
+                normalized.append(trimmed)
+            }
+        }
+        return normalized
     }
 
     private func requireAvailable(_ document: IntelligenceDocument) throws {
@@ -203,11 +240,17 @@ public actor FoundationModelsIntelligenceProvider: DocumentIntelligenceProviding
         }
     }
 
-    private func chunks(for document: IntelligenceDocument) throws -> [IntelligenceChunk] {
-        try IntelligenceChunker.validatedChunks(
-            document: document,
-            characterBudget: FoundationModelsBudget.characterBudget(contextSize: contextSize)
-        )
+    private func chunks(
+        for document: IntelligenceDocument,
+        task: String
+    ) throws -> [IntelligenceChunk] {
+        try document.pages.flatMap { page in
+            let sourceBudget = try sourceCharacterBudget(page: page.number, task: task)
+            return try IntelligenceChunker.validatedChunks(
+                document: IntelligenceDocument(pages: [page]),
+                characterBudget: sourceBudget
+            )
+        }
     }
 
     private func responses<Response: Sendable>(
@@ -217,25 +260,51 @@ public actor FoundationModelsIntelligenceProvider: DocumentIntelligenceProviding
     ) async throws -> [Response] {
         do {
             try Task.checkCancellation()
-            return [try await drive(prompt(for: chunk, task: task))]
+            let response = try await drive(try prompt(for: chunk, task: task))
+            try Task.checkCancellation()
+            return [response]
         } catch IntelligenceError.contextOverflow {
             var retried: [Response] = []
-            for splitChunk in try FoundationModelsBudget.retrySplit(chunk) {
+            let sourceBudget = try sourceCharacterBudget(page: chunk.page, task: task)
+            for splitChunk in try FoundationModelsBudget.retryChunks(
+                chunk,
+                sourceCharacterBudget: sourceBudget
+            ) {
                 try Task.checkCancellation()
-                retried.append(try await drive(prompt(for: splitChunk, task: task)))
+                let response = try await drive(try prompt(for: splitChunk, task: task))
+                try Task.checkCancellation()
+                retried.append(response)
             }
             return retried
         }
     }
 
-    private func prompt(for chunk: IntelligenceChunk, task: String) -> String {
-        IntelligencePromptBuilder.documentPrompt(
+    private func sourceCharacterBudget(page: Int, task: String) throws -> Int {
+        let fixedPrompt = IntelligencePromptBuilder.documentPrompt(
             task: """
                 \(task)
-                Return only the requested source-grounded structured result. Every factual value must include its one-based source page and an exact evidence quote. Use nil when an extraction is absent or unsupported.
+                \(Self.groundingRequirement)
+                """,
+            pages: [IntelligenceSourcePage(number: page, text: "")]
+        )
+        return try FoundationModelsBudget.sourceCharacterBudget(
+            completePromptCharacterBudget: FoundationModelsBudget.characterBudget(contextSize: contextSize),
+            fixedPromptCharacterCount: fixedPrompt.count
+        )
+    }
+
+    private func prompt(for chunk: IntelligenceChunk, task: String) throws -> String {
+        let prompt = IntelligencePromptBuilder.documentPrompt(
+            task: """
+                \(task)
+                \(Self.groundingRequirement)
                 """,
             pages: [IntelligenceSourcePage(number: chunk.page, text: chunk.text)]
         )
+        guard prompt.count <= FoundationModelsBudget.characterBudget(contextSize: contextSize) else {
+            throw IntelligenceError.contextOverflow
+        }
+        return prompt
     }
 
     private func isGrounded(page: Int, evidence: String, in document: IntelligenceDocument) -> Bool {
@@ -292,6 +361,7 @@ private struct LiveFoundationModelsSessionDriver: FoundationModelsSessionDriving
                 generating: FoundationModelsLiveSummary.self,
                 options: generationOptions
             )
+            try Task.checkCancellation()
             return FoundationModelsGeneratedSummary(
                 items: response.content.items.map {
                     FoundationModelsGeneratedSummaryItem(
@@ -315,6 +385,7 @@ private struct LiveFoundationModelsSessionDriver: FoundationModelsSessionDriving
                 generating: FoundationModelsLiveOrganization.self,
                 options: generationOptions
             )
+            try Task.checkCancellation()
             return FoundationModelsGeneratedOrganization(
                 title: response.content.title.map(portableFact),
                 category: response.content.category.map(portableFact),
@@ -337,6 +408,7 @@ private struct LiveFoundationModelsSessionDriver: FoundationModelsSessionDriving
                 generating: FoundationModelsLiveExtraction.self,
                 options: generationOptions
             )
+            try Task.checkCancellation()
             return FoundationModelsGeneratedExtraction(
                 fields: response.content.fields.map {
                     FoundationModelsGeneratedField(
@@ -359,7 +431,9 @@ private struct LiveFoundationModelsSessionDriver: FoundationModelsSessionDriving
     private func checkBudget(prompt: String) async throws {
         if #available(macOS 26.4, *) {
             let instructionTokens = try await model.tokenCount(for: Instructions(Self.instructions))
+            try Task.checkCancellation()
             let promptTokens = try await model.tokenCount(for: prompt)
+            try Task.checkCancellation()
             guard FoundationModelsBudget.fits(
                 instructionTokens: instructionTokens,
                 promptTokens: promptTokens,
