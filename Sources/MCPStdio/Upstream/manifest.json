@@ -98,12 +98,12 @@
       "path": "Server/Server.swift",
       "origin": "Sources/MCP/Server/Server.swift",
       "upstream_sha256": "61cd2439525e73a417cbc36711b7e0340a2442f14acbb1631915ee3d792962f3",
-      "local_sha256": "ee7f094e3da99539f7c036f5faa503113ea14048b891cd1a586525a3bbb604dc"
+      "local_sha256": "8645db96398be8ddbf4cb960f87b2f504622b65d003c8c21641028f9bf9693c5"
     },
     {
       "path": "Server/RequestRegistry.swift",
       "local_only": true,
-      "local_sha256": "98cebcb2348760c599d68f7a906c9e5c577f50914780878c231b103d22cc3f9d"
+      "local_sha256": "8233f56a170b4aec91eabb14645537c55a3ed6beb363c7c79622db018ae2f26e"
     }
   ],
   "adaptations": [
@@ -153,11 +153,11 @@
     },
     {
       "path": "Server/Server.swift",
-      "reason": "Adapts the upstream server to a strict inbound-only stdio lifecycle with structured JSON-RPC params, initialize gating, ping, tools/list, tools/call, cancellation, correlated concurrent responses, a fixed eight-request in-flight limit, deterministic standard and overload errors, terminal-send ID ownership, and content-free diagnostics; removes client requests, batches, HTTP context, resources, prompts, sampling, elicitation, roots, subscriptions, logging control, and every network-related surface."
+      "reason": "Adapts the upstream server to a strict inbound-only stdio lifecycle with structured JSON-RPC params, an atomic initializing claim, ping, tools/list, tools/call, cancellation, correlated concurrent responses, separate fixed eight-request reservation and live-handler limits, deterministic standard and overload errors, generation-scoped terminal-send ownership, and content-free diagnostics; removes client requests, batches, HTTP context, resources, prompts, sampling, elicitation, roots, subscriptions, logging control, and every network-related surface."
     },
     {
       "path": "Server/RequestRegistry.swift",
-      "reason": "Adds a bounded local actor registry that atomically distinguishes duplicate and overloaded requests, retains IDs through explicit executing and terminal-sending states, makes cancellation idempotent, suppresses late completion, reopens capacity only after delivery, and cancels outstanding tasks during connection teardown."
+      "reason": "Adds a bounded local actor registry with monotonic reservation leases that atomically distinguishes duplicate and overloaded requests, retains IDs through explicit executing and terminal-sending states, bounds cancellation-insensitive live handlers separately, prevents stale handler completion from mutating a reused ID, makes cancellation idempotent, and cancels outstanding tasks during connection teardown."
     }
   ]
 }

@@ -3,8 +3,8 @@ import Logging
 
 /// A minimal stdio-oriented MCP server with strict JSON-RPC lifecycle rules.
 public actor Server {
-    /// Maximum executing or terminal-sending inbound requests per connection.
-    /// This matches `StdioTransport`'s eight-frame completed-input queue bound.
+    /// Maximum protocol reservations and live handlers per connection.
+    /// Each bound matches `StdioTransport`'s eight-frame completed-input queue.
     public static let maximumInFlightRequests = 8
 
     public struct Configuration: Hashable, Codable, Sendable {
@@ -73,6 +73,7 @@ public actor Server {
 
     private enum LifecycleState {
         case awaitingInitialize
+        case initializing
         case awaitingInitialized
         case ready
     }
@@ -197,8 +198,12 @@ public actor Server {
             guard let message = try? JSONDecoder().decode(Message<CancelledNotification>.self, from: data),
                   let id = message.params.requestId
             else { return }
-            if await registry.beginCancellation(id) {
-                _ = await sendReservedError(id: id, .internalError("request cancelled"))
+            if let lease = await registry.beginCancellation(id) {
+                _ = await sendReservedError(
+                    id: id,
+                    lease: lease,
+                    .internalError("request cancelled")
+                )
             }
         default:
             return
@@ -207,8 +212,37 @@ public actor Server {
 
     private func handleRequest(_ envelope: Envelope, id: ID, data: Data) async {
         switch await registry.reserve(id) {
-        case .accepted:
-            break
+        case let .accepted(lease):
+            if envelope.method == Initialize.name {
+                await handleInitialize(id: id, lease: lease, data: data)
+                return
+            }
+
+            if configuration.strict, lifecycleState != .ready {
+                await sendTerminalError(
+                    id: id,
+                    lease: lease,
+                    .invalidRequest("server is not initialized")
+                )
+                return
+            }
+
+            if envelope.method == Ping.name {
+                await beginRequest(
+                    id: id,
+                    lease: lease,
+                    data: data,
+                    handler: MethodHandler(Ping.self) { _ in Empty() }
+                )
+                return
+            }
+
+            guard let handler = methodHandlers[envelope.method] else {
+                await sendTerminalError(id: id, lease: lease, .methodNotFound(nil))
+                return
+            }
+            await beginRequest(id: id, lease: lease, data: data, handler: handler)
+            return
         case .duplicate:
             await sendError(id: id, .invalidRequest("duplicate active request ID"))
             return
@@ -219,34 +253,18 @@ public actor Server {
             )
             return
         }
-
-        if envelope.method == Initialize.name {
-            await handleInitialize(id: id, data: data)
-            return
-        }
-
-        if configuration.strict, lifecycleState != .ready {
-            await sendTerminalError(id: id, .invalidRequest("server is not initialized"))
-            return
-        }
-
-        if envelope.method == Ping.name {
-            await beginRequest(id: id, data: data, handler: MethodHandler(Ping.self) { _ in Empty() })
-            return
-        }
-
-        guard let handler = methodHandlers[envelope.method] else {
-            await sendTerminalError(id: id, .methodNotFound(nil))
-            return
-        }
-        await beginRequest(id: id, data: data, handler: handler)
     }
 
-    private func handleInitialize(id: ID, data: Data) async {
+    private func handleInitialize(id: ID, lease: RequestRegistry.Lease, data: Data) async {
         guard lifecycleState == .awaitingInitialize else {
-            await sendTerminalError(id: id, .invalidRequest("initialize has already been received"))
+            await sendTerminalError(
+                id: id,
+                lease: lease,
+                .invalidRequest("initialize has already been received")
+            )
             return
         }
+        lifecycleState = .initializing
 
         do {
             let request = try JSONDecoder().decode(Request<Initialize>.self, from: data)
@@ -258,36 +276,62 @@ public actor Server {
                 instructions: instructions
             )
             let response = try Self.makeEncoder().encode(Initialize.response(id: id, result: result))
-            if await registry.beginTerminal(id), await sendReservedFrame(response, id: id) {
+            if await registry.beginTerminal(id: id, lease: lease),
+               await sendReservedFrame(response, id: id, lease: lease)
+            {
                 lifecycleState = .awaitingInitialized
+            } else if connectionState == .running {
+                lifecycleState = .awaitingInitialize
             }
         } catch {
-            await sendTerminalError(id: id, .invalidParams(nil))
+            let delivered = await sendTerminalError(id: id, lease: lease, .invalidParams(nil))
+            if delivered, connectionState == .running {
+                lifecycleState = .awaitingInitialize
+            }
         }
     }
 
-    private func beginRequest(id: ID, data: Data, handler: MethodHandler) async {
+    private func beginRequest(
+        id: ID,
+        lease: RequestRegistry.Lease,
+        data: Data,
+        handler: MethodHandler
+    ) async {
+        guard await registry.claimHandler(id: id, lease: lease) else {
+            await sendTerminalError(
+                id: id,
+                lease: lease,
+                .serverError(code: -32000, message: "too many in-flight requests")
+            )
+            return
+        }
+
         let task = Task { [weak self] in
             guard let self else { return }
             do {
                 let response = try await handler.call(data, id)
                 try Task.checkCancellation()
-                if await self.registry.beginTerminal(id) {
-                    _ = await self.sendReservedFrame(response, id: id)
+                if await self.registry.beginTerminal(id: id, lease: lease) {
+                    _ = await self.sendReservedFrame(response, id: id, lease: lease)
                 }
             } catch is CancellationError {
-                await self.sendTerminalError(id: id, .internalError("request cancelled"))
+                await self.sendTerminalError(
+                    id: id,
+                    lease: lease,
+                    .internalError("request cancelled")
+                )
             } catch is DecodingError {
-                await self.sendTerminalError(id: id, .invalidParams(nil))
+                await self.sendTerminalError(id: id, lease: lease, .invalidParams(nil))
             } catch is ResponseEncodingFailure {
-                if await self.registry.beginTerminal(id) {
+                if await self.registry.beginTerminal(id: id, lease: lease) {
                     await self.failOutput()
                 }
             } catch {
-                await self.sendTerminalError(id: id, .internalError(nil))
+                await self.sendTerminalError(id: id, lease: lease, .internalError(nil))
             }
+            await self.registry.handlerDidExit(lease)
         }
-        await registry.attach(task, to: id)
+        await registry.attachHandler(task, to: lease)
     }
 
     private func sendError(id: ID, _ error: MCPError) async {
@@ -299,25 +343,38 @@ public actor Server {
         }
     }
 
-    private func sendTerminalError(id: ID, _ error: MCPError) async {
-        guard await registry.beginTerminal(id) else { return }
-        _ = await sendReservedError(id: id, error)
+    @discardableResult
+    private func sendTerminalError(
+        id: ID,
+        lease: RequestRegistry.Lease,
+        _ error: MCPError
+    ) async -> Bool {
+        guard await registry.beginTerminal(id: id, lease: lease) else { return false }
+        return await sendReservedError(id: id, lease: lease, error)
     }
 
-    private func sendReservedError(id: ID, _ error: MCPError) async -> Bool {
+    private func sendReservedError(
+        id: ID,
+        lease: RequestRegistry.Lease,
+        _ error: MCPError
+    ) async -> Bool {
         do {
             let data = try Self.makeEncoder().encode(Ping.response(id: id, error: error))
-            return await sendReservedFrame(data, id: id)
+            return await sendReservedFrame(data, id: id, lease: lease)
         } catch {
             await failOutput()
             return false
         }
     }
 
-    private func sendReservedFrame(_ data: Data, id: ID) async -> Bool {
+    private func sendReservedFrame(
+        _ data: Data,
+        id: ID,
+        lease: RequestRegistry.Lease
+    ) async -> Bool {
         let delivered = await sendFrame(data)
         if delivered {
-            await registry.finishTerminal(id)
+            await registry.finishTerminal(id: id, lease: lease)
         }
         return delivered
     }

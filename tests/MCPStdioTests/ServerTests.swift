@@ -30,6 +30,25 @@ struct ServerTests {
     }
 
     @Test
+    func blockedInitializeResponseStillAllowsOnlyOneInitializeClaim() async throws {
+        let harness = await ServerHarness.make()
+        try await harness.start()
+
+        await harness.blockNextWrite()
+        await harness.send(initializeRequest(id: "first-initialize", version: Version.latest))
+        await harness.waitUntilWriteBlocked()
+        await harness.send(initializeRequest(id: "second-initialize", version: Version.latest))
+        await harness.releaseBlockedWrite()
+
+        let first = try await harness.nextResponse()
+        #expect(first.id == "first-initialize")
+        #expect(first.errorCode == nil)
+        #expect(try await harness.nextResponse() == .error(id: "second-initialize", code: -32600))
+        #expect(await harness.responseCount(id: "first-initialize") == 1)
+        #expect(await harness.responseCount(id: "second-initialize") == 1)
+    }
+
+    @Test
     func listAndCallToolsUseRegisteredTypedHandlers() async throws {
         let calls = ToolCallRecorder()
         let harness = await ServerHarness.make(calls: calls)
@@ -199,11 +218,20 @@ struct ServerTests {
     func cancellationKeepsRegistryEntryReservedUntilTerminalSendFinishes() async {
         let registry = RequestRegistry(limit: 1)
 
-        #expect(await registry.reserve(13) == .accepted)
-        #expect(await registry.beginCancellation(13))
+        let lease: RequestRegistry.Lease
+        switch await registry.reserve(13) {
+        case let .accepted(value): lease = value
+        default:
+            Issue.record("Expected initial reservation")
+            return
+        }
+        #expect(await registry.beginCancellation(13) == lease)
         #expect(await registry.reserve(13) == .duplicate)
-        await registry.finishTerminal(13)
-        #expect(await registry.reserve(13) == .accepted)
+        await registry.finishTerminal(id: 13, lease: lease)
+        guard case .accepted = await registry.reserve(13) else {
+            Issue.record("Expected ID reuse after terminal delivery")
+            return
+        }
     }
 
     @Test
@@ -258,7 +286,7 @@ struct ServerTests {
     }
 
     @Test
-    func cancellationTerminalDeliveryReopensOneInFlightSlot() async throws {
+    func cancellationInsensitiveHandlersKeepExecutionCapacityUntilTheyExit() async throws {
         let calls = ToolCallRecorder()
         let gate = CallGate()
         let harness = await ServerHarness.make(calls: calls, gate: gate)
@@ -269,16 +297,30 @@ struct ServerTests {
             await harness.send(request(id: .int(300 + index), method: CallTool.name, params: ["name": .string(name)]))
             await gate.waitUntilStarted(name)
         }
-        await harness.send(cancel(id: 300))
-        #expect(try await harness.nextResponse() == .error(id: 300, code: -32603))
-
-        await harness.send(request(id: 400, method: CallTool.name, params: ["name": "after-cancel"]))
-        await gate.waitUntilStarted("after-cancel")
-        await gate.release("after-cancel")
-        #expect(try await harness.nextResponse().id == 400)
-        #expect(await calls.names.count == Server.maximumInFlightRequests + 1)
-
         for index in 0..<Server.maximumInFlightRequests {
+            await harness.send(cancel(id: .int(300 + index)))
+            #expect(try await harness.nextResponse() == .error(id: .int(300 + index), code: -32603))
+        }
+        for index in 0..<Server.maximumInFlightRequests {
+            let name = "replacement-while-live-\(index)"
+            await gate.release(name)
+            await harness.send(request(id: .int(400 + index), method: CallTool.name, params: ["name": .string(name)]))
+            let overload = try await harness.nextResponse()
+            #expect(overload.id == .int(400 + index))
+            #expect(overload.errorCode == -32000)
+        }
+        #expect(await calls.names.count == Server.maximumInFlightRequests)
+
+        await gate.release("cancel-slot-0")
+        await calls.waitUntilFinished("cancel-slot-0")
+        await harness.drainScheduling()
+        await gate.release("after-exit")
+        await harness.send(request(id: 500, method: CallTool.name, params: ["name": "after-exit"]))
+        let accepted = try await harness.nextResponse()
+        #expect(accepted.id == 500)
+        #expect(accepted.errorCode == nil)
+
+        for index in 1..<Server.maximumInFlightRequests {
             await gate.release("cancel-slot-\(index)")
         }
         await harness.stop()
@@ -303,6 +345,32 @@ struct ServerTests {
         await gate.release("cancel-me")
         await harness.drainScheduling()
         #expect(await harness.responseCount(id: 21) == 1)
+    }
+
+    @Test
+    func cancelledHandlerCannotCompleteAReplacementUsingTheSameID() async throws {
+        let calls = ToolCallRecorder()
+        let gate = CallGate()
+        let harness = await ServerHarness.make(calls: calls, gate: gate)
+        try await harness.startAndInitialize()
+
+        await harness.send(request(id: 23, method: CallTool.name, params: ["name": "old-generation"]))
+        await gate.waitUntilStarted("old-generation")
+        await harness.send(cancel(id: 23))
+        #expect(try await harness.nextResponse() == .error(id: 23, code: -32603))
+
+        await harness.send(request(id: 23, method: CallTool.name, params: ["name": "replacement-generation"]))
+        await gate.waitUntilStarted("replacement-generation")
+        await gate.release("old-generation")
+        await calls.waitUntilFinished("old-generation")
+        await gate.release("replacement-generation")
+
+        let replacement = try await harness.nextResponse()
+        #expect(replacement.id == 23)
+        #expect(replacement.errorCode == nil)
+        #expect(replacement.result?["content"]?[0]?["text"] == "replacement-generation")
+        #expect(try await harness.nextResponseIfAvailable() == nil)
+        #expect(await harness.responseCount(id: 23) == 2)
     }
 
     @Test
@@ -393,6 +461,7 @@ private actor ServerHarness {
             if let gate {
                 await gate.begin(parameters.name)
             }
+            await calls.recordFinished(parameters.name)
             let value = parameters.arguments?["value"]?.intValue
             let text = value.map { "\(parameters.name):\($0)" } ?? parameters.name
             return .init(content: [.text(text: text, annotations: nil, _meta: nil)])
@@ -544,7 +613,20 @@ private actor InMemoryTransport: Transport {
 
 private actor ToolCallRecorder {
     private(set) var names: [String] = []
+    private var finished: Set<String> = []
+    private var finishWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+
     func record(_ name: String) { names.append(name) }
+
+    func recordFinished(_ name: String) {
+        finished.insert(name)
+        finishWaiters.removeValue(forKey: name)?.forEach { $0.resume() }
+    }
+
+    func waitUntilFinished(_ name: String) async {
+        guard !finished.contains(name) else { return }
+        await withCheckedContinuation { finishWaiters[name, default: []].append($0) }
+    }
 }
 
 private actor ValueCallRecorder {

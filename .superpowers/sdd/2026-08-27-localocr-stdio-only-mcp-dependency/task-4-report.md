@@ -166,3 +166,71 @@ Task 2-3 protocol types and transport remain unchanged. The Task 5 root-suite
 and module-migration gate remains carried; no production stub or unrelated
 process, document, consent, release, signing, publication, or external-state
 change was introduced.
+
+## Fix round 2: generation leases, execution accounting, and initialize claim
+
+### Corrective changes
+
+- Every accepted request now receives a monotonic, connection-local lease.
+  Registry mutations that can terminate or release a request validate both its
+  JSON-RPC ID and lease. A cancelled handler from an earlier generation can
+  therefore neither claim the terminal path nor release a later reservation
+  that reused the same ID.
+- Protocol reservations and live handler tasks now use separate ledgers, each
+  bounded at `Server.maximumInFlightRequests` (**8**). Successful delivery of a
+  cancellation error may release the protocol ID, but the execution slot stays
+  occupied until that exact handler task exits. Requests admitted while all
+  eight cancellation-insensitive handlers remain live receive the same
+  deterministic `-32000` overload response without starting handler work.
+- Initialization atomically transitions from `awaitingInitialize` to an
+  explicit `initializing` state before response construction or output can
+  suspend. A second initialize request cannot acquire the lifecycle claim,
+  including while the first initialize response is blocked in the transport.
+  An invalid initialize releases the claim only after its error is delivered.
+
+The original limit rationale remains unchanged: eight matches the adjacent
+eight-frame completed-input queue and is the smallest audited bound compatible
+with concurrent request handling. The separate live-handler ledger closes a
+distinct resource-accounting gap; cancellation cannot be used to recycle IDs
+into more than eight executing handler tasks.
+
+### TDD and regression evidence
+
+- ABA RED: after cancellation delivery and same-ID reuse, resuming the old
+  cancellation-insensitive handler produced an internal error for the reused
+  ID and suppressed the replacement result. GREEN: the old lease is rejected;
+  the replacement result survives and the two observed terminal responses are
+  exactly the old cancellation and the replacement success.
+- Execution-capacity RED: cancelling eight suspended handlers and repeatedly
+  reusing capacity started eight additional handlers even though none of the
+  originals had exited. GREEN: all replacement attempts receive `-32000`, the
+  invocation count remains eight, and exactly one slot reopens only after an
+  original handler records task completion.
+- Initialize regression: with the first initialize output deliberately blocked,
+  a second different ID receives `-32600`; both IDs receive exactly one
+  response and only the first response is successful. The lifecycle claim is
+  set before the first await.
+- Mutation review covers ID-only terminal transitions, ID-only finish, stale
+  handler cleanup, freeing execution capacity on cancellation delivery,
+  attaching after cancellation, admitting a ninth live handler, and delaying
+  the initialize state transition until after response delivery.
+
+### Fix-round verification
+
+- Exact-source focused `swift test --filter ServerTests`: 22 tests passed,
+  including the same-ID cancellation ABA, cancellation-insensitive saturation,
+  and blocked-initialize regressions.
+- `swift build --target MCPStdioTests`: passed against the checked real target.
+- `.venv/bin/python -m pytest tests/contract/test_mcp_stdio_vendor.py -q`:
+  38 passed with the same five pre-existing SWIG deprecation warnings; this
+  includes manifest closure, provenance, and local-hash checks.
+- Updated local SHA-256 values:
+  - `Server/Server.swift`:
+    `8645db96398be8ddbf4cb960f87b2f504622b65d003c8c21641028f9bf9693c5`
+  - `Server/RequestRegistry.swift`:
+    `8233f56a170b4aec91eabb14645537c55a3ed6beb363c7c79622db018ae2f26e`
+
+Task 2-3 public types and transport remain unchanged. Root-suite ownership
+remains with Task 5 after module migration. No production stub, client,
+resource, prompt, HTTP/OAuth/network surface, process, release, publication, or
+external-state action was introduced.
