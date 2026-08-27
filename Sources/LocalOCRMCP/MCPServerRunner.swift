@@ -32,9 +32,14 @@ public struct MCPServerRunner: Sendable {
         return server
     }
 
-    public func run() async throws {
+    func run(transport: any Transport) async throws {
         let server = await makeServer()
-        try await server.start(transport: StdioTransport())
+        try await server.start(transport: transport)
         await server.waitUntilCompleted()
+        await server.stop()
+    }
+
+    public func runStdio() async throws {
+        try await run(transport: StdioTransport())
     }
 }

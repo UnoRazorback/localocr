@@ -11,8 +11,61 @@ fixture="$repo_root/tests/LocalOCRCoreTests/Fixtures/mixed.pdf"
 system_swift_rpath="/usr/lib/swift"
 compatibility_span="@rpath/libswiftCompatibilitySpan.dylib"
 stderr_file="$(mktemp -t localocr-mcp-smoke.XXXXXX)"
+test_home_root=""
+test_home_parent=""
+test_home_name=""
+test_home_identity=""
+test_home_parent_identity=""
 
-trap 'rm -f -- "$stderr_file"' EXIT
+cleanup() {
+    rm -f -- "$stderr_file"
+    [[ -n "$test_home_root" ]] || return
+    [[ -n "$test_home_parent" && -n "$test_home_name" ]] || return
+    (
+        cd "$test_home_parent" || exit 1
+        [[ "$(/usr/bin/stat -f '%d:%i' .)" == "$test_home_parent_identity" ]] || {
+            echo "temporary MCP home parent identity changed; refusing cleanup" >&2
+            exit 1
+        }
+        [[ -d "$test_home_name" && ! -L "$test_home_name" ]] || {
+            echo "temporary MCP home changed type; refusing cleanup" >&2
+            exit 1
+        }
+        [[ "$(/usr/bin/stat -f '%d:%i' "$test_home_name")" == "$test_home_identity" ]] || {
+            echo "temporary MCP home identity changed; refusing cleanup" >&2
+            exit 1
+        }
+        /usr/bin/find "$test_home_name" -depth -delete
+    )
+}
+
+trap cleanup EXIT
+
+reject_symlink_path() {
+    local candidate="$1"
+    local component=""
+    local part
+
+    [[ "$candidate" == /* ]] || return 1
+    IFS='/' read -r -a path_parts <<< "${candidate#/}"
+    for part in "${path_parts[@]}"; do
+        [[ -n "$part" ]] || continue
+        component="$component/$part"
+        [[ ! -L "$component" ]] || return 1
+    done
+}
+
+require_json_lines() {
+    local response="$1"
+    local line
+
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" == \{*\} ]] || {
+            echo "native MCP stdout contained a non-JSON-RPC line" >&2
+            exit 1
+        }
+    done <<< "$response"
+}
 
 release_rpaths() {
     otool -l "$1" | awk '
@@ -116,6 +169,33 @@ reject_binary_content() {
 reject_binary_content "$cli"
 reject_binary_content "$mcp"
 
+[[ -d "$repo_root/.build" && ! -L "$repo_root/.build" ]] || {
+    echo "native build root is missing or symlinked" >&2
+    exit 1
+}
+reject_symlink_path "$repo_root/.build" || {
+    echo "native build root contains a symlinked path component" >&2
+    exit 1
+}
+test_home_root="$(mktemp -d "$repo_root/.build/localocr-mcp-smoke-home.XXXXXX")"
+chmod 700 "$test_home_root"
+[[ "$(cd "$test_home_root" && pwd -P)" == "$test_home_root" ]] || {
+    echo "temporary MCP home is not a physical directory" >&2
+    exit 1
+}
+reject_symlink_path "$test_home_root" || {
+    echo "temporary MCP home contains a symlinked path component" >&2
+    exit 1
+}
+[[ "$(/usr/bin/stat -f '%Lp' "$test_home_root")" == "700" ]] || {
+    echo "temporary MCP home is not mode 0700" >&2
+    exit 1
+}
+test_home_parent="$(/usr/bin/dirname "$test_home_root")"
+test_home_name="$(/usr/bin/basename "$test_home_root")"
+test_home_identity="$(/usr/bin/stat -f '%d:%i' "$test_home_root")"
+test_home_parent_identity="$(/usr/bin/stat -f '%d:%i' "$test_home_parent")"
+
 inspection="$("$cli" inspect "$fixture" --json)"
 if ! printf '%s\n' "$inspection" | grep -q '"pages":2'; then
     echo "native CLI inspection did not return the fixture page count" >&2
@@ -123,8 +203,19 @@ if ! printf '%s\n' "$inspection" | grep -q '"pages":2'; then
 fi
 
 initialize_request='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"native-tools-smoke","version":"1.0"}}}'
+initialized_notification='{"jsonrpc":"2.0","method":"notifications/initialized"}'
+list_tools_request='{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+blocked_call_request="{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"get_pdf_page_count\",\"arguments\":{\"file_path\":\"$test_home_root/missing.pdf\"}}}"
 # Keep stdin open briefly so the stdio transport can finish the response before EOF.
-initialize_response="$( { printf '%s\n' "$initialize_request"; sleep 1; } | "$mcp" 2>"$stderr_file")"
+initialize_response="$({
+    printf '%s\n' \
+        "$initialize_request" \
+        "$initialized_notification" \
+        "$list_tools_request" \
+        "$blocked_call_request"
+    sleep 1
+} | CFFIXED_USER_HOME="$test_home_root" HOME="$test_home_root" LOCALOCR_CACHE_DIR="$test_home_root/cache" "$mcp" 2>"$stderr_file")"
+require_json_lines "$initialize_response"
 if ! printf '%s\n' "$initialize_response" | grep -q '"serverInfo"'; then
     echo "native MCP server did not complete initialization" >&2
     exit 1
@@ -133,8 +224,92 @@ if ! printf '%s\n' "$initialize_response" | grep -q '"version":"0.3.0"'; then
     echo "native MCP server did not negotiate version 0.3.0" >&2
     exit 1
 fi
+tools_response="$(printf '%s\n' "$initialize_response" | grep '"id":2')"
+for tool_name in \
+    extract_document_fields \
+    get_pdf_page_count \
+    inspect_pdf \
+    make_searchable_pdf \
+    ocr_image \
+    ocr_pdf \
+    ocr_pdf_batch \
+    organize_document \
+    summarize_document; do
+    if ! printf '%s\n' "$tools_response" | grep -q "\"name\":\"$tool_name\""; then
+        echo "native MCP tools/list omitted $tool_name" >&2
+        exit 1
+    fi
+done
+if [[ "$(printf '%s\n' "$tools_response" | grep -o '"name":"[^"]*"' | wc -l | tr -d ' ')" != "9" ]]; then
+    echo "native MCP tools/list did not expose exactly nine tools" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$initialize_response" | grep -Fq '\"code\":\"external_data_acknowledgment_required\"'; then
+    echo "native MCP document call was not blocked without acknowledgment" >&2
+    exit 1
+fi
 if [[ -s "$stderr_file" ]]; then
     echo "native MCP server wrote diagnostics during initialization" >&2
+    cat "$stderr_file" >&2
+    exit 1
+fi
+
+consent_directory="$test_home_root/Library/Application Support/com.rayconsulting.localocr"
+mkdir -m 700 "$test_home_root/Library"
+mkdir -m 700 "$test_home_root/Library/Application Support"
+mkdir -m 700 "$consent_directory"
+consent_receipt="$consent_directory/mcp-consent.json"
+printf '%s' '{"schema_version":1,"policy_version":1,"accepted_at":"2026-08-27T00:00:00Z","external_provider_risk_accepted":true,"document_tool_access_accepted":true}' > "$consent_receipt"
+chmod 600 "$consent_receipt"
+for private_directory in \
+    "$test_home_root" \
+    "$test_home_root/Library" \
+    "$test_home_root/Library/Application Support" \
+    "$consent_directory"; do
+    [[ -d "$private_directory" && ! -L "$private_directory" ]] || {
+        echo "temporary consent path contains a symlink or non-directory" >&2
+        exit 1
+    }
+    [[ "$(/usr/bin/stat -f '%Lp' "$private_directory")" == "700" ]] || {
+        echo "temporary consent directory is not mode 0700" >&2
+        exit 1
+    }
+done
+[[ -f "$consent_receipt" && ! -L "$consent_receipt" ]] || {
+    echo "temporary consent receipt is not a physical regular file" >&2
+    exit 1
+}
+[[ "$(/usr/bin/stat -f '%Lp' "$consent_receipt")" == "600" ]] || {
+    echo "temporary consent receipt is not mode 0600" >&2
+    exit 1
+}
+
+: > "$stderr_file"
+compatibility_page_count_request="{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"get_pdf_page_count\",\"arguments\":{\"file_path\":\"$fixture\"}}}"
+compatibility_inspect_request="{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\",\"params\":{\"name\":\"inspect_pdf\",\"arguments\":{\"file_path\":\"$fixture\"}}}"
+compatibility_response="$({
+    printf '%s\n' \
+        "$initialize_request" \
+        "$initialized_notification" \
+        "$compatibility_page_count_request" \
+        "$compatibility_inspect_request"
+    sleep 2
+} | CFFIXED_USER_HOME="$test_home_root" HOME="$test_home_root" LOCALOCR_CACHE_DIR="$test_home_root/cache" "$mcp" 2>"$stderr_file")"
+require_json_lines "$compatibility_response"
+if ! printf '%s\n' "$compatibility_response" | grep '"id":11' | grep -Fq '"text":"2"'; then
+    echo "native MCP page-count compatibility call failed with current acknowledgment" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$compatibility_response" | grep '"id":12' | grep -Fq '\"pages\":2'; then
+    echo "native MCP inspection compatibility call failed with current acknowledgment" >&2
+    exit 1
+fi
+if printf '%s\n' "$compatibility_response" | grep -q 'external_data_acknowledgment_required'; then
+    echo "native MCP rejected the isolated current acknowledgment" >&2
+    exit 1
+fi
+if [[ -s "$stderr_file" ]]; then
+    echo "native MCP server wrote diagnostics during compatibility calls" >&2
     cat "$stderr_file" >&2
     exit 1
 fi

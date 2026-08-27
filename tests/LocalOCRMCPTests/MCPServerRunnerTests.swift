@@ -31,6 +31,23 @@ import Testing
         await client.disconnect()
         await server.stop()
     }
+
+    @Test func runnerUsesOnlyTheExplicitlyInjectedTransport() async throws {
+        let dispatcher = RecordingDispatcher()
+        let runner = MCPServerRunner(dispatcher: dispatcher)
+        let (clientTransport, serverTransport) = await InMemoryTransport.createConnectedPair()
+        let client = Client(name: "runner-transport-test-client", version: "1.0.0")
+        let runnerTask = Task {
+            try await runner.run(transport: serverTransport)
+        }
+
+        _ = try await client.connect(transport: clientTransport)
+        let (tools, _) = try await client.listTools()
+        #expect(tools.count == 9)
+
+        await client.disconnect()
+        try await runnerTask.value
+    }
 }
 
 private struct ToolCall: Sendable, Equatable {
