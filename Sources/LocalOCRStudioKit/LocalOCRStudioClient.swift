@@ -1,5 +1,6 @@
 import Foundation
 import LocalOCRCore
+import LocalOCRIntelligence
 import LocalOCRService
 
 public actor LocalOCRStudioClient: StudioOCRClient {
@@ -73,7 +74,12 @@ public actor LocalOCRStudioClient: StudioOCRClient {
             searchablePages: inspection.searchablePages,
             ocrNeededPages: inspection.ocrNeededPages,
             text: Self.formattedText(from: response),
-            failedPages: response.failedPages
+            failedPages: response.failedPages,
+            intelligenceDocument: IntelligenceDocument(
+                pages: response.pages.map {
+                    IntelligenceSourcePage(number: $0.page, text: $0.text)
+                }
+            )
         )
     }
 
@@ -94,7 +100,10 @@ public actor LocalOCRStudioClient: StudioOCRClient {
             searchablePages: 0,
             ocrNeededPages: 1,
             text: response.text,
-            failedPages: []
+            failedPages: [],
+            intelligenceDocument: IntelligenceDocument(
+                pages: [IntelligenceSourcePage(number: 1, text: response.text)]
+            )
         )
     }
 

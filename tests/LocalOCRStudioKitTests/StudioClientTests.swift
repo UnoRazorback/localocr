@@ -1,5 +1,6 @@
 import Foundation
 import LocalOCRCore
+import LocalOCRIntelligence
 import LocalOCRService
 import LocalOCRStudioKit
 import Testing
@@ -38,6 +39,10 @@ import Testing
     --- Page 2 ---
     Total due: $2,450.00
     """)
+    #expect(result.intelligenceDocument == IntelligenceDocument(pages: [
+        IntelligenceSourcePage(number: 1, text: "Invoice 1048"),
+        IntelligenceSourcePage(number: 2, text: "Total due: $2,450.00")
+    ]))
     #expect(progress.events == [.inspecting, .recognizing(page: 2, total: 2), .assembling])
 }
 
@@ -56,6 +61,9 @@ import Testing
     #expect(result.searchablePages == 0)
     #expect(result.ocrNeededPages == 1)
     #expect(result.text == "Coffee $4.50")
+    #expect(result.intelligenceDocument == IntelligenceDocument(pages: [
+        IntelligenceSourcePage(number: 1, text: "Coffee $4.50")
+    ]))
 }
 
 @Test func sourceMutationFailsInsteadOfReturningAResult() async throws {
@@ -96,6 +104,8 @@ import Testing
     --- Page 2 ---
     Second
     """)
+    #expect(result.intelligenceDocument.pages.map(\.number) == [1, 2])
+    #expect(result.intelligenceDocument.pages.map(\.text) == ["First", "Second"])
 }
 
 @Test func imageResultDoesNotOfferSearchablePDF() async throws {
