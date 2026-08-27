@@ -86,7 +86,7 @@
       "path": "Base/StdioTransport.swift",
       "origin": "Sources/MCP/Base/Transports/StdioTransport.swift",
       "upstream_sha256": "56b5d57eb8168f97a149bd68d3502a359cf2c42ecd7661b10241957f5e4b2995",
-      "local_sha256": "a0533daa322d0eeaae9698c5f354445f4cf32c8a15a6dd9f191b3d2ebb8260b4"
+      "local_sha256": "30667cbfbdc7e4ebd1d45fe1bee4b34bafa171d335e479f113cf57c2b808095b"
     },
     {
       "path": "Server/Tools.swift",
@@ -134,7 +134,7 @@
     },
     {
       "path": "Base/StdioTransport.swift",
-      "reason": "Hardens the upstream POSIX stdio transport with a one MiB input frame bound, CRLF normalization, bounded overflow draining, an eight-frame fail-closed receive queue, FIFO complete writes with cancellation-aware waiter removal, broken-pipe suppression, exact-once stream completion, idempotent disconnect, and content-free logging."
+      "reason": "Hardens the upstream POSIX stdio transport with a one MiB input frame bound, CRLF normalization, bounded overflow draining, an eight-frame fail-closed receive queue, receive-consumer termination handling, FIFO complete writes with cancellation-aware waiter removal, broken-pipe suppression, exact-once stream completion, idempotent disconnect, and content-free logging."
     },
     {
       "path": "Server/Tools.swift",

@@ -127,3 +127,40 @@ and the receive-capacity/waiter-removal adaptations.
 - Manifest/local SHA-256 equality and `git diff --check`: passed.
 - The root package-wide test link remains intentionally carried to Tasks 4-5;
   no stub, target reordering, or unrelated protocol change was introduced.
+
+## Fix round 2: terminated receive consumer closes lifecycle
+
+### Corrective change and regression
+
+When a task waiting on the receive stream is cancelled, the continuation can
+later return `.terminated` when the read loop attempts to deliver the next
+stdin frame. The previous branch returned directly, killing the read task but
+leaving transport state as connected. `send` could still write and `connect`
+could still return successfully even though stdin had been silently abandoned.
+
+`cancelledReceiveConsumerStopsConnectionWhenTheNextFrameCannotBeDelivered`
+uses a real pipe and real cancelled stream consumer, writes another frame, and
+then verifies the content-free stop transition. It also verifies that future
+`send` and `connect` calls both reject the stopped one-shot connection and that
+the input payload does not enter logs.
+
+- RED: no stop transition was observed within one second; both `send` and
+  `connect` succeeded.
+- GREEN: the `.terminated` yield branch calls the existing guarded `finish()`
+  transition before returning. The lifecycle test passed in 0.003 seconds and
+  the full focused transport suite passed all 18 tests.
+
+The guarded finish path retains exact-once completion and still does not close
+caller-owned descriptors. The refreshed `Base/StdioTransport.swift` SHA-256 is
+`30667cbfbdc7e4ebd1d45fe1bee4b34bafa171d335e479f113cf57c2b808095b`.
+
+### Fix-round verification
+
+- Exact-source focused runner,
+  `swift test --filter StdioTransportTests`: 18 tests passed.
+- `swift build --target MCPStdioTests`: passed.
+- `.venv/bin/python -m pytest tests/contract/test_mcp_stdio_vendor.py -q`:
+  38 passed with five pre-existing SWIG deprecation warnings.
+- Manifest/local SHA-256 equality and `git diff --check`: passed.
+- The Tasks 4-5 root package-wide link gate remains unchanged; no stub,
+  process, release, configuration, or external action was introduced.

@@ -301,6 +301,48 @@ struct StdioTransportTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
+    func cancelledReceiveConsumerStopsConnectionWhenTheNextFrameCannotBeDelivered() async throws {
+        let captured = CapturedLog()
+        let logger = Logger(label: "stdio.consumer.cancellation.test") { _ in
+            CapturingLogHandler(captured: captured)
+        }
+        let harness = try PipeTransportHarness()
+        defer { harness.close() }
+        let transport = StdioTransport(
+            input: harness.transportInput,
+            output: harness.transportOutput,
+            logger: logger
+        )
+        try await transport.connect()
+        let consumerIsWaiting = AsyncGate()
+        let consumer = Task {
+            var iterator = await transport.receive().makeAsyncIterator()
+            await consumerIsWaiting.open()
+            return try await iterator.next()
+        }
+
+        await consumerIsWaiting.wait()
+        consumer.cancel()
+        _ = try? await consumer.value
+        try harness.writeInput(Data("abandoned-payload\n".utf8))
+
+        #expect(await captured.waitUntilContains("Stdio transport stopped"))
+        #expect(captured.joinedMessages().contains("abandoned-payload") == false)
+        do {
+            try await transport.send(Data("must-not-send".utf8))
+            Issue.record("Expected send to reject the terminated receive connection")
+        } catch is MCPError {
+            // Expected after the read loop observes the terminated continuation.
+        }
+        do {
+            try await transport.connect()
+            Issue.record("Expected connect to reject the terminated receive connection")
+        } catch is MCPError {
+            // Expected: a stopped one-shot transport cannot reconnect.
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
     func cancellingASendDuringAPartialUnavailableWriteStopsWithoutHanging() async throws {
         let harness = try PipeTransportHarness()
         defer { harness.close() }

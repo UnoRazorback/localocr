@@ -202,6 +202,7 @@ public actor StdioTransport: Transport {
                                 finish(throwing: MCPError.internalError("stdio receive capacity exceeded"))
                                 return
                             case .terminated:
+                                finish()
                                 return
                             @unknown default:
                                 finish(throwing: MCPError.internalError("stdio receive failed"))
