@@ -11,11 +11,11 @@ or a release version/tag.
 
 ## Candidate identity
 
-- Candidate commit: `06698bba0f21a30a14b8fb0c9d7e00acea63222b`
+- Candidate commit: `c5474f84e2ca36952caef20241c3ad7d8eab7533`
 - Branch: `feature/local-intelligence-mcp-faq`
 - Evidence date: 2026-08-27
-- Exact acceptance-check window recorded below: 2026-08-27T18:57:54Z through
-  2026-08-27T18:58:21Z
+- Exact focused-check window recorded below: 2026-08-27T19:10:11Z through
+  2026-08-27T19:10:13Z
 - Working tree at the start of the exact-commit check: clean
 
 ## Test environment
@@ -54,55 +54,46 @@ and candidate-policy enforcement. One first-draft source assertion also failed
 with a test-only `NameError`; that assertion was corrected before GREEN and is
 not counted as product evidence.
 
-Exact-commit focused verification:
+The earlier `114518b` and `fe86960` focused runs were development history only.
+They are superseded and are not evidence for this candidate commit.
+
+Exact-commit pure/static verification for `c5474f8`:
 
 ```text
-START 2026-08-27T18:57:54Z
-bash -n scripts/build-native-tools.sh scripts/build-unsigned-studio-app.sh scripts/verify-direct-release.sh
-.venv/bin/python -m pytest -q \
-  tests/contract/test_studio_app_project.py::test_project_source_of_truth_has_exact_release_settings \
-  tests/contract/test_studio_app_project.py::test_local_intelligence_is_linked_to_every_shipping_surface \
-  tests/contract/test_studio_app_project.py::test_foundation_models_symbols_are_compile_and_availability_guarded \
-  tests/contract/test_studio_app_project.py::test_shipping_sources_do_not_import_network_frameworks \
-  tests/contract/test_studio_app_project.py::test_unsigned_build_script_has_stable_toolchain_and_confined_paths \
-  tests/contract/test_direct_release_scripts.py::test_verifier_requires_arm64_and_exact_macos_14_target \
-  tests/contract/test_direct_release_scripts.py::test_candidate_build_scripts_apply_local_intelligence_binary_policy \
-  tests/contract/test_release_artifacts.py::test_release_artifacts_expose_only_system_dylibs_and_safe_rpaths \
-  tests/contract/test_release_artifacts.py::test_release_artifacts_are_native_standalone_executables
-Result: 9 passed, 0 failed, 5 existing dependency deprecation warnings
-git diff --check
-Result: pass, no output
-END 2026-08-27T18:57:56Z
-```
+START 2026-08-27T19:10:11Z
+COMMIT c5474f84e2ca36952caef20241c3ad7d8eab7533
+git status --short
+Result: clean, no output
 
-The real stdio test observed exactly these nine tools, in order:
-`get_pdf_page_count`, `inspect_pdf`, `ocr_pdf`, `ocr_pdf_batch`, `ocr_image`,
-`make_searchable_pdf`, `summarize_document`, `organize_document`, and
-`extract_document_fields`.
-
-### Review fix round 1
-
-At candidate commit `fe86960`, a fresh non-build verification ran from
-2026-08-27T19:06:25Z through 2026-08-27T19:06:26Z:
-
-```text
 bash -n scripts/build-native-tools.sh scripts/build-unsigned-studio-app.sh \
   scripts/stage-direct-release.sh scripts/verify-direct-release.sh
 Result: pass
 
-.venv/bin/python -m pytest -q [11 named release-policy and guard tests]
-Result: 11 passed, 0 failed, 5 existing dependency deprecation warnings
+.venv/bin/python -m pytest -q \
+  tests/contract/test_direct_release_scripts.py::test_release_candidate_requires_arm64_and_exact_macos_14_target \
+  tests/contract/test_direct_release_scripts.py::test_release_candidate_rejects_network_frameworks \
+  tests/contract/test_direct_release_scripts.py::test_candidate_build_scripts_apply_local_intelligence_binary_policy \
+  tests/contract/test_direct_release_scripts.py::test_verifier_allows_only_system_install_names_and_compatibility_span \
+  tests/contract/test_studio_app_project.py::test_foundation_models_symbols_are_compile_and_availability_guarded \
+  tests/contract/test_studio_app_project.py::test_foundation_models_guard_contract_rejects_appended_unguarded_symbols \
+  tests/contract/test_release_artifacts.py::test_release_artifact_policy_rejects_malicious_load_paths_and_rpaths
+Result: 19 passed, 0 failed, 5 existing dependency deprecation warnings
 
 git diff --check
 Result: pass, no output
+END 2026-08-27T19:10:13Z
 ```
 
-These tests prove that staging and verification require exact macOS 14.0,
-candidate scripts reject CFNetwork and Network framework dependencies, system
-install-name validation rejects `.`/`..`/empty traversal components, and every
-Foundation Models symbol in the provider, generated types, MCP entrypoint, and
-Studio app entrypoint is inside a positive compile guard. The guard contract
-also rejects an appended unguarded provider reference for each source.
+This exact run includes the pre-publication ordering assertion added at
+`06698bb`: unsanitized native products must pass the network dependency check
+before artifact-directory replacement. It also covers direct and versioned
+CFNetwork/Network paths, including non-`A` and `Current` versions.
+
+An older diagnostic stdio run observed these nine tools, in order:
+`get_pdf_page_count`, `inspect_pdf`, `ocr_pdf`, `ocr_pdf_batch`, `ocr_image`,
+`make_searchable_pdf`, `summarize_document`, `organize_document`, and
+`extract_document_fields`. Because that helper predates `c5474f8`, the listing
+is diagnostic only and is not exact-candidate acceptance evidence.
 
 The artifact-policy test was then run separately against the existing
 `localocr-mcp` and failed, as required, because both forbidden frameworks are
@@ -114,8 +105,8 @@ suppressed or reclassified as success.
 | Gate | Result at exact candidate commit | Evidence |
 |---|---|---|
 | Clean start | PASS | `git status --short` produced no output before the focused check. |
-| Script syntax | PASS | All three changed release scripts passed `bash -n`. |
-| Focused release contracts | PASS | Initial exact-candidate selection: 9 passed. Review fix round 1: 11 non-build policy tests passed. |
+| Script syntax | PASS | All four candidate scripts passed `bash -n` at `c5474f8`. |
+| Focused pure/static contracts | PASS | The fully listed exact-commit command passed 19 tests, including pre-publication enforcement. This is not the full release contract suite. |
 | `swift test` | NOT RUN | A pre-existing whole-suite process and a focused contract process already held build/UI resources. No additional build was started. |
 | Direct `xcodebuild ... test` | NOT RUN | The existing Xcode UI-test child had not completed. It was not terminated, signaled, or restarted. This result is not counted. |
 | `./scripts/build-native-tools.sh` | NOT RUN | Deferred to avoid overlapping the existing test/build trees. |
@@ -137,7 +128,7 @@ c71b217a74e2e98c0d18ba98b5d1e2fbb03b1cf0ea26bd66c8dcd80cc3e1b5f8  dist/native-to
 142787b539c67d1bf397f053c034cfb9a45a713b7c89c24fe26d7dd933757740  dist/unsigned-app/LocalOCR Studio.app/Contents/MacOS/LocalOCR Studio
 ```
 
-Their modification times predate candidate commits `114518b` and `fe86960`; therefore these
+Their modification times predate candidate commit `c5474f8`; therefore these
 are diagnostic hashes only and **not accepted exact-commit candidate artifact
 hashes**.
 
