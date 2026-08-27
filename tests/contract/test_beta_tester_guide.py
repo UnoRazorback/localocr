@@ -39,10 +39,13 @@ def test_beta_guide_contains_install_desktop_and_privacy_contracts():
 
 def test_beta_guide_contains_advanced_client_commands():
     text = GUIDE.read_text()
+    prose = " ".join(text.split())
     helper = "/Applications/LocalOCR Studio.app/Contents/Helpers/localocr-mcp"
     assert helper in text
     assert "codex mcp add localocr --" in text
     assert "claude mcp add --transport stdio --scope local localocr --" in text
+    assert "Claude Code defaults to local scope for the current project" in prose
+    assert "local/project scope" not in text
     assert "--scope user" in text
     for tool in (
         "get_pdf_page_count",

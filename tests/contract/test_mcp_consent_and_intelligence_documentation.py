@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -28,8 +29,8 @@ data policies, and only continue if you are authorized to share the data."""
 
 def test_canonical_faq_documents_exact_tool_and_consent_contracts():
     text = MCP.read_text()
-    for tool in TOOLS:
-        assert f"`{tool}`" in text
+    documented_tools = tuple(re.findall(r"^### `([a-z0-9_]+)`$", text, re.MULTILINE))
+    assert documented_tools == TOOLS
     assert DISCLOSURE in text
     assert (
         "I understand that my MCP client or agent may transmit LocalOCR inputs and "
@@ -39,25 +40,62 @@ def test_canonical_faq_documents_exact_tool_and_consent_contracts():
         "I confirm that I am authorized to share this data and choose to enable "
         "LocalOCR MCP document tools."
     ) in text
-    for command in (
-        "localocr mcp-consent status",
-        "localocr mcp-consent accept",
-        "localocr mcp-consent revoke",
-    ):
-        assert command in text
+    installed_cli = "/Applications/LocalOCR Studio.app/Contents/Helpers/localocr"
+    for operation in ("status", "accept", "revoke"):
+        assert f'"{installed_cli}" mcp-consent {operation}' in text
 
 
 def test_canonical_faq_documents_client_setup_without_automatic_edits():
     text = MCP.read_text()
     prose = " ".join(text.split())
+    codex = text.split("### Codex", 1)[1].split("### Claude Code", 1)[0]
+    claude = text.split("### Claude Code", 1)[1].split("### Other MCP clients", 1)[0]
     assert "local child process" in text
     assert "standard input and standard output" in text
-    assert "codex mcp add localocr --" in text
-    assert "claude mcp add --transport stdio --scope local localocr --" in text
+    assert "codex mcp add localocr --" in codex
+    assert "codex mcp list" in codex
+    assert "codex mcp remove localocr" in codex
+    assert "Use `/mcp`" in codex
+    assert "Codex has no project or user scope option" in " ".join(codex.split())
+    assert "claude mcp add --transport stdio --scope local localocr --" in claude
+    assert "claude mcp list" in claude
+    assert "claude mcp remove --scope local localocr" in claude
+    assert "Use `/mcp`" in claude
+    assert "Claude Code defaults to local scope for the current project" in " ".join(claude.split())
+    assert "--scope user" in claude
     assert '"command": "/Applications/LocalOCR Studio.app/Contents/Helpers/localocr-mcp"' in text
     assert ".build/release/localocr-mcp" in text
     assert "does not automatically edit" in prose
     assert "filesystem permissions" in text
+
+
+def test_installed_and_source_consent_commands_use_their_matching_cli_helpers():
+    text = MCP.read_text()
+    installed = text.split("### Source builds for developers", 1)[0]
+    source = text.split("### Source builds for developers", 1)[1].split("## Tools", 1)[0]
+
+    installed_cli = "/Applications/LocalOCR Studio.app/Contents/Helpers/localocr"
+    installed_mcp = f"{installed_cli}-mcp"
+    assert installed_cli in installed
+    assert installed_mcp in installed
+    for operation in ("status", "accept", "revoke"):
+        assert f'"{installed_cli}" mcp-consent {operation}' in installed
+    assert "\nlocalocr mcp-consent" not in installed
+
+    for operation in ("status", "accept", "revoke"):
+        assert f'"/path/to/localocr/.build/release/localocr" mcp-consent {operation}' in source
+    assert '"/path/to/localocr/.build/release/localocr-mcp"' in source
+    assert "`dist/native-tools/localocr`" in source
+    assert "`dist/native-tools/localocr-mcp`" in source
+
+
+def test_cli_exit_code_two_covers_all_consent_outcomes():
+    text = (ROOT / "docs/cli.md").read_text()
+    prose = " ".join(text.split())
+    assert "MCP consent is required" in prose
+    assert "either acknowledgment is refused" in prose
+    assert "input reaches EOF" in prose
+    assert "non-interactive terminal" in prose
 
 
 def test_canonical_faq_preserves_local_intelligence_and_provider_boundaries():

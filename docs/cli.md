@@ -168,7 +168,7 @@ but progress still uses standard error.
 | --- | --- |
 | `0` | Completed without a partial failure. |
 | `1` | Operational failure, such as a missing, unreadable, unsupported, or invalid file/destination. The diagnostic is on standard error. |
-| `2` | Invalid command-line syntax or option value. |
+| `2` | Invalid command-line syntax or option value; MCP consent is required; either acknowledgment is refused; acknowledgment input reaches EOF; or `mcp-consent accept` is run without an interactive TTY (from a non-interactive terminal). |
 | `3` | Partial result: one or more PDF pages or batch files failed, while other output may be available. |
 | `4` | The operation was cancelled. A batch can still have a JSON response describing items completed before cancellation. |
 

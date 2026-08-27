@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -27,7 +28,12 @@ def test_readme_and_studio_describe_published_beta_and_reset():
         assert DEPLOYMENT_TARGET in text
         assert TESTED_ON_BUILD in text
         assert "no supported localocr studio beta download" not in text.lower()
-        assert "not yet published" not in text.lower()
+        assert re.search(
+            r"The published prerelease is\s+"
+            r"\[v0\.2\.0-beta\.1\]"
+            r"\(https://github\.com/UnoRazorback/localocr/releases/tag/v0\.2\.0-beta\.1\)\.",
+            text,
+        )
 
 
 def test_mcp_guide_has_installed_helper_and_verified_client_commands():
@@ -49,10 +55,9 @@ def test_desktop_first_docs_point_to_one_canonical_advanced_setup():
 
 
 def test_cli_and_mcp_docs_align_on_consent_management():
-    for command in (
-        "localocr mcp-consent status",
-        "localocr mcp-consent accept",
-        "localocr mcp-consent revoke",
-    ):
-        assert command in FILES["cli"].read_text()
-        assert command in FILES["mcp"].read_text()
+    cli_text = FILES["cli"].read_text()
+    mcp_text = FILES["mcp"].read_text()
+    installed_cli = "/Applications/LocalOCR Studio.app/Contents/Helpers/localocr"
+    for operation in ("status", "accept", "revoke"):
+        assert f"localocr mcp-consent {operation}" in cli_text
+        assert f'"{installed_cli}" mcp-consent {operation}' in mcp_text

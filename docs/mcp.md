@@ -48,14 +48,20 @@ Acceptance requires both statements:
 
 In LocalOCR Studio, open **Help > Connect to Your Agent**, check both statements
 for that presentation, then choose **Accept & Enable MCP Tools**. The same
-window shows receipt status and can revoke consent. Open-core and command-line
-users can use the adjacent `localocr` helper:
+window shows receipt status and can revoke consent. An app installed in the
+normal Applications folder includes a separate adjacent CLI helper at
+`/Applications/LocalOCR Studio.app/Contents/Helpers/localocr`. Use that CLI
+path—not the `localocr-mcp` server path—to manage consent:
 
 ```bash
-localocr mcp-consent status
-localocr mcp-consent accept
-localocr mcp-consent revoke
+"/Applications/LocalOCR Studio.app/Contents/Helpers/localocr" mcp-consent status
+"/Applications/LocalOCR Studio.app/Contents/Helpers/localocr" mcp-consent accept
+"/Applications/LocalOCR Studio.app/Contents/Helpers/localocr" mcp-consent revoke
 ```
+
+Bare `localocr mcp-consent ...` is equivalent only when that CLI executable is
+intentionally on the shell's `PATH`. Source-build commands use a different path
+and are documented separately below.
 
 `accept` requires an interactive terminal and two `y` or `yes` answers; there
 is no noninteractive acceptance flag. `revoke` takes effect on the next tool
@@ -78,6 +84,11 @@ installation, the bundled helper path is:
 /Applications/LocalOCR Studio.app/Contents/Helpers/localocr-mcp
 ```
 
+The same bundle contains two different executables:
+
+- `Contents/Helpers/localocr-mcp` is the stdio MCP server configured in the client.
+- `Contents/Helpers/localocr` is the CLI used for consent status, acceptance, and revocation.
+
 ### Codex
 
 ```bash
@@ -88,8 +99,9 @@ codex mcp list
 
 Use `/mcp` in Codex to inspect the connected server. The Codex CLI, IDE
 extension, and desktop app share MCP configuration on the same Codex host. The
-installed CLI currently exposes no project/user scope option for `mcp add` or
-`mcp remove`. Disconnect separately with `codex mcp remove localocr`. See the
+Codex has no project or user scope option for the installed `mcp add` or
+`mcp remove` commands. Disconnect separately with
+`codex mcp remove localocr`. See the
 current [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp).
 
 ### Claude Code
@@ -125,6 +137,7 @@ Keep source-build paths separate from an installed app. From the repository
 root, build a release executable and configure its absolute path:
 
 ```bash
+swift build -c release --product localocr
 swift build -c release --product localocr-mcp
 codex mcp add localocr-source -- "/path/to/localocr/.build/release/localocr-mcp"
 # Or, for Claude Code's current-project scope:
@@ -132,9 +145,18 @@ claude mcp add --transport stdio --scope local localocr-source -- \
   "/path/to/localocr/.build/release/localocr-mcp"
 ```
 
+Manage consent with the CLI from that same source build:
+
+```bash
+"/path/to/localocr/.build/release/localocr" mcp-consent status
+"/path/to/localocr/.build/release/localocr" mcp-consent accept
+"/path/to/localocr/.build/release/localocr" mcp-consent revoke
+```
+
 The repository's `scripts/build-native-tools.sh` alternative writes
-`dist/native-tools/localocr-mcp`. Whichever build route you use, give the
-client an absolute path to that executable. The extension manifest invokes
+both `dist/native-tools/localocr` and `dist/native-tools/localocr-mcp`. Use the
+first for consent commands and give the client an absolute path to the second.
+The extension manifest invokes
 `localocr-mcp` by name instead; put a built native executable on that client's
 `PATH` before enabling the extension. The extension does not bundle an
 executable or runtime.

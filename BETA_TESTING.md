@@ -129,7 +129,10 @@ claude mcp add --transport stdio --scope local localocr -- \
 claude mcp list
 ```
 
-Use `/mcp` in Claude Code to inspect status. Claude Code defaults to local/project scope; add `--scope user` only when you intentionally want LocalOCR available across projects. See the [Claude Code MCP documentation](https://code.claude.com/docs/en/mcp).
+Use `/mcp` in Claude Code to inspect status. Claude Code defaults to local
+scope for the current project; add `--scope user` only when you intentionally
+want LocalOCR available across projects. See the [Claude Code MCP
+documentation](https://code.claude.com/docs/en/mcp).
 
 ### Other MCP clients
 
