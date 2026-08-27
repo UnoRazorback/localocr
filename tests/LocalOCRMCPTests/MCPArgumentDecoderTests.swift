@@ -1,6 +1,6 @@
 import Foundation
 @testable import LocalOCRMCP
-import MCP
+import MCPStdio
 import Testing
 
 @Suite struct MCPArgumentDecoderTests {

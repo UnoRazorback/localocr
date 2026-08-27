@@ -97,7 +97,9 @@ import Testing
         #expect(try decoder.decode(Request<Ping>.self, from: encoder.encode(ping)) == ping)
         #expect(try decoder.decode(Message<CancelledNotification>.self, from: encoder.encode(cancellation)) == cancellation)
         #expect(try decoder.decode(Message<InitializedNotification>.self, from: encoder.encode(initialized)) == initialized)
-        #expect(String(decoding: try encoder.encode(cancellation), as: UTF8.self).contains("notifications/cancelled"))
+        let cancellationJSON = String(decoding: try encoder.encode(cancellation), as: UTF8.self)
+            .replacingOccurrences(of: #"\/"#, with: "/")
+        #expect(cancellationJSON.contains("notifications/cancelled"))
     }
 
     @Test func protocolErrorsEncodeWithTheJSONRPCCodeMessageAndDetail() throws {

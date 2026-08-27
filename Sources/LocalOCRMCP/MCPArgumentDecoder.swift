@@ -1,6 +1,6 @@
 import Foundation
 import LocalOCRService
-import MCP
+import MCPStdio
 
 public enum MCPToolRequest: Sendable, Equatable {
     case pageCount(PageCountRequest)

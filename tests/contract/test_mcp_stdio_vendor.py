@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,15 @@ FORBIDDEN_SOURCE_CONTENT = (
         r"\b(?:actor|class|struct|enum|protocol)\s+(?!Client(?:Info|Capabilities)\b)[A-Za-z_][A-Za-z0-9_]*Client[A-Za-z0-9_]*\b"
     ),
     re.compile(r"\b(?:actor|class|struct|enum|protocol)\s+Client\b"),
+)
+MIGRATED_SWIFT_FILES = (
+    "Sources/LocalOCRMCP/MCPArgumentDecoder.swift",
+    "Sources/LocalOCRMCP/MCPServerRunner.swift",
+    "Sources/LocalOCRMCP/MCPToolCatalog.swift",
+    "Sources/LocalOCRMCP/MCPToolDispatcher.swift",
+    "tests/LocalOCRMCPTests/MCPArgumentDecoderTests.swift",
+    "tests/LocalOCRMCPTests/MCPServerRunnerTests.swift",
+    "tests/LocalOCRMCPTests/MCPToolDispatcherTests.swift",
 )
 
 
@@ -134,6 +144,42 @@ def test_package_uses_local_mcp_stdio() -> None:
     assert 'exclude: ["Upstream"]' in package
     assert "modelcontextprotocol/swift-sdk" not in package
     assert '.product(name: "MCP", package: "swift-sdk")' not in package
+
+
+def test_localocr_mcp_targets_and_sources_use_only_mcp_stdio() -> None:
+    """Catches LocalOCR source, tests, or target edges reverting to the remote MCP module."""
+    package = json.loads(
+        subprocess.run(
+            ["swift", "package", "dump-package"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    )
+    targets = {target["name"]: target for target in package["targets"]}
+    assert not any(
+        dependency.get("product", [None, None])[0] == "MCP"
+        and dependency.get("product", [None, None])[1] == "swift-sdk"
+        for target in package["targets"]
+        for dependency in target["dependencies"]
+    )
+    for target_name in ("LocalOCRMCP", "LocalOCRMCPTests"):
+        dependencies = targets[target_name]["dependencies"]
+        by_name = {dependency["byName"][0] for dependency in dependencies if "byName" in dependency}
+        assert "MCPStdio" in by_name
+
+    resolved = json.loads((ROOT / "Package.resolved").read_text())
+    assert not any(
+        pin.get("identity") == "swift-sdk"
+        or "modelcontextprotocol/swift-sdk" in pin.get("location", "")
+        for pin in resolved["pins"]
+    )
+
+    for relative_path in MIGRATED_SWIFT_FILES:
+        source = (ROOT / relative_path).read_text()
+        assert re.search(r"(?m)^import MCPStdio$", source), relative_path
+        assert re.search(r"(?m)^import MCP$", source) is None, relative_path
 
 
 def test_manifest_is_closed_and_pinned() -> None:

@@ -68,7 +68,8 @@ let package = Package(
             name: "LocalOCRMCP",
             dependencies: [
                 "LocalOCRIntelligence",
-                "LocalOCRService"
+                "LocalOCRService",
+                "MCPStdio"
             ],
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
@@ -113,7 +114,8 @@ let package = Package(
             dependencies: [
                 "LocalOCRMCP",
                 "LocalOCRService",
-                "LocalOCRCore"
+                "LocalOCRCore",
+                "MCPStdio"
             ],
             path: "tests/LocalOCRMCPTests",
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]

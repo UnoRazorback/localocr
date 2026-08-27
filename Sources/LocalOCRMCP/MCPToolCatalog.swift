@@ -1,4 +1,4 @@
-import MCP
+import MCPStdio
 
 public enum MCPToolCatalog {
     public static let tools: [Tool] = [

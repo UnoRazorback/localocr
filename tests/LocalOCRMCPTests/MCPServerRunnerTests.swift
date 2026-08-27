@@ -1,6 +1,6 @@
 import Foundation
 import Logging
-import MCP
+import MCPStdio
 @testable import LocalOCRMCP
 import Testing
 
@@ -9,58 +9,72 @@ import Testing
         let dispatcher = RecordingDispatcher()
         let runner = MCPServerRunner(dispatcher: dispatcher)
         let server = await runner.makeServer()
-        let (clientTransport, serverTransport) = await InMemoryTransport.createConnectedPair()
-        let client = Client(name: "runner-test-client", version: "1.0.0")
+        let transport = RunnerTestTransport()
 
-        try await server.start(transport: serverTransport)
-        let initialization = try await client.connect(transport: clientTransport)
+        try await server.start(transport: transport)
+        let initialization = try await initialize(transport)
         #expect(initialization.serverInfo.name == "localocr")
         #expect(initialization.serverInfo.version == "0.3.0")
 
-        let (tools, _) = try await client.listTools()
-        #expect(tools.map(\.name).sorted() == MCPToolCatalog.tools.map(\.name).sorted())
-
-        let result = try await client.callTool(
-            name: "inspect_pdf",
-            arguments: ["file_path": "/tmp/contract.pdf"]
+        let listResponse = try await exchange(
+            ListTools.request(id: 2, .init()),
+            response: Response<ListTools>.self,
+            through: transport
         )
+        let tools = try listResponse.result.get().tools
+        #expect(tools.map { $0.name }.sorted() == MCPToolCatalog.tools.map { $0.name }.sorted())
+
+        let callResponse = try await exchange(
+            CallTool.request(
+                id: 3,
+                .init(name: "inspect_pdf", arguments: ["file_path": "/tmp/contract.pdf"])
+            ),
+            response: Response<CallTool>.self,
+            through: transport
+        )
+        let result = try callResponse.result.get()
 
         #expect(result.isError == nil)
         #expect(await dispatcher.calls() == [
             ToolCall(name: "inspect_pdf", arguments: ["file_path": "/tmp/contract.pdf"])
         ])
 
-        await client.disconnect()
         await server.stop()
     }
 
     @Test func runnerUsesOnlyTheExplicitlyInjectedTransport() async throws {
         let dispatcher = RecordingDispatcher()
         let runner = MCPServerRunner(dispatcher: dispatcher)
-        let (clientTransport, serverTransport) = await InMemoryTransport.createConnectedPair()
-        let client = Client(name: "runner-transport-test-client", version: "1.0.0")
+        let transport = RunnerTestTransport()
         let runnerTask = Task {
-            try await runner.run(transport: serverTransport)
+            try await runner.run(transport: transport)
         }
 
-        _ = try await client.connect(transport: clientTransport)
-        let (tools, _) = try await client.listTools()
-        #expect(tools.count == 9)
+        _ = try await initialize(transport)
+        let response = try await exchange(
+            ListTools.request(id: 2, .init()),
+            response: Response<ListTools>.self,
+            through: transport
+        )
+        #expect(try response.result.get().tools.count == 9)
 
-        await client.disconnect()
+        await transport.finishInput()
         try await runnerTask.value
     }
 
     @Test func cancellingRunnerStopsServerAndDisconnectsAnOpenClientPromptly() async throws {
         let runner = MCPServerRunner(dispatcher: RecordingDispatcher())
-        let (clientTransport, serverTransport) = await InMemoryTransport.createConnectedPair()
-        let client = Client(name: "runner-cancellation-test-client", version: "1.0.0")
+        let transport = RunnerTestTransport()
         let runnerTask = Task {
-            try await runner.run(transport: serverTransport)
+            try await runner.run(transport: transport)
         }
 
-        _ = try await client.connect(transport: clientTransport)
-        _ = try await client.listTools()
+        _ = try await initialize(transport)
+        _ = try await exchange(
+            ListTools.request(id: 2, .init()),
+            response: Response<ListTools>.self,
+            through: transport
+        )
 
         let safetyDisconnect = Task {
             do {
@@ -68,7 +82,7 @@ import Testing
             } catch {
                 return false
             }
-            await client.disconnect()
+            await transport.finishInput()
             return true
         }
 
@@ -83,8 +97,9 @@ import Testing
         case let .failure(error):
             #expect(error is CancellationError)
         }
+        #expect(await transport.waitUntilDisconnected())
         await #expect(throws: (any Error).self) {
-            _ = try await client.listTools()
+            try await transport.push(JSONEncoder().encode(ListTools.request(id: 3, .init())))
         }
     }
 
@@ -163,6 +178,33 @@ import Testing
     }
 }
 
+private func initialize(_ transport: RunnerTestTransport) async throws -> Initialize.Result {
+    await transport.waitUntilConnected()
+    let response = try await exchange(
+        Initialize.request(
+            id: 1,
+            .init(
+                capabilities: .init(),
+                clientInfo: .init(name: "runner-test-client", version: "1.0.0")
+            )
+        ),
+        response: Response<Initialize>.self,
+        through: transport
+    )
+    let result = try response.result.get()
+    try await transport.push(JSONEncoder().encode(Message<InitializedNotification>(params: .init())))
+    return result
+}
+
+private func exchange<M: MCPStdio.Method>(
+    _ request: Request<M>,
+    response: Response<M>.Type,
+    through transport: RunnerTestTransport
+) async throws -> Response<M> {
+    try await transport.push(JSONEncoder().encode(request))
+    return try JSONDecoder().decode(response, from: await transport.nextOutput())
+}
+
 private struct ToolCall: Sendable, Equatable {
     let name: String
     let arguments: [String: Value]?
@@ -183,6 +225,82 @@ private actor RecordingDispatcher: MCPToolDispatching {
 
 private enum RunnerProbeError: Error, Equatable {
     case startFailed
+    case disconnected
+}
+
+private actor RunnerTestTransport: Transport {
+    nonisolated let logger = Logger(label: "localocr.runner-tests.raw-json")
+    private let input: AsyncThrowingStream<Data, any Error>
+    private let inputContinuation: AsyncThrowingStream<Data, any Error>.Continuation
+    private var connected = false
+    private var connectionWaiters: [CheckedContinuation<Void, Never>] = []
+    private var outputs: [Data] = []
+    private var nextOutputIndex = 0
+    private var outputWaiters: [CheckedContinuation<Data, Never>] = []
+
+    init() {
+        var continuation: AsyncThrowingStream<Data, any Error>.Continuation!
+        input = AsyncThrowingStream { continuation = $0 }
+        inputContinuation = continuation
+    }
+
+    func connect() async throws {
+        connected = true
+        let waiters = connectionWaiters
+        connectionWaiters = []
+        waiters.forEach { $0.resume() }
+    }
+
+    func disconnect() async {
+        guard connected else { return }
+        connected = false
+        inputContinuation.finish()
+    }
+
+    func send(_ data: Data) async throws {
+        guard connected else { throw RunnerProbeError.disconnected }
+        outputs.append(data)
+        if !outputWaiters.isEmpty {
+            outputWaiters.removeFirst().resume(returning: data)
+        }
+    }
+
+    func receive() -> AsyncThrowingStream<Data, any Error> {
+        input
+    }
+
+    func push(_ data: Data) throws {
+        guard connected else { throw RunnerProbeError.disconnected }
+        inputContinuation.yield(data)
+    }
+
+    func finishInput() {
+        inputContinuation.finish()
+    }
+
+    func nextOutput() async -> Data {
+        if nextOutputIndex < outputs.count {
+            defer { nextOutputIndex += 1 }
+            return outputs[nextOutputIndex]
+        }
+        let output = await withCheckedContinuation { outputWaiters.append($0) }
+        nextOutputIndex += 1
+        return output
+    }
+
+    func waitUntilDisconnected() async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(1))
+        while connected, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        return !connected
+    }
+
+    func waitUntilConnected() async {
+        guard !connected else { return }
+        await withCheckedContinuation { connectionWaiters.append($0) }
+    }
 }
 
 private actor FailingStartTransport: Transport {

@@ -2,7 +2,7 @@ import Foundation
 import LocalOCRCore
 import LocalOCRIntelligence
 import LocalOCRService
-import MCP
+import MCPStdio
 
 public struct MCPToolDispatcher: Sendable {
     private let service: any LocalOCRServing
@@ -123,9 +123,9 @@ public struct MCPToolDispatcher: Sendable {
         let text = String(decoding: data, as: UTF8.self)
         do {
             let structuredContent = try JSONDecoder().decode(Value.self, from: data)
-            return try CallTool.Result(
+            return CallTool.Result(
                 content: [.text(text: text, annotations: nil, _meta: nil)],
-                structuredContent: structuredContent
+                structuredContent: Optional.some(structuredContent)
             )
         } catch {
             return errorResult(code: "processing_failed", message: "Unable to encode the OCR response.")

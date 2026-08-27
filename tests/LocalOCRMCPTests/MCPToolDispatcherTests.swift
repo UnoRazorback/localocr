@@ -2,7 +2,7 @@ import Foundation
 import LocalOCRCore
 import LocalOCRIntelligence
 import LocalOCRService
-import MCP
+import MCPStdio
 @testable import LocalOCRMCP
 import Testing
 

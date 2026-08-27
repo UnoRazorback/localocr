@@ -1,7 +1,7 @@
 import Foundation
 import Logging
 import LocalOCRService
-import MCP
+import MCPStdio
 
 public protocol MCPToolDispatching: Sendable {
     func callTool(name: String, arguments: [String: Value]?) async -> CallTool.Result
@@ -59,6 +59,7 @@ public struct MCPServerRunner: Sendable {
                 do {
                     try await server.start(transport: cancellationLatchedTransport)
                 } catch {
+                    await cancellationLatchedTransport.disconnect()
                     await lifecycle.startDidFinish()
                     throw error
                 }
