@@ -246,6 +246,42 @@ final class LocalOCRStudioUITests: XCTestCase {
         XCTAssertEqual(app.windows.count, 1)
     }
 
+    func testConnectToYourAgentReusesOneHelpWindowWithoutCreatingAnotherMainWindow() {
+        let app = launch(state: "empty")
+        let dropZone = element("studio.drop-zone", in: app)
+        XCTAssertTrue(dropZone.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.windows.count, 1)
+
+        openAgentConnectionGuide(in: app)
+
+        let guide = element("studio.agent-guide", in: app)
+        XCTAssertTrue(guide.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.windows.count, 2)
+        XCTAssertTrue(dropZone.exists)
+        XCTAssertTrue(app.checkBoxes["studio.agent-guide.external-risk"].exists)
+        XCTAssertTrue(app.checkBoxes["studio.agent-guide.document-access"].exists)
+        XCTAssertFalse(app.checkBoxes["studio.agent-guide.external-risk"].isSelected)
+        XCTAssertFalse(app.checkBoxes["studio.agent-guide.document-access"].isSelected)
+        XCTAssertFalse(app.buttons["studio.agent-guide.accept"].isEnabled)
+
+        openAgentConnectionGuide(in: app)
+        XCTAssertEqual(app.windows.count, 2)
+        XCTAssertTrue(dropZone.exists)
+
+        app.typeKey("w", modifierFlags: .command)
+        let helpClosed = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in app.windows.count == 1 },
+            object: nil
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [helpClosed], timeout: 5), .completed)
+        XCTAssertTrue(dropZone.exists)
+
+        openAgentConnectionGuide(in: app)
+        XCTAssertTrue(guide.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.windows.count, 2)
+        XCTAssertTrue(dropZone.exists)
+    }
+
     func testResultStateExposesReadableTextAndDocumentActions() {
         let app = launch(state: "result")
 
@@ -445,6 +481,12 @@ final class LocalOCRStudioUITests: XCTestCase {
         ]
         app.launch()
         return app
+    }
+
+    private func openAgentConnectionGuide(in app: XCUIApplication) {
+        let help = app.menuBars.menuBarItems["Help"]
+        help.click()
+        help.menus.menuItems["Connect to Your Agent"].click()
     }
 
     private func element(

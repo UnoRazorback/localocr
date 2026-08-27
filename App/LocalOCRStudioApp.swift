@@ -19,6 +19,11 @@ struct LocalOCRStudioApp: App {
             CommandGroup(replacing: .appSettings) {
                 EmptyView()
             }
+            CommandGroup(after: .help) {
+                Button("Connect to Your Agent") {
+                    appDelegate.showAgentConnectionGuide()
+                }
+            }
         }
     }
 }
@@ -26,6 +31,8 @@ struct LocalOCRStudioApp: App {
 @MainActor
 final class LocalOCRStudioAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var mainWindow: NSWindow?
+    private var helpWindow: NSWindow?
+    private var helpModel: AgentConnectionGuideModel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         showMainWindow()
@@ -60,6 +67,43 @@ final class LocalOCRStudioAppDelegate: NSObject, NSApplicationDelegate, NSWindow
             mainWindow = window
         }
 
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func showAgentConnectionGuide() {
+        let model: AgentConnectionGuideModel
+        let window: NSWindow
+        if let helpWindow, let helpModel {
+            window = helpWindow
+            model = helpModel
+        } else {
+            #if DEBUG
+            model = LocalOCRStudioUITestSupport.makeAgentConnectionGuideModelIfRequested(
+                bundleURL: Bundle.main.bundleURL
+            ) ?? AgentConnectionGuideModel(bundleURL: Bundle.main.bundleURL)
+            #else
+            model = AgentConnectionGuideModel(bundleURL: Bundle.main.bundleURL)
+            #endif
+            window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 760, height: 700),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Connect to Your Agent"
+            window.contentViewController = NSHostingController(
+                rootView: AgentConnectionGuideView(model: model)
+            )
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.center()
+            helpWindow = window
+            helpModel = model
+        }
+
+        model.resetSessionAcknowledgments()
+        Task { await model.refreshReceiptStatus() }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }

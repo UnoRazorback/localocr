@@ -5,6 +5,21 @@ import LocalOCRIntelligence
 
 @MainActor
 enum LocalOCRStudioUITestSupport {
+    static func makeAgentConnectionGuideModelIfRequested(
+        bundleURL: URL,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> AgentConnectionGuideModel? {
+        guard let testSession = environment["LOCALOCR_STUDIO_UI_TEST_SESSION"],
+              !testSession.isEmpty
+        else {
+            return nil
+        }
+        return AgentConnectionGuideModel(
+            bundleURL: bundleURL,
+            consentStore: UITestConsentStore()
+        )
+    }
+
     private enum FixtureState: String, Sendable {
         case empty
         case result
@@ -174,6 +189,28 @@ enum LocalOCRStudioUITestSupport {
     private enum FixtureError: Error {
         case expectedFailure
         case unavailable
+    }
+
+    private actor UITestConsentStore: ExternalDataConsentStoring {
+        private var currentStatus: ExternalDataConsentStatus = .required
+
+        func status() async -> ExternalDataConsentStatus {
+            currentStatus
+        }
+
+        func acceptBothStatements(at date: Date) async throws {
+            currentStatus = .current(ExternalDataConsentReceipt(
+                schemaVersion: ExternalDataConsentReceipt.currentSchemaVersion,
+                policyVersion: ExternalDataConsentReceipt.currentPolicyVersion,
+                acceptedAt: date,
+                externalProviderRiskAccepted: true,
+                documentToolAccessAccepted: true
+            ))
+        }
+
+        func revoke() async throws {
+            currentStatus = .required
+        }
     }
 
     private static func makeIntelligenceModel(
