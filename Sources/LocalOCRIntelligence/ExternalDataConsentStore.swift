@@ -18,6 +18,7 @@ struct ExternalDataConsentStoreHooks: Sendable {
     let beforeRevokeReproof: OperationHook
     let beforeRevokeFinalMutation: OperationHook
     let beforeTemporaryCleanupFinalMutation: OperationHook
+    let afterQuarantineVerification: OperationHook
     let synchronizeDescriptor: DescriptorSync
 
     init(
@@ -26,6 +27,7 @@ struct ExternalDataConsentStoreHooks: Sendable {
         beforeRevokeReproof: @escaping OperationHook = {},
         beforeRevokeFinalMutation: @escaping OperationHook = {},
         beforeTemporaryCleanupFinalMutation: @escaping OperationHook = {},
+        afterQuarantineVerification: @escaping OperationHook = {},
         synchronizeDescriptor: @escaping DescriptorSync = { fsync($0) }
     ) {
         self.beforeAcceptReproof = beforeAcceptReproof
@@ -33,6 +35,7 @@ struct ExternalDataConsentStoreHooks: Sendable {
         self.beforeRevokeReproof = beforeRevokeReproof
         self.beforeRevokeFinalMutation = beforeRevokeFinalMutation
         self.beforeTemporaryCleanupFinalMutation = beforeTemporaryCleanupFinalMutation
+        self.afterQuarantineVerification = afterQuarantineVerification
         self.synchronizeDescriptor = synchronizeDescriptor
     }
 }
@@ -51,11 +54,6 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
 
     private struct OpenedReceipt: Sendable {
         let descriptor: Int32
-        let identity: FileIdentity
-    }
-
-    private struct QuarantinedEntry: Sendable {
-        let name: String
         let identity: FileIdentity
     }
 
@@ -176,11 +174,11 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
         }
 
         let temporary = try createTemporaryReceipt(beneath: parent.descriptor)
-        var shouldRemoveTemporary = true
+        var shouldQuarantineTemporary = true
         defer {
             Darwin.close(temporary.descriptor)
-            if shouldRemoveTemporary {
-                try? quarantineAndRemove(
+            if shouldQuarantineTemporary {
+                try? moveToPermanentQuarantine(
                     named: temporary.name,
                     beneath: parent.descriptor,
                     expectedIdentity: temporary.identity,
@@ -237,7 +235,7 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
                 throw error
             }
 
-            shouldRemoveTemporary = false
+            shouldQuarantineTemporary = false
             do {
                 try synchronize(parent.descriptor)
             } catch {
@@ -246,18 +244,18 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
                     expectedExistingIdentity: existingReceipt.identity,
                     beneath: parent.descriptor
                 )
-                shouldRemoveTemporary = true
+                shouldQuarantineTemporary = true
                 throw error
             }
             do {
-                try quarantineAndRemove(
+                try moveToPermanentQuarantine(
                     named: temporary.name,
                     beneath: parent.descriptor,
                     expectedIdentity: existingReceipt.identity,
                     beforeFinalMutation: hooks.beforeTemporaryCleanupFinalMutation
                 )
             } catch {
-                try? quarantineAndRemove(
+                try? moveToPermanentQuarantine(
                     named: receiptName,
                     beneath: parent.descriptor,
                     expectedIdentity: temporary.identity,
@@ -273,7 +271,7 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
                     matches: temporary.identity
                 )
             } catch {
-                try? quarantineAndRemove(
+                try? moveToPermanentQuarantine(
                     named: receiptName,
                     beneath: parent.descriptor,
                     expectedIdentity: temporary.identity,
@@ -289,18 +287,18 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
             )
             guard renameStatus == 0 else {
                 let renameError = errno
-                try? quarantineCurrentWithoutDeleting(beneath: parent.descriptor)
+                try? quarantineCurrent(beneath: parent.descriptor)
                 if renameError == EEXIST || renameError == ELOOP {
                     throw ExternalDataConsentStoreError.insecureFilesystemState
                 }
                 throw ExternalDataConsentStoreError.filesystemOperationFailed(renameError)
             }
-            shouldRemoveTemporary = false
+            shouldQuarantineTemporary = false
             guard entryIdentity(
                 named: receiptName,
                 beneath: parent.descriptor
             ) == temporary.identity else {
-                try? quarantineCurrentWithoutDeleting(beneath: parent.descriptor)
+                try? quarantineCurrent(beneath: parent.descriptor)
                 throw ExternalDataConsentStoreError.insecureFilesystemState
             }
             do {
@@ -312,7 +310,7 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
                     matches: temporary.identity
                 )
             } catch {
-                try? quarantineAndRemove(
+                try? moveToPermanentQuarantine(
                     named: receiptName,
                     beneath: parent.descriptor,
                     expectedIdentity: temporary.identity,
@@ -348,14 +346,13 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
             beneath: parent.descriptor,
             matches: openedReceipt.identity
         )
-        let quarantine = try moveToQuarantine(
+        try moveToPermanentQuarantine(
             named: receiptName,
             beneath: parent.descriptor,
             expectedIdentity: openedReceipt.identity,
             beforeFinalMutation: hooks.beforeRevokeFinalMutation
         )
         try reprove(handles)
-        try removeQuarantinedEntry(quarantine, beneath: parent.descriptor)
     }
 
     private func openDirectoryChain(createApplicationDirectory: Bool) throws -> [DirectoryHandle] {
@@ -686,12 +683,12 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
         }
     }
 
-    private func moveToQuarantine(
+    private func moveToPermanentQuarantine(
         named sourceName: String,
         beneath parentDescriptor: Int32,
         expectedIdentity: FileIdentity,
         beforeFinalMutation: ExternalDataConsentStoreHooks.OperationHook
-    ) throws -> QuarantinedEntry {
+    ) throws {
         for _ in 0..<32 {
             let quarantineName = ".\(receiptName).\(UUID().uuidString).quarantine"
             try beforeFinalMutation()
@@ -709,51 +706,13 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
             guard entryIdentity(named: quarantineName, beneath: parentDescriptor) == expectedIdentity else {
                 throw ExternalDataConsentStoreError.insecureFilesystemState
             }
-            return QuarantinedEntry(name: quarantineName, identity: expectedIdentity)
+            try hooks.afterQuarantineVerification()
+            return
         }
         throw ExternalDataConsentStoreError.insecureFilesystemState
     }
 
-    private func removeQuarantinedEntry(
-        _ quarantine: QuarantinedEntry,
-        beneath parentDescriptor: Int32
-    ) throws {
-        guard entryIdentity(named: quarantine.name, beneath: parentDescriptor) == quarantine.identity else {
-            throw ExternalDataConsentStoreError.insecureFilesystemState
-        }
-        let status = quarantine.name.withCString { name in
-            unlinkat(
-                parentDescriptor,
-                name,
-                AT_SYMLINK_NOFOLLOW_ANY | AT_RESOLVE_BENEATH | AT_UNIQUE
-            )
-        }
-        guard status == 0 else {
-            let code = errno
-            if code == ELOOP || code == ENOENT {
-                throw ExternalDataConsentStoreError.insecureFilesystemState
-            }
-            throw ExternalDataConsentStoreError.filesystemOperationFailed(code)
-        }
-        try synchronize(parentDescriptor)
-    }
-
-    private func quarantineAndRemove(
-        named name: String,
-        beneath parentDescriptor: Int32,
-        expectedIdentity: FileIdentity,
-        beforeFinalMutation: ExternalDataConsentStoreHooks.OperationHook
-    ) throws {
-        let quarantine = try moveToQuarantine(
-            named: name,
-            beneath: parentDescriptor,
-            expectedIdentity: expectedIdentity,
-            beforeFinalMutation: beforeFinalMutation
-        )
-        try removeQuarantinedEntry(quarantine, beneath: parentDescriptor)
-    }
-
-    private func quarantineCurrentWithoutDeleting(beneath parentDescriptor: Int32) throws {
+    private func quarantineCurrent(beneath parentDescriptor: Int32) throws {
         guard try entryMetadata(named: receiptName, beneath: parentDescriptor) != nil else {
             return
         }
@@ -789,7 +748,7 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
         guard entryIdentity(named: receiptName, beneath: parentDescriptor) != expectedExistingIdentity else {
             return
         }
-        try? quarantineCurrentWithoutDeleting(beneath: parentDescriptor)
+        try? quarantineCurrent(beneath: parentDescriptor)
     }
 
     private func entryMetadata(named name: String, beneath parentDescriptor: Int32) throws -> stat? {

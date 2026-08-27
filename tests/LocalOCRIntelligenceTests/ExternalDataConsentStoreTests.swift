@@ -70,9 +70,12 @@ import Testing
         #expect(await store.status() == .current(expected))
         #expect(try permissions(of: fixture.applicationDirectory) == 0o700)
         #expect(try permissions(of: fixture.receiptURL) == 0o600)
-        #expect(try FileManager.default.contentsOfDirectory(
+        let names = try FileManager.default.contentsOfDirectory(
             atPath: fixture.applicationDirectory.path
-        ) == ["mcp-consent.json"])
+        )
+        #expect(names.contains("mcp-consent.json"))
+        #expect(names.filter(isQuarantineName).count == 1)
+        #expect(try directoryContainsFile(with: originalData, at: fixture.applicationDirectory))
     }
 
     @Test func revokeRemovesOnlyTheValidatedReceipt() async throws {
@@ -81,6 +84,7 @@ import Testing
         try fixture.writeReceipt(acceptedAt: firstDate)
         let unrelatedURL = fixture.applicationDirectory.appending(path: "keep.txt")
         try Data("keep".utf8).write(to: unrelatedURL)
+        let originalData = try Data(contentsOf: fixture.receiptURL)
         let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL)
 
         try await store.revoke()
@@ -88,6 +92,8 @@ import Testing
         #expect(await store.status() == .required)
         #expect(FileManager.default.fileExists(atPath: fixture.applicationDirectory.path))
         #expect(try String(contentsOf: unrelatedURL, encoding: .utf8) == "keep")
+        #expect(try directoryContainsFile(with: originalData, at: fixture.applicationDirectory))
+        #expect(try quarantineReceipts(in: fixture.applicationDirectory).count == 1)
     }
 
     @Test func malformedJSONRequiresConsent() async throws {
@@ -358,7 +364,10 @@ import Testing
         #expect(!FileManager.default.fileExists(
             atPath: externalDirectory.appending(path: "mcp-consent.json").path
         ))
-        #expect(try FileManager.default.contentsOfDirectory(atPath: movedDirectory.path).isEmpty)
+        #expect(try quarantineReceipts(in: movedDirectory).count == 1)
+        #expect(!FileManager.default.fileExists(
+            atPath: movedDirectory.appending(path: "mcp-consent.json").path
+        ))
     }
 
     @Test func acceptQuarantinesSourceSubstitutedAtTheFinalMutationInterval() async throws {
@@ -410,6 +419,39 @@ import Testing
         #expect(await store.status() == .required)
         #expect(!FileManager.default.fileExists(atPath: receiptURL.path))
         #expect(try directoryContainsFile(with: replacementData, at: fixture.applicationDirectory))
+    }
+
+    @Test func acceptPreservesAReplacementInsertedAfterQuarantineVerification() async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        try fixture.writeReceipt(acceptedAt: firstDate)
+        let originalData = try Data(contentsOf: fixture.receiptURL)
+        let unknownData = Data("unknown-accept-quarantine".utf8)
+        let applicationDirectory = fixture.applicationDirectory
+        let preservedOriginal = fixture.baseURL.appending(path: "verified-accept-original")
+        let hooks = ExternalDataConsentStoreHooks(
+            afterQuarantineVerification: {
+                try replaceVerifiedQuarantine(
+                    in: applicationDirectory,
+                    movingExpectedTo: preservedOriginal,
+                    with: unknownData
+                )
+            }
+        )
+        let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL, hooks: hooks)
+
+        try await store.acceptBothStatements(at: secondDate)
+
+        let expected = ExternalDataConsentReceipt(
+            schemaVersion: 1,
+            policyVersion: 1,
+            acceptedAt: secondDate,
+            externalProviderRiskAccepted: true,
+            documentToolAccessAccepted: true
+        )
+        #expect(await store.status() == .current(expected))
+        #expect(try Data(contentsOf: preservedOriginal) == originalData)
+        #expect(try directoryContainsFile(with: unknownData, at: applicationDirectory))
     }
 
     @Test func revokeRejectsParentSubstitutionWithoutDeletingEitherTarget() async throws {
@@ -470,6 +512,33 @@ import Testing
         #expect(try directoryContainsFile(with: replacementData, at: fixture.applicationDirectory))
     }
 
+    @Test func revokePreservesAReplacementInsertedAfterQuarantineVerification() async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        try fixture.writeReceipt(acceptedAt: firstDate)
+        let originalData = try Data(contentsOf: fixture.receiptURL)
+        let unknownData = Data("unknown-revoke-quarantine".utf8)
+        let applicationDirectory = fixture.applicationDirectory
+        let preservedOriginal = fixture.baseURL.appending(path: "verified-revoke-original")
+        let hooks = ExternalDataConsentStoreHooks(
+            afterQuarantineVerification: {
+                try replaceVerifiedQuarantine(
+                    in: applicationDirectory,
+                    movingExpectedTo: preservedOriginal,
+                    with: unknownData
+                )
+            }
+        )
+        let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL, hooks: hooks)
+
+        try await store.revoke()
+
+        #expect(await store.status() == .required)
+        #expect(!FileManager.default.fileExists(atPath: fixture.receiptURL.path))
+        #expect(try Data(contentsOf: preservedOriginal) == originalData)
+        #expect(try directoryContainsFile(with: unknownData, at: applicationDirectory))
+    }
+
     @Test func temporaryCleanupQuarantinesAReplacementAtItsFinalMutationInterval() async throws {
         let fixture = try ConsentFixture()
         defer { fixture.remove() }
@@ -498,6 +567,38 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: fixture.receiptURL.path))
         #expect(try directoryContainsFile(with: replacementData, at: applicationDirectory))
         #expect(FileManager.default.fileExists(atPath: preservedOwnedTemporary.path))
+    }
+
+    @Test func temporaryCleanupPreservesAReplacementInsertedAfterQuarantineVerification() async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        try fixture.createApplicationDirectory()
+        let unknownData = Data("unknown-temporary-quarantine".utf8)
+        let applicationDirectory = fixture.applicationDirectory
+        let preservedOwnedTemporary = fixture.baseURL.appending(path: "verified-owned-temporary")
+        let hooks = ExternalDataConsentStoreHooks(
+            beforeAcceptReproof: {
+                throw ConsentProbeError.stopBeforeAcceptCommit
+            },
+            afterQuarantineVerification: {
+                try replaceVerifiedQuarantine(
+                    in: applicationDirectory,
+                    movingExpectedTo: preservedOwnedTemporary,
+                    with: unknownData
+                )
+            }
+        )
+        let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL, hooks: hooks)
+
+        await #expect(throws: (any Error).self) {
+            try await store.acceptBothStatements(at: firstDate)
+        }
+
+        #expect(await store.status() == .required)
+        #expect(!FileManager.default.fileExists(atPath: fixture.receiptURL.path))
+        #expect((try Data(contentsOf: preservedOwnedTemporary)).count > 0)
+        #expect(try Data(contentsOf: preservedOwnedTemporary) != unknownData)
+        #expect(try directoryContainsFile(with: unknownData, at: applicationDirectory))
     }
 
     @Test func applicationDirectoryCreationSyncFailureDoesNotCreateAReceipt() async throws {
@@ -529,14 +630,11 @@ import Testing
         #expect(await ExternalDataConsentStore(receiptURL: fixture.receiptURL).status() == .required)
     }
 
-    @Test(arguments: [2, 3])
-    func replacingReceiptCleanupSyncFailureLeavesConsentRequired(
-        failingDirectoryCall: Int
-    ) async throws {
+    @Test func replacingReceiptQuarantineSyncFailureLeavesConsentRequired() async throws {
         let fixture = try ConsentFixture()
         defer { fixture.remove() }
         try fixture.writeReceipt(acceptedAt: firstDate)
-        let syncFailure = DirectorySyncFailure(failingDirectoryCall: failingDirectoryCall)
+        let syncFailure = DirectorySyncFailure(failingDirectoryCall: 2)
         let hooks = ExternalDataConsentStoreHooks(synchronizeDescriptor: syncFailure.synchronize)
         let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL, hooks: hooks)
 
@@ -547,11 +645,11 @@ import Testing
         #expect(await ExternalDataConsentStore(receiptURL: fixture.receiptURL).status() == .required)
     }
 
-    @Test func revokePostUnlinkDirectorySyncFailureStillLeavesConsentRequired() async throws {
+    @Test func revokeQuarantineDirectorySyncFailureStillLeavesConsentRequired() async throws {
         let fixture = try ConsentFixture()
         defer { fixture.remove() }
         try fixture.writeReceipt(acceptedAt: firstDate)
-        let syncFailure = DirectorySyncFailure(failingDirectoryCall: 2)
+        let syncFailure = DirectorySyncFailure(failingDirectoryCall: 1)
         let hooks = ExternalDataConsentStoreHooks(synchronizeDescriptor: syncFailure.synchronize)
         let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL, hooks: hooks)
 
@@ -648,6 +746,7 @@ private enum ConsentProbeError: Error {
     case secureTemporaryFileMissing
     case insecurePermissions
     case stopBeforeAcceptCommit
+    case quarantineMissing
 }
 
 private final class DirectorySyncFailure: @unchecked Sendable {
@@ -687,6 +786,31 @@ private func temporaryReceipt(in directory: URL) throws -> URL? {
         $0.lastPathComponent.hasPrefix(".mcp-consent.json.") &&
             $0.lastPathComponent.hasSuffix(".tmp")
     }
+}
+
+private func quarantineReceipts(in directory: URL) throws -> [URL] {
+    try FileManager.default.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: nil
+    ).filter { isQuarantineName($0.lastPathComponent) }
+}
+
+private func isQuarantineName(_ name: String) -> Bool {
+    name.hasPrefix(".mcp-consent.json.") && name.hasSuffix(".quarantine")
+}
+
+private func replaceVerifiedQuarantine(
+    in directory: URL,
+    movingExpectedTo preservedURL: URL,
+    with replacementData: Data
+) throws {
+    let quarantines = try quarantineReceipts(in: directory)
+    guard quarantines.count == 1, let quarantine = quarantines.first else {
+        throw ConsentProbeError.quarantineMissing
+    }
+    try FileManager.default.moveItem(at: quarantine, to: preservedURL)
+    try replacementData.write(to: quarantine)
+    try chmod(quarantine.path, 0o600).requireSuccess()
 }
 
 private func directoryContainsFile(with expectedData: Data, at directory: URL) throws -> Bool {
