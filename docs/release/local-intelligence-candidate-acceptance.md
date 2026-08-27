@@ -11,7 +11,7 @@ or a release version/tag.
 
 ## Candidate identity
 
-- Candidate commit: `fe869601968f4c3e3689698bab711aa625b2b435`
+- Candidate commit: `06698bba0f21a30a14b8fb0c9d7e00acea63222b`
 - Branch: `feature/local-intelligence-mcp-faq`
 - Evidence date: 2026-08-27
 - Exact acceptance-check window recorded below: 2026-08-27T18:57:54Z through
@@ -166,7 +166,9 @@ MCP target/fork or replacing the dependency with a minimal local stdio protocol
 implementation. That architecture change cannot be accepted without a clean
 build and full MCP compatibility suite, both unavailable while the existing UI
 build process remains active. Candidate build, stage, and verify scripts now
-fail closed on either framework instead of documenting the linkage away.
+fail closed on either framework instead of documenting the linkage away. The
+native build checks unsanitized SwiftPM products before replacing an existing
+artifact directory, then checks the sanitized copies again before success.
 
 ## Manual local candidate matrix
 
