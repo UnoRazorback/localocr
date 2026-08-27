@@ -20,6 +20,8 @@ import Logging
 public actor StdioTransport: Transport {
     /// Maximum JSON-RPC bytes in one input frame, excluding LF or CRLF.
     public static let maximumMessageBytes = 1_048_576
+    // Bounds queued receive data to at most eight maximum-sized frames.
+    private static let receiveBufferCapacity = 8
 
     public nonisolated let logger: Logger
 
@@ -29,6 +31,16 @@ public actor StdioTransport: Transport {
         case finished
     }
 
+    private enum WritePermitOutcome: Sendable {
+        case granted
+        case cancelled
+    }
+
+    private struct WriteWaiter {
+        let id: UUID
+        let continuation: CheckedContinuation<WritePermitOutcome, Never>
+    }
+
     private let input: FileDescriptor
     private let output: FileDescriptor
     private let messageStream: AsyncThrowingStream<Data, any Error>
@@ -36,7 +48,7 @@ public actor StdioTransport: Transport {
     private var state = State.idle
     private var readTask: Task<Void, Never>?
     private var writePermitHeld = false
-    private var writeWaiters: [CheckedContinuation<Void, Never>] = []
+    private var writeWaiters: [WriteWaiter] = []
 
     public init(
         input: FileDescriptor = .standardInput,
@@ -48,7 +60,9 @@ public actor StdioTransport: Transport {
         self.logger = logger ?? Logger(label: "localocr.mcp.stdio") { _ in SwiftLogNoOpLogHandler() }
 
         var continuation: AsyncThrowingStream<Data, any Error>.Continuation!
-        messageStream = AsyncThrowingStream { continuation = $0 }
+        messageStream = AsyncThrowingStream(bufferingPolicy: .bufferingOldest(Self.receiveBufferCapacity)) {
+            continuation = $0
+        }
         messageContinuation = continuation
     }
 
@@ -86,7 +100,7 @@ public actor StdioTransport: Transport {
 
     public func send(_ data: Data) async throws {
         try Task.checkCancellation()
-        await acquireWritePermit()
+        try await acquireWritePermit()
         defer { releaseWritePermit() }
         try Task.checkCancellation()
         guard state == .connected else {
@@ -181,8 +195,18 @@ public actor StdioTransport: Transport {
                         pending.append(contentsOf: fragment)
                         if endsInCarriageReturn { pending.removeLast() }
                         if !pending.isEmpty {
-                            messageContinuation.yield(pending)
-                            logger.trace("Stdio message received", metadata: ["bytes": "\(pending.count)"])
+                            switch messageContinuation.yield(pending) {
+                            case .enqueued:
+                                logger.trace("Stdio message received", metadata: ["bytes": "\(pending.count)"])
+                            case .dropped:
+                                finish(throwing: MCPError.internalError("stdio receive capacity exceeded"))
+                                return
+                            case .terminated:
+                                return
+                            @unknown default:
+                                finish(throwing: MCPError.internalError("stdio receive failed"))
+                                return
+                            }
                         }
                         pending.removeAll(keepingCapacity: true)
                         cursor = bytes.index(after: newline)
@@ -231,20 +255,41 @@ public actor StdioTransport: Transport {
         logger.debug("Stdio transport stopped")
     }
 
-    private func acquireWritePermit() async {
+    private func acquireWritePermit() async throws {
         if !writePermitHeld {
             writePermitHeld = true
             return
         }
-        await withCheckedContinuation { writeWaiters.append($0) }
+
+        let id = UUID()
+        let cancellation = WriteWaiterCancellation()
+        let outcome: WritePermitOutcome = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<WritePermitOutcome, Never>) in
+                if cancellation.isCancelled {
+                    continuation.resume(returning: .cancelled)
+                } else {
+                    writeWaiters.append(WriteWaiter(id: id, continuation: continuation))
+                }
+            }
+        } onCancel: {
+            cancellation.cancel()
+            Task { await self.cancelWriteWaiter(id: id) }
+        }
+
+        if case .cancelled = outcome { throw CancellationError() }
     }
 
     private func releaseWritePermit() {
         if writeWaiters.isEmpty {
             writePermitHeld = false
         } else {
-            writeWaiters.removeFirst().resume()
+            writeWaiters.removeFirst().continuation.resume(returning: .granted)
         }
+    }
+
+    private func cancelWriteWaiter(id: UUID) {
+        guard let index = writeWaiters.firstIndex(where: { $0.id == id }) else { return }
+        writeWaiters.remove(at: index).continuation.resume(returning: .cancelled)
     }
 
     private func oversizedFrameError() -> MCPError {
@@ -272,5 +317,13 @@ public actor StdioTransport: Transport {
         guard let errno = error as? Errno else { return false }
         return errno == .wouldBlock || errno.rawValue == EAGAIN
     }
+}
+
+private final class WriteWaiterCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool { lock.withLock { cancelled } }
+    func cancel() { lock.withLock { cancelled = true } }
 }
 #endif

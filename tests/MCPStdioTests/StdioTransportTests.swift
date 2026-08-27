@@ -62,6 +62,38 @@ struct StdioTransportTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
+    func burstWithoutAConsumerFailsClosedAtEightBufferedMessages() async throws {
+        let captured = CapturedLog()
+        let logger = Logger(label: "stdio.receive.capacity.test") { _ in
+            CapturingLogHandler(captured: captured)
+        }
+        let harness = try PipeTransportHarness()
+        defer { harness.close() }
+        let transport = StdioTransport(
+            input: harness.transportInput,
+            output: harness.transportOutput,
+            logger: logger
+        )
+        try await transport.connect()
+
+        try harness.writeInput(Data("0\n1\n2\n3\n4\n5\n6\n7\n8\n".utf8))
+        try harness.closeInputWriter()
+        #expect(await captured.waitUntilContains("Stdio transport stopped"))
+
+        var iterator = await transport.receive().makeAsyncIterator()
+        let expected = ["0", "1", "2", "3", "4", "5", "6", "7"]
+        for message in expected {
+            #expect(try await iterator.next() == Data(message.utf8))
+        }
+        do {
+            _ = try await iterator.next()
+            Issue.record("Expected the ninth queued message to fail the connection")
+        } catch let error as MCPError {
+            #expect(error.code == -32603)
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
     func eofFinishesTheReceiveStreamWithoutYieldingAnUnterminatedFragment() async throws {
         let harness = try PipeTransportHarness()
         defer { harness.close() }
@@ -91,6 +123,28 @@ struct StdioTransportTests {
         }
         #expect(try await iterator.next() == message)
         try await writer.value
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func rejectsExactlyOneByteOverTheMaximumMessageSize() async throws {
+        let harness = try PipeTransportHarness()
+        defer { harness.close() }
+        let transport = StdioTransport(input: harness.transportInput, output: harness.transportOutput)
+        try await transport.connect()
+        var iterator = await transport.receive().makeAsyncIterator()
+        let message = Data(repeating: 0x61, count: 1_048_577)
+
+        let writer = Task.detached {
+            try harness.writeInput(message + Data("\n".utf8))
+        }
+        do {
+            _ = try await iterator.next()
+            Issue.record("Expected a 1,048,577-byte message to fail framing")
+        } catch let error as MCPError {
+            #expect(error.code == -32700)
+        }
+        try await writer.value
+        await transport.disconnect()
     }
 
     @Test(.timeLimit(.minutes(1)))
@@ -161,7 +215,7 @@ struct StdioTransportTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
-    func concurrentLargeSendsRemainSerializedAcrossWouldBlockSuspensions() async throws {
+    func threeQueuedLargeSendsRemainFIFOAcrossWouldBlockSuspensions() async throws {
         let harness = try PipeTransportHarness()
         defer { harness.close() }
         let transport = StdioTransport(input: harness.transportInput, output: harness.transportOutput)
@@ -169,26 +223,30 @@ struct StdioTransportTests {
         defer { Task { await transport.disconnect() } }
         let first = Data(repeating: 0x61, count: 131_072)
         let second = Data(repeating: 0x62, count: 131_072)
+        let third = Data(repeating: 0x63, count: 131_072)
         let prefilledByteCount = try harness.fillOutputUntilWouldBlock()
 
         let firstSend = Task { try await transport.send(first) }
         try await Task.sleep(for: .milliseconds(5))
         let secondSend = Task { try await transport.send(second) }
         try await Task.sleep(for: .milliseconds(5))
+        let thirdSend = Task { try await transport.send(third) }
+        try await Task.sleep(for: .milliseconds(5))
         let reader = Task {
             try await harness.readOutput(
-                exactly: prefilledByteCount + first.count + second.count + 2,
+                exactly: prefilledByteCount + first.count + second.count + third.count + 3,
                 chunkSize: 1_023
             )
         }
 
         try await firstSend.value
         try await secondSend.value
+        try await thirdSend.value
         let framedOutput = try await reader.value.dropFirst(prefilledByteCount)
         let lines = framedOutput.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false)
 
-        #expect(lines.count == 3)
-        #expect(Set(lines.prefix(2).map { Data($0) }) == Set([first, second]))
+        #expect(lines.count == 4)
+        #expect(lines.prefix(3).map { Data($0) } == [first, second, third])
     }
 
     @Test(.timeLimit(.minutes(1)))
@@ -269,6 +327,42 @@ struct StdioTransportTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
+    func cancellingAQueuedSenderRemovesItsWaiterWithoutWritingLater() async throws {
+        let harness = try PipeTransportHarness()
+        defer { harness.close() }
+        let transport = StdioTransport(input: harness.transportInput, output: harness.transportOutput)
+        try await transport.connect()
+        _ = try harness.fillOutputUntilWouldBlock()
+
+        let active = Task { try await transport.send(Data(repeating: 0x61, count: 65_536)) }
+        try await Task.sleep(for: .milliseconds(10))
+        let completion = CompletionProbe()
+        let cancelledPayload = Data(repeating: 0x7e, count: 4_096)
+        let queued = Task {
+            do {
+                try await transport.send(cancelledPayload)
+                await completion.markComplete()
+            } catch {
+                await completion.markComplete()
+                throw error
+            }
+        }
+        try await Task.sleep(for: .milliseconds(10))
+        queued.cancel()
+
+        #expect(await completion.waitForCompletion(within: .milliseconds(200)))
+        await transport.disconnect()
+        _ = try? await active.value
+        do {
+            try await queued.value
+            Issue.record("Expected the queued sender to throw cancellation")
+        } catch is CancellationError {
+            // Expected and, critically, observed before the active writer was released.
+        }
+        #expect(try harness.drainAvailableOutput().contains(0x7e) == false)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
     func simultaneousEOFAndDisconnectFinishTheStreamOnce() async throws {
         let harness = try PipeTransportHarness()
         defer { harness.close() }
@@ -319,6 +413,24 @@ private actor AsyncGate {
         let pending = waiters
         waiters.removeAll()
         for waiter in pending { waiter.resume() }
+    }
+}
+
+private actor CompletionProbe {
+    private var isComplete = false
+
+    func markComplete() {
+        isComplete = true
+    }
+
+    func waitForCompletion(within duration: Duration) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: duration)
+        while clock.now < deadline {
+            if isComplete { return true }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        return isComplete
     }
 }
 
@@ -435,6 +547,16 @@ private final class CapturedLog: @unchecked Sendable {
 
     func append(_ value: String) { lock.withLock { messages.append(value) } }
     func joinedMessages() -> String { lock.withLock { messages.joined(separator: "\n") } }
+
+    func waitUntilContains(_ value: String) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(1))
+        while clock.now < deadline {
+            if joinedMessages().contains(value) { return true }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        return joinedMessages().contains(value)
+    }
 }
 
 private struct CapturingLogHandler: LogHandler {

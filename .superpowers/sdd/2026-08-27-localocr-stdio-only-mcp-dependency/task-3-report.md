@@ -73,3 +73,57 @@ suite is made runnable.
 
 No LocalOCR tool, consent, document, process, release, signing, installation,
 publication, external configuration, or business-record state was changed.
+
+## Fix round 1: bounded delivery and cancellation-aware FIFO
+
+### Corrective changes
+
+- Replaced the default unbounded `AsyncThrowingStream` buffering with an
+  explicit `.bufferingOldest(8)` receive capacity. Because each accepted frame
+  remains capped at 1 MiB, queued completed input is bounded to eight
+  maximum-sized frames. A ninth unconsumed frame makes `yield` report a drop;
+  the transport then fails closed with a content-free internal error while the
+  eight already-accepted frames remain ordered.
+- Replaced anonymous nonthrowing write waiters with FIFO records containing a
+  unique waiter ID and outcome continuation. A lock-protected cancellation
+  token closes the cancel-before-enqueue race; the actor removes and resumes a
+  queued cancelled waiter immediately. If cancellation races with a grant, the
+  sender observes cancellation after acquiring and releases the permit through
+  its existing `defer`.
+- Added a literal 1,048,577-byte framing test rather than relying only on a
+  larger synthetic overflow fixture.
+- Strengthened the backpressure ordering regression from unordered equality of
+  two frames to exact FIFO equality of three separately queued large frames.
+
+Caller-owned descriptor lifetime, Darwin `F_SETNOSIGPIPE`, guarded exact-once
+stream completion, and payload-free logging are unchanged. The manifest now
+records transport SHA-256
+`a0533daa322d0eeaae9698c5f354445f4cf32c8a15a6dd9f191b3d2ebb8260b4`
+and the receive-capacity/waiter-removal adaptations.
+
+### TDD and mutation evidence
+
+- RED: `burstWithoutAConsumerFailsClosedAtEightBufferedMessages` returned the
+  ninth frame from the former unbounded stream. GREEN: it now receives exactly
+  eight ordered frames and then internal error `-32603`.
+- RED: `cancellingAQueuedSenderRemovesItsWaiterWithoutWritingLater` did not
+  complete within 200 ms while the active writer remained blocked. GREEN: the
+  cancelled waiter completes promptly, throws `CancellationError`, and its
+  unique `0x7e` payload never appears in the output pipe.
+- The literal `maximumMessageBytes + 1` test passed the correct implementation;
+  weakening the newline-boundary comparison to permit one extra byte made the
+  test fail with the expected missing parse error. The mutation was restored.
+- The three-writer FIFO test passed the correct implementation; mutating waiter
+  release from `removeFirst()` to `removeLast()` made its literal ordered-array
+  assertion fail. The mutation was restored.
+
+### Fix-round verification
+
+- Exact-source focused runner,
+  `swift test --filter StdioTransportTests`: 17 tests passed.
+- `swift build --target MCPStdioTests`: passed with the checked real test target.
+- `.venv/bin/python -m pytest tests/contract/test_mcp_stdio_vendor.py -q`:
+  38 passed with the same five pre-existing SWIG deprecation warnings.
+- Manifest/local SHA-256 equality and `git diff --check`: passed.
+- The root package-wide test link remains intentionally carried to Tasks 4-5;
+  no stub, target reordering, or unrelated protocol change was introduced.
