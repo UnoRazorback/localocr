@@ -18,8 +18,12 @@ let package = Package(
             exact: "1.8.2"
         ),
         .package(
-            url: "https://github.com/modelcontextprotocol/swift-sdk",
-            exact: "0.12.1"
+            url: "https://github.com/apple/swift-system.git",
+            from: "1.0.0"
+        ),
+        .package(
+            url: "https://github.com/apple/swift-log.git",
+            from: "1.5.0"
         )
     ],
     targets: [
@@ -52,11 +56,19 @@ let package = Package(
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
         .target(
+            name: "MCPStdio",
+            dependencies: [
+                .product(name: "SystemPackage", package: "swift-system"),
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            exclude: ["Upstream"],
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
+        .target(
             name: "LocalOCRMCP",
             dependencies: [
                 "LocalOCRIntelligence",
-                "LocalOCRService",
-                .product(name: "MCP", package: "swift-sdk")
+                "LocalOCRService"
             ],
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
@@ -101,8 +113,7 @@ let package = Package(
             dependencies: [
                 "LocalOCRMCP",
                 "LocalOCRService",
-                "LocalOCRCore",
-                .product(name: "MCP", package: "swift-sdk")
+                "LocalOCRCore"
             ],
             path: "tests/LocalOCRMCPTests",
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]

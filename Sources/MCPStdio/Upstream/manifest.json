@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "repository": "https://github.com/modelcontextprotocol/swift-sdk",
+    "release": "0.12.1",
+    "commit": "a0ae212ebf6eab5f754c3129608bc5557637e605",
+    "retrieved_on": "2026-08-27",
+    "selection_rule": "Only reviewed stdio-server source from Sources/MCP may be added; this initial boundary contains only the LocalOCR identity file.",
+    "exclusions": [
+      "client",
+      "HTTP",
+      "OAuth",
+      "EventSource",
+      "URLSession",
+      "socket",
+      "Network",
+      "CFNetwork"
+    ],
+    "hash_command": "shasum -a 256 <file>",
+    "provisional_dependencies": [
+      "swift-system",
+      "swift-log"
+    ]
+  },
+  "files": [
+    {
+      "path": "MCPStdio.swift",
+      "local_only": true,
+      "local_sha256": "33449fc8868c338aeb562b53f2311e9606bc4843043ecf6907a4070958e9027b"
+    }
+  ],
+  "adaptations": []
+}
