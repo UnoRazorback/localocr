@@ -1,5 +1,6 @@
 import Foundation
 @testable import LocalOCRMCP
+import MCP
 import Testing
 
 @Suite struct MCPArgumentDecoderTests {
@@ -96,5 +97,95 @@ import Testing
         #expect(value.outputURL?.path == "/tmp/localocr-working-directory/output.pdf")
         #expect(value.dpi == 300)
         #expect(value.forceOCR == true)
+    }
+
+    @Test func intelligenceToolsResolvePathsLexicallyWithoutRequiringFilesToExist() throws {
+        let decoder = MCPArgumentDecoder(currentDirectory: currentDirectory)
+
+        let summary = try decoder.decode(
+            toolName: "summarize_document",
+            arguments: ["file_path": "missing/summary.pdf"]
+        )
+        let organization = try decoder.decode(
+            toolName: "organize_document",
+            arguments: ["file_path": "missing/organization.png"]
+        )
+        let extraction = try decoder.decode(
+            toolName: "extract_document_fields",
+            arguments: ["file_path": "missing/form.pdf", "fields": [" date ", "total"]]
+        )
+
+        guard case let .summarizeDocument(summaryRequest) = summary else {
+            Issue.record("Expected a summarize_document request")
+            return
+        }
+        guard case let .organizeDocument(organizationRequest) = organization else {
+            Issue.record("Expected an organize_document request")
+            return
+        }
+        guard case let .extractDocumentFields(extractionRequest) = extraction else {
+            Issue.record("Expected an extract_document_fields request")
+            return
+        }
+        #expect(summaryRequest.fileURL.path == "/tmp/localocr-working-directory/missing/summary.pdf")
+        #expect(organizationRequest.fileURL.path == "/tmp/localocr-working-directory/missing/organization.png")
+        #expect(extractionRequest.fileURL.path == "/tmp/localocr-working-directory/missing/form.pdf")
+        #expect(extractionRequest.fields == ["date", "total"])
+    }
+
+    @Test func extractionRequiresOneThroughThirtyTwoUniqueTrimmedBoundedFieldNames() throws {
+        let decoder = MCPArgumentDecoder(currentDirectory: currentDirectory)
+        let thirtyOneNames = (1 ... 31).map { "field_\($0)" }
+        let oneHundredTwentyEightCharacters = String(repeating: "x", count: 128)
+        let oneHundredTwentyEightGraphemes = String(repeating: "👨🏽‍💻", count: 128)
+
+        let request = try decoder.decode(
+            toolName: "extract_document_fields",
+            arguments: [
+                "file_path": "form.pdf",
+                "fields": .array(thirtyOneNames.map(Value.string) + [.string(oneHundredTwentyEightCharacters)])
+            ]
+        )
+        guard case let .extractDocumentFields(value) = request else {
+            Issue.record("Expected an extract_document_fields request")
+            return
+        }
+        #expect(value.fields.count == 32)
+
+        let graphemeRequest = try decoder.decode(
+            toolName: "extract_document_fields",
+            arguments: ["file_path": "form.pdf", "fields": .array([.string(oneHundredTwentyEightGraphemes)])]
+        )
+        guard case let .extractDocumentFields(graphemeValue) = graphemeRequest else {
+            Issue.record("Expected an extract_document_fields request")
+            return
+        }
+        #expect(graphemeValue.fields == [oneHundredTwentyEightGraphemes])
+
+        let invalidFields: [Value] = [
+            .string("not-an-array"),
+            .array([]),
+            .array((1 ... 33).map { .string("field_\($0)") }),
+            .array([.string("date"), .int(1)]),
+            .array([.string("   ")]),
+            .array([.string(String(repeating: "x", count: 129))]),
+            .array([.string(String(repeating: "👨🏽‍💻", count: 129))]),
+            .array([.string("date"), .string(" date ")]),
+        ]
+
+        #expect(throws: MCPArgumentError.missingArgument("fields")) {
+            try decoder.decode(
+                toolName: "extract_document_fields",
+                arguments: ["file_path": "form.pdf"]
+            )
+        }
+        for fields in invalidFields {
+            #expect(throws: MCPArgumentError.invalidFields) {
+                try decoder.decode(
+                    toolName: "extract_document_fields",
+                    arguments: ["file_path": "form.pdf", "fields": fields]
+                )
+            }
+        }
     }
 }

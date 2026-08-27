@@ -3,16 +3,19 @@ import Foundation
 import Testing
 
 @Suite struct MCPToolCatalogTests {
-    @Test func catalogHasTheExactLegacyToolNamesAndContractSnapshot() throws {
+    @Test func catalogHasTheExactNineToolNamesAndContractSnapshot() throws {
         let tools = MCPToolCatalog.tools.sorted { $0.name < $1.name }
 
         #expect(tools.map(\.name) == [
+            "extract_document_fields",
             "get_pdf_page_count",
             "inspect_pdf",
             "make_searchable_pdf",
             "ocr_image",
             "ocr_pdf",
-            "ocr_pdf_batch"
+            "ocr_pdf_batch",
+            "organize_document",
+            "summarize_document"
         ])
 
         var actual = try JSONEncoder.sorted.encode(tools)
@@ -47,6 +50,60 @@ import Testing
         ]))
         #expect(tools["get_pdf_page_count"]?.outputSchema == nil)
         #expect(tools["ocr_image"]?.outputSchema == nil)
+    }
+
+    @Test func intelligenceSchemasArePurposeLimitedBoundedStructuredAndReadOnly() throws {
+        let tools = Dictionary(uniqueKeysWithValues: MCPToolCatalog.tools.map { ($0.name, $0) })
+
+        for name in ["summarize_document", "organize_document"] {
+            let tool = try #require(tools[name])
+            let schema = try #require(tool.inputSchema.objectValue)
+            let properties = try #require(schema["properties"]?.objectValue)
+            #expect(Set(properties.keys) == ["file_path"])
+            #expect(schema["required"] == .array([.string("file_path")]))
+            #expect(schema["additionalProperties"] == .bool(false))
+            #expect(tool.annotations.readOnlyHint == true)
+            #expect(tool.annotations.idempotentHint == true)
+            #expect(tool.annotations.destructiveHint == false)
+            #expect(tool.annotations.openWorldHint == false)
+            #expect(tool.outputSchema != nil)
+        }
+
+        let extraction = try #require(tools["extract_document_fields"])
+        let extractionInput = try #require(extraction.inputSchema.objectValue)
+        let extractionProperties = try #require(extractionInput["properties"]?.objectValue)
+        let fields = try #require(extractionProperties["fields"]?.objectValue)
+        #expect(Set(extractionProperties.keys) == ["file_path", "fields"])
+        #expect(extractionInput["required"] == .array([.string("file_path"), .string("fields")]))
+        #expect(fields["type"] == .string("array"))
+        #expect(fields["minItems"] == .int(1))
+        #expect(fields["maxItems"] == .int(32))
+        #expect(fields["uniqueItems"] == .bool(true))
+        #expect(fields["items"]?.objectValue?["type"] == .string("string"))
+        #expect(fields["items"]?.objectValue?["minLength"] == .int(1))
+        #expect(fields["items"]?.objectValue?["maxLength"] == .int(128))
+        #expect(extraction.annotations.readOnlyHint == true)
+        #expect(extraction.annotations.openWorldHint == false)
+
+        let extractionOutput = try #require(extraction.outputSchema?.objectValue)
+        let extractionOutputProperties = try #require(extractionOutput["properties"]?.objectValue)
+        let outputItems = try #require(extractionOutputProperties["fields"]?.objectValue?["items"]?.objectValue)
+        let outputProperties = try #require(outputItems["properties"]?.objectValue)
+        #expect(extractionOutput["type"] == .string("object"))
+        #expect(extractionOutput["additionalProperties"] == .bool(false))
+        #expect(extractionOutput["required"] == .array([.string("fields")]))
+        #expect(outputItems["required"] == .array([
+            .string("name"), .string("value"), .string("source_page"), .string("evidence")
+        ]))
+        #expect(outputProperties["value"]?.objectValue?["anyOf"]?.arrayValue == [
+            .object(["type": "string"]), .object(["type": "null"])
+        ])
+        #expect(outputProperties["source_page"]?.objectValue?["anyOf"]?.arrayValue == [
+            .object(["type": "integer"]), .object(["type": "null"])
+        ])
+        #expect(outputProperties["evidence"]?.objectValue?["anyOf"]?.arrayValue == [
+            .object(["type": "string"]), .object(["type": "null"])
+        ])
     }
 }
 

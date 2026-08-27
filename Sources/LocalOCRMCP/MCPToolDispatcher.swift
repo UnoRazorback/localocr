@@ -1,22 +1,43 @@
 import Foundation
 import LocalOCRCore
+import LocalOCRIntelligence
 import LocalOCRService
 import MCP
 
 public struct MCPToolDispatcher: Sendable {
     private let service: any LocalOCRServing
+    private let textLoader: any DocumentTextLoading
+    private let intelligence: any DocumentIntelligenceProviding
+    private let consentStore: any ExternalDataConsentStoring
     private let decoder: MCPArgumentDecoder
 
-    public init(service: any LocalOCRServing, currentDirectory: URL) {
+    public init(
+        service: any LocalOCRServing,
+        textLoader: any DocumentTextLoading,
+        intelligence: any DocumentIntelligenceProviding,
+        consentStore: any ExternalDataConsentStoring,
+        currentDirectory: URL
+    ) {
         self.service = service
+        self.textLoader = textLoader
+        self.intelligence = intelligence
+        self.consentStore = consentStore
         decoder = MCPArgumentDecoder(currentDirectory: currentDirectory)
     }
 
     public func callTool(name: String, arguments: [String: Value]? = nil) async -> CallTool.Result {
         do {
             try Task.checkCancellation()
+            let request = try decoder.decode(toolName: name, arguments: arguments)
+            guard case .current = await consentStore.status() else {
+                return errorResult(
+                    code: "external_data_acknowledgment_required",
+                    message: "Accept the LocalOCR MCP external-data acknowledgment in LocalOCR Studio Help or with `localocr mcp-consent accept`, then retry."
+                )
+            }
+
             let result: CallTool.Result
-            switch try decoder.decode(toolName: name, arguments: arguments) {
+            switch request {
             case let .pageCount(request):
                 let response = try await service.pageCount(at: request.fileURL)
                 result = scalarResult(String(response.pages))
@@ -31,6 +52,41 @@ public struct MCPToolDispatcher: Sendable {
                 result = scalarResult(response.text)
             case let .makeSearchablePDF(request):
                 result = objectResult(try await service.makeSearchablePDF(request))
+            case let .summarizeDocument(request):
+                let document = try await textLoader.load(request.fileURL)
+                do {
+                    result = objectResult(try await intelligence.summarize(document))
+                } catch let error as IntelligenceError {
+                    throw error
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    throw MCPIntelligenceDispatchError.generationFailed
+                }
+            case let .organizeDocument(request):
+                let document = try await textLoader.load(request.fileURL)
+                do {
+                    result = objectResult(try await intelligence.organize(document))
+                } catch let error as IntelligenceError {
+                    throw error
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    throw MCPIntelligenceDispatchError.generationFailed
+                }
+            case let .extractDocumentFields(request):
+                let document = try await textLoader.load(request.fileURL)
+                do {
+                    result = objectResult(ExtractDocumentFieldsResponse(
+                        fields: try await intelligence.extract(request.fields, from: document)
+                    ))
+                } catch let error as IntelligenceError {
+                    throw error
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    throw MCPIntelligenceDispatchError.generationFailed
+                }
             }
             try Task.checkCancellation()
             return result
@@ -75,6 +131,18 @@ public struct MCPToolDispatcher: Sendable {
     }
 
     private func stableError(for error: any Error) -> (code: String, message: String) {
+        if let intelligenceError = error as? IntelligenceError {
+            return stableIntelligenceError(for: intelligenceError)
+        }
+        if error is MCPIntelligenceDispatchError {
+            return (
+                "local_intelligence_generation_failed",
+                "Local Intelligence could not process this document. Ordinary OCR tools remain available."
+            )
+        }
+        if error is LocalOCRDocumentTextLoaderError {
+            return ("unsupported_format", "The file format is not supported.")
+        }
         if let localError = error as? LocalOCRError {
             return switch localError {
             case .fileNotFound:
@@ -112,6 +180,34 @@ public struct MCPToolDispatcher: Sendable {
         return ("processing_failed", "OCR processing failed.")
     }
 
+    private func stableIntelligenceError(for error: IntelligenceError) -> (code: String, message: String) {
+        switch error {
+        case let .unavailable(availability):
+            switch availability {
+            case .requiresMacOS26:
+                ("local_intelligence_requires_macos_26", "Local Intelligence requires macOS 26 or later. Ordinary OCR tools remain available.")
+            case .deviceNotEligible:
+                ("local_intelligence_device_not_eligible", "This Mac is not eligible for Apple Intelligence. Ordinary OCR tools remain available.")
+            case .appleIntelligenceNotEnabled:
+                ("apple_intelligence_not_enabled", "Enable Apple Intelligence in System Settings, then retry. Ordinary OCR tools remain available.")
+            case .modelNotReady:
+                ("local_intelligence_model_not_ready", "Apple Intelligence is not ready. Finish downloading or preparing the model, then retry. Ordinary OCR tools remain available.")
+            case .unsupportedLanguage:
+                ("local_intelligence_language_not_supported", "Apple Intelligence does not support this document language. Ordinary OCR tools remain available.")
+            case .available:
+                ("local_intelligence_generation_failed", "Local Intelligence could not process this document. Ordinary OCR tools remain available.")
+            }
+        case .emptyDocument, .invalidFields:
+            ("local_intelligence_invalid_input", "The document does not contain usable OCR text or the requested fields are invalid. Ordinary OCR tools remain available.")
+        case .contextOverflow:
+            ("local_intelligence_generation_failed", "Local Intelligence could not process this document. Ordinary OCR tools remain available.")
+        case .ungroundedOutput:
+            ("local_intelligence_output_not_grounded", "Local Intelligence could not ground its result in the document. Ordinary OCR tools remain available.")
+        case .cancelled:
+            ("cancelled", "OCR processing was cancelled.")
+        }
+    }
+
     private func canonicalJSON<Response: Encodable>(_ response: Response) -> Data {
         let encoder = ResponseEncoding.encoder
         encoder.outputFormatting.insert(.withoutEscapingSlashes)
@@ -121,6 +217,14 @@ public struct MCPToolDispatcher: Sendable {
             preconditionFailure("MCP responses must always be JSON encodable: \(error)")
         }
     }
+}
+
+private enum MCPIntelligenceDispatchError: Error {
+    case generationFailed
+}
+
+private struct ExtractDocumentFieldsResponse: Encodable {
+    let fields: [ExtractedDocumentField]
 }
 
 private struct ToolErrorResponse: Encodable {

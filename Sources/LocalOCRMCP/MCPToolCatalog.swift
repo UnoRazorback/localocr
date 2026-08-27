@@ -47,6 +47,27 @@ public enum MCPToolCatalog {
                 openWorldHint: false
             ),
             outputSchema: searchableOutputSchema
+        ),
+        Tool(
+            name: "summarize_document",
+            description: "OCR a local PDF or image and produce a grounded summary with page citations using on-device Local Intelligence.",
+            inputSchema: fileInputSchema(),
+            annotations: readOnlyAnnotations,
+            outputSchema: summaryOutputSchema
+        ),
+        Tool(
+            name: "organize_document",
+            description: "OCR a local PDF or image and suggest a grounded title, category, and tags using on-device Local Intelligence.",
+            inputSchema: fileInputSchema(),
+            annotations: readOnlyAnnotations,
+            outputSchema: organizationOutputSchema
+        ),
+        Tool(
+            name: "extract_document_fields",
+            description: "OCR a local PDF or image and extract only the requested named fields with optional page evidence using on-device Local Intelligence.",
+            inputSchema: extractionInputSchema,
+            annotations: readOnlyAnnotations,
+            outputSchema: extractionOutputSchema
         )
     ]
 
@@ -127,6 +148,25 @@ public enum MCPToolCatalog {
         required: ["file_path"]
     )
 
+    private static let extractionInputSchema: Value = objectSchema(
+        properties: [
+            "file_path": pathSchema,
+            "fields": .object([
+                "type": "array",
+                "description": "Requested field names. Names are trimmed and must remain unique.",
+                "items": .object([
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                ]),
+                "minItems": 1,
+                "maxItems": 32,
+                "uniqueItems": true
+            ])
+        ],
+        required: ["file_path", "fields"]
+    )
+
     private static let pathSchema: Value = .object([
         "type": "string",
         "description": .string(pathDescription)
@@ -194,6 +234,47 @@ public enum MCPToolCatalog {
         required: ["output_path", "failed_pages"]
     )
 
+    private static let summaryOutputSchema = objectSchema(
+        properties: [
+            "text": stringSchema,
+            "citations": .object(["type": "array", "items": citationSchema])
+        ],
+        required: ["text", "citations"]
+    )
+
+    private static let organizationOutputSchema = objectSchema(
+        properties: [
+            "title": stringSchema,
+            "category": stringSchema,
+            "tags": .object(["type": "array", "items": stringSchema]),
+            "citations": .object(["type": "array", "items": citationSchema])
+        ],
+        required: ["title", "category", "tags", "citations"]
+    )
+
+    private static let extractionOutputSchema: Value = objectSchema(
+        properties: [
+            "fields": .object([
+                "type": "array",
+                "items": objectSchema(
+                    properties: [
+                        "name": stringSchema,
+                        "value": nullable(stringSchema),
+                        "source_page": nullable(integerSchema),
+                        "evidence": nullable(stringSchema)
+                    ],
+                    required: ["name", "value", "source_page", "evidence"]
+                )
+            ])
+        ],
+        required: ["fields"]
+    )
+
+    private static let citationSchema: Value = objectSchema(
+        properties: ["page": integerSchema, "quote": stringSchema],
+        required: ["page", "quote"]
+    )
+
     private static let pageInspectionSchema: Value = objectSchema(
         properties: ["page": integerSchema, "characters": integerSchema, "searchable": boolSchema],
         required: ["page", "characters", "searchable"]
@@ -230,6 +311,10 @@ public enum MCPToolCatalog {
     private static let integerSchema: Value = .object(["type": "integer"])
     private static let numberSchema: Value = .object(["type": "number"])
     private static let boolSchema: Value = .object(["type": "boolean"])
+
+    private static func nullable(_ schema: Value) -> Value {
+        .object(["anyOf": .array([schema, .object(["type": "null"])])])
+    }
 
     private static func objectSchema(properties: [String: Value], required: [String]) -> Value {
         .object([

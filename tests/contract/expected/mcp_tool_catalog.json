@@ -6,6 +6,99 @@
       "openWorldHint" : false,
       "readOnlyHint" : true
     },
+    "description" : "OCR a local PDF or image and extract only the requested named fields with optional page evidence using on-device Local Intelligence.",
+    "inputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "fields" : {
+          "description" : "Requested field names. Names are trimmed and must remain unique.",
+          "items" : {
+            "maxLength" : 128,
+            "minLength" : 1,
+            "type" : "string"
+          },
+          "maxItems" : 32,
+          "minItems" : 1,
+          "type" : "array",
+          "uniqueItems" : true
+        },
+        "file_path" : {
+          "description" : "Local absolute or working-directory-relative filesystem path.",
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "file_path",
+        "fields"
+      ],
+      "type" : "object"
+    },
+    "name" : "extract_document_fields",
+    "outputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "fields" : {
+          "items" : {
+            "additionalProperties" : false,
+            "properties" : {
+              "evidence" : {
+                "anyOf" : [
+                  {
+                    "type" : "string"
+                  },
+                  {
+                    "type" : "null"
+                  }
+                ]
+              },
+              "name" : {
+                "type" : "string"
+              },
+              "source_page" : {
+                "anyOf" : [
+                  {
+                    "type" : "integer"
+                  },
+                  {
+                    "type" : "null"
+                  }
+                ]
+              },
+              "value" : {
+                "anyOf" : [
+                  {
+                    "type" : "string"
+                  },
+                  {
+                    "type" : "null"
+                  }
+                ]
+              }
+            },
+            "required" : [
+              "name",
+              "value",
+              "source_page",
+              "evidence"
+            ],
+            "type" : "object"
+          },
+          "type" : "array"
+        }
+      },
+      "required" : [
+        "fields"
+      ],
+      "type" : "object"
+    }
+  },
+  {
+    "annotations" : {
+      "destructiveHint" : false,
+      "idempotentHint" : true,
+      "openWorldHint" : false,
+      "readOnlyHint" : true
+    },
     "description" : "Return the number of pages in a PDF. Call this before ocr_pdf on large files to decide a page_range instead of OCRing the whole document.",
     "inputSchema" : {
       "additionalProperties" : false,
@@ -553,6 +646,127 @@
         "succeeded",
         "failed",
         "results"
+      ],
+      "type" : "object"
+    }
+  },
+  {
+    "annotations" : {
+      "destructiveHint" : false,
+      "idempotentHint" : true,
+      "openWorldHint" : false,
+      "readOnlyHint" : true
+    },
+    "description" : "OCR a local PDF or image and suggest a grounded title, category, and tags using on-device Local Intelligence.",
+    "inputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "file_path" : {
+          "description" : "Local absolute or working-directory-relative filesystem path.",
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "file_path"
+      ],
+      "type" : "object"
+    },
+    "name" : "organize_document",
+    "outputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "category" : {
+          "type" : "string"
+        },
+        "citations" : {
+          "items" : {
+            "additionalProperties" : false,
+            "properties" : {
+              "page" : {
+                "type" : "integer"
+              },
+              "quote" : {
+                "type" : "string"
+              }
+            },
+            "required" : [
+              "page",
+              "quote"
+            ],
+            "type" : "object"
+          },
+          "type" : "array"
+        },
+        "tags" : {
+          "items" : {
+            "type" : "string"
+          },
+          "type" : "array"
+        },
+        "title" : {
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "title",
+        "category",
+        "tags",
+        "citations"
+      ],
+      "type" : "object"
+    }
+  },
+  {
+    "annotations" : {
+      "destructiveHint" : false,
+      "idempotentHint" : true,
+      "openWorldHint" : false,
+      "readOnlyHint" : true
+    },
+    "description" : "OCR a local PDF or image and produce a grounded summary with page citations using on-device Local Intelligence.",
+    "inputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "file_path" : {
+          "description" : "Local absolute or working-directory-relative filesystem path.",
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "file_path"
+      ],
+      "type" : "object"
+    },
+    "name" : "summarize_document",
+    "outputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "citations" : {
+          "items" : {
+            "additionalProperties" : false,
+            "properties" : {
+              "page" : {
+                "type" : "integer"
+              },
+              "quote" : {
+                "type" : "string"
+              }
+            },
+            "required" : [
+              "page",
+              "quote"
+            ],
+            "type" : "object"
+          },
+          "type" : "array"
+        },
+        "text" : {
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "text",
+        "citations"
       ],
       "type" : "object"
     }
