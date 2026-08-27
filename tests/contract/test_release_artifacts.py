@@ -18,9 +18,13 @@ VERSION = "0.3.0"
 SYSTEM_LIBRARY_PREFIXES = ("/System/Library/", "/usr/lib/")
 COMPATIBILITY_SPAN_INSTALL_NAME = "@rpath/libswiftCompatibilitySpan.dylib"
 SYSTEM_SWIFT_RPATH = "/usr/lib/swift"
-FORBIDDEN_NETWORK_INSTALL_NAMES = {
+KNOWN_FORBIDDEN_NETWORK_INSTALL_NAMES = {
     "/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork",
+    "/System/Library/Frameworks/CFNetwork.framework/Versions/B/CFNetwork",
+    "/System/Library/Frameworks/CFNetwork.framework/CFNetwork",
     "/System/Library/Frameworks/Network.framework/Versions/A/Network",
+    "/System/Library/Frameworks/Network.framework/Versions/Current/Network",
+    "/System/Library/Frameworks/Network.framework/Network",
 }
 FORBIDDEN_RUNTIME_STRING_FRAGMENTS = (
     ".venv",
@@ -91,6 +95,23 @@ def _is_canonical_system_install_name(install_name: str) -> bool:
     return all(component not in {"", ".", ".."} for component in relative_path.split("/"))
 
 
+def _is_forbidden_network_install_name(install_name: str) -> bool:
+    if not _is_canonical_system_install_name(install_name):
+        return False
+    framework_root = "/System/Library/Frameworks/"
+    if not install_name.startswith(framework_root):
+        return False
+    components = install_name.removeprefix(framework_root).split("/")
+    return (
+        len(components) >= 2
+        and (components[0], components[-1])
+        in {
+            ("CFNetwork.framework", "CFNetwork"),
+            ("Network.framework", "Network"),
+        }
+    )
+
+
 def _assert_allowed_install_names(install_names: list[str]) -> None:
     unexpected = [
         install_name
@@ -102,7 +123,7 @@ def _assert_allowed_install_names(install_names: list[str]) -> None:
     network_libraries = [
         install_name
         for install_name in install_names
-        if install_name in FORBIDDEN_NETWORK_INSTALL_NAMES
+        if _is_forbidden_network_install_name(install_name)
     ]
     assert not network_libraries, (
         f"network libraries are forbidden in local-only release artifacts: {network_libraries}"
@@ -253,7 +274,7 @@ Load command 21
     else:
         raise AssertionError("malicious dylib paths were accepted")
 
-    for network_library in FORBIDDEN_NETWORK_INSTALL_NAMES:
+    for network_library in KNOWN_FORBIDDEN_NETWORK_INSTALL_NAMES:
         try:
             _assert_allowed_install_names([network_library])
         except AssertionError as error:

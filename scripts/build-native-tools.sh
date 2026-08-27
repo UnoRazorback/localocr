@@ -21,8 +21,10 @@ validate_no_network_framework_dependency() {
 
     while IFS= read -r dependency; do
         case "$dependency" in
-            /System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork|\
-            /System/Library/Frameworks/Network.framework/Versions/A/Network)
+            /System/Library/Frameworks/CFNetwork.framework/CFNetwork|\
+            /System/Library/Frameworks/CFNetwork.framework/*/CFNetwork|\
+            /System/Library/Frameworks/Network.framework/Network|\
+            /System/Library/Frameworks/Network.framework/*/Network)
                 echo "network framework dependency is forbidden in local-only candidate: $binary: $dependency" >&2
                 return 1
                 ;;

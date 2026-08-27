@@ -3141,7 +3141,11 @@ def test_release_candidate_requires_arm64_and_exact_macos_14_target(script: str)
     "install_name",
     (
         "/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork",
+        "/System/Library/Frameworks/CFNetwork.framework/Versions/B/CFNetwork",
+        "/System/Library/Frameworks/CFNetwork.framework/CFNetwork",
         "/System/Library/Frameworks/Network.framework/Versions/A/Network",
+        "/System/Library/Frameworks/Network.framework/Versions/Current/Network",
+        "/System/Library/Frameworks/Network.framework/Network",
     ),
 )
 def test_release_candidate_rejects_network_frameworks(

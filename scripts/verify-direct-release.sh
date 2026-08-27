@@ -65,8 +65,10 @@ validate_install_name() {
     local install_name="${1:-}"
 
     case "$install_name" in
-        /System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork|\
-        /System/Library/Frameworks/Network.framework/Versions/A/Network)
+        /System/Library/Frameworks/CFNetwork.framework/CFNetwork|\
+        /System/Library/Frameworks/CFNetwork.framework/*/CFNetwork|\
+        /System/Library/Frameworks/Network.framework/Network|\
+        /System/Library/Frameworks/Network.framework/*/Network)
             echo "network framework dependency is forbidden in local-only candidate: $install_name" >&2
             return 1
             ;;
