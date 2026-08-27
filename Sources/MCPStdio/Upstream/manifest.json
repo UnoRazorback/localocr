@@ -93,6 +93,17 @@
       "origin": "Sources/MCP/Server/Tools.swift",
       "upstream_sha256": "79c4fc03714468c4a41c05544371ea7ffbf4517dc647db1b679abf8b71df7f0f",
       "local_sha256": "824cd722848c98e0c6e9fa7898ffc48108a430f481c436f151118f89f592c3b1"
+    },
+    {
+      "path": "Server/Server.swift",
+      "origin": "Sources/MCP/Server/Server.swift",
+      "upstream_sha256": "61cd2439525e73a417cbc36711b7e0340a2442f14acbb1631915ee3d792962f3",
+      "local_sha256": "0d711da5daad108a332be7a3f44e394ca6d202635f6c9378a607e3992b3a30b3"
+    },
+    {
+      "path": "Server/RequestRegistry.swift",
+      "local_only": true,
+      "local_sha256": "f37506b1ebffd27716241f713ce6f024651ba18bb8bf9332b9f21d1037a70d5b"
     }
   ],
   "adaptations": [
@@ -139,6 +150,14 @@
     {
       "path": "Server/Tools.swift",
       "reason": "Retains LocalOCR's tool definitions, optional-annotation decoding, schemas, text content, list, and call messages while removing icons, resources, media, and resource-link content types."
+    },
+    {
+      "path": "Server/Server.swift",
+      "reason": "Adapts the upstream server to a strict inbound-only stdio lifecycle with initialize, initialized, ping, tools/list, tools/call, cancellation, correlated concurrent responses, deterministic standard errors, and content-free diagnostics; removes client requests, batches, HTTP context, resources, prompts, sampling, elicitation, roots, subscriptions, logging control, and every network-related surface."
+    },
+    {
+      "path": "Server/RequestRegistry.swift",
+      "reason": "Adds a local actor registry that atomically rejects duplicate active IDs, assigns exactly one terminal path, makes cancellation idempotent, suppresses late completion, and cancels outstanding tasks during connection teardown."
     }
   ]
 }
