@@ -104,6 +104,12 @@ public struct CLIApplication: Sendable {
 
             let remainder = Array(arguments.dropFirst())
             if remainder.contains("--help") || remainder.contains("-h") {
+                if command == "mcp-consent", let operation = remainder.first,
+                   let leafHelp = Self.mcpConsentHelp(for: operation)
+                {
+                    output.stdout(leafHelp)
+                    return 0
+                }
                 guard Self.help(for: command) != nil else {
                     throw CLIArgumentError.message("unknown command \(command)")
                 }
@@ -170,6 +176,15 @@ public struct CLIApplication: Sendable {
         case "image": "Usage: localocr image <file> [--language <bcp47>]... [--no-language-correction] [--json]\n"
         case "searchable": "Usage: localocr searchable <file> [--output <file>] [--dpi <72...600>] [--force-ocr] [--no-cache] [--json]\n"
         case "mcp-consent": "Usage: localocr mcp-consent <status|accept|revoke>\n"
+        default: nil
+        }
+    }
+
+    static func mcpConsentHelp(for operation: String) -> String? {
+        switch operation {
+        case "status": "Usage: localocr mcp-consent status\n"
+        case "accept": "Usage: localocr mcp-consent accept\n\nRequires an interactive terminal and two confirmations.\n"
+        case "revoke": "Usage: localocr mcp-consent revoke\n"
         default: nil
         }
     }

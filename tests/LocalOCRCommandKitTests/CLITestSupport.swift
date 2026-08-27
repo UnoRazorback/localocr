@@ -224,6 +224,7 @@ final class CLIHarness: @unchecked Sendable {
 
 actor FixtureConsentStore: ExternalDataConsentStoring {
     private var storedStatus: ExternalDataConsentStatus
+    private var statusCallCount = 0
     private var acceptedDates: [Date] = []
     private var revokeCount = 0
 
@@ -232,7 +233,8 @@ actor FixtureConsentStore: ExternalDataConsentStoring {
     }
 
     func status() async -> ExternalDataConsentStatus {
-        storedStatus
+        statusCallCount += 1
+        return storedStatus
     }
 
     func acceptBothStatements(at date: Date) async throws {
@@ -255,6 +257,7 @@ actor FixtureConsentStore: ExternalDataConsentStoring {
 
     func acceptanceCount() -> Int { acceptedDates.count }
     func revocations() -> Int { revokeCount }
+    func statusCalls() -> Int { statusCallCount }
 }
 
 actor FailingConsentStore: ExternalDataConsentStoring {
@@ -277,6 +280,7 @@ final class FixtureConsentIO: @unchecked Sendable, ConsentCommandIO {
     private var answers: [String?]
     private var capturedStdout = ""
     private var capturedStderr = ""
+    private var readLineCallCount = 0
 
     init(isTerminal: Bool, answers: [String?]) {
         self.isTerminal = isTerminal
@@ -285,7 +289,8 @@ final class FixtureConsentIO: @unchecked Sendable, ConsentCommandIO {
 
     func readLine() -> String? {
         lock.withLock {
-            answers.isEmpty ? nil : answers.removeFirst()
+            readLineCallCount += 1
+            return answers.isEmpty ? nil : answers.removeFirst()
         }
     }
 
@@ -303,5 +308,9 @@ final class FixtureConsentIO: @unchecked Sendable, ConsentCommandIO {
 
     var stderrText: String {
         lock.withLock { capturedStderr }
+    }
+
+    var readLineCalls: Int {
+        lock.withLock { readLineCallCount }
     }
 }

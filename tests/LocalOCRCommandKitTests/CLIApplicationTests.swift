@@ -279,6 +279,29 @@ import LocalOCRService
     #expect(await store.acceptanceCount() == 0)
 }
 
+@Test func mcpConsentLeafHelpUsesLeafUsageWithoutTouchingConsent() async {
+    for (operation, flag, expectedHelp) in [
+        ("status", "--help", "Usage: localocr mcp-consent status\n"),
+        ("status", "-h", "Usage: localocr mcp-consent status\n"),
+        ("accept", "--help", "Usage: localocr mcp-consent accept\n\nRequires an interactive terminal and two confirmations.\n"),
+        ("accept", "-h", "Usage: localocr mcp-consent accept\n\nRequires an interactive terminal and two confirmations.\n"),
+        ("revoke", "--help", "Usage: localocr mcp-consent revoke\n"),
+        ("revoke", "-h", "Usage: localocr mcp-consent revoke\n")
+    ] {
+        let store = FixtureConsentStore()
+        let io = FixtureConsentIO(isTerminal: false, answers: [])
+        let harness = CLIHarness(service: FixtureService(), consentStore: store, consentIO: io)
+
+        #expect(await harness.run(["mcp-consent", operation, flag]) == 0)
+        #expect(harness.stdout == expectedHelp)
+        #expect(harness.stderr == "")
+        #expect(await store.statusCalls() == 0)
+        #expect(await store.acceptanceCount() == 0)
+        #expect(await store.revocations() == 0)
+        #expect(io.readLineCalls == 0)
+    }
+}
+
 @Test func mcpConsentAcceptRejectsFlagsThatCouldBypassInteraction() async {
     let store = FixtureConsentStore()
     let io = FixtureConsentIO(isTerminal: true, answers: ["yes", "yes"])
