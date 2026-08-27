@@ -66,16 +66,35 @@ cancellation, non-clean EOF, lifecycle double cleanup, and diagnostic stdout.
   suspending-disconnect cleanup behavior remains covered.
 - The LocalOCR migration import contract no longer relies on a seven-file
   allowlist. It recursively discovers every `.swift` file below both
-  `Sources/LocalOCRMCP` and `tests/LocalOCRMCPTests`, rejects normal, testable,
-  and scoped `MCP` imports, and requires `MCPStdio` in files that reference MCP
-  protocol types. Adversarial nested source and test fixtures prove that both a
-  newly introduced legacy import and newly introduced unimported MCP type use
-  fail the contract, while the migrated form passes.
+  `Sources/LocalOCRMCP` and `tests/LocalOCRMCPTests`, rejects direct and
+  `@testable` `MCP` imports, and requires `MCPStdio` in files that reference
+  MCP protocol types. Adversarial nested source and test fixtures prove that
+  both a newly introduced legacy import and newly introduced unimported MCP
+  type use fail the contract, while the migrated form passes.
+
+## Fix round 2
+
+- Review found that the first recursive contract's anchored regex did not
+  recognize Swift's scoped declaration imports or imports preceded by general
+  attributes and access modifiers. The validator now masks nested block and
+  line comments plus ordinary, multiline, and raw Swift strings, then matches
+  the import declaration core: `import`, an optional Swift declaration kind,
+  and the exact module token. This rejects direct or scoped `MCP` imports with
+  any preceding attribute/access combination without confusing `MCPStdio` or
+  source-like text in comments and strings.
+- The adversarial matrix covers all scoped declaration kinds, every applicable
+  Swift import access level, `@testable`, `@_exported`, `@preconcurrency`,
+  `@_spi`, and `@_implementationOnly`, plus attribute/access/scoped and
+  multiline combinations. Nested comments and ordinary, multiline, and raw
+  string lookalikes are accepted as non-code.
 
 ## Verification
 
+- `.venv/bin/python -m pytest tests/contract/test_mcp_stdio_vendor.py -q -k import_policy_rejects_every_swift_import_form`:
+  initially failed on `import struct MCP.Value`, then **1 passed** after the
+  lexical matcher change.
 - `.venv/bin/python -m pytest tests/contract/test_mcp_stdio_vendor.py -q`:
-  **40 passed**; five pre-existing SWIG deprecation warnings.
+  **41 passed**; five pre-existing SWIG deprecation warnings.
 - `swift test --filter ProtocolTypesTests`: **8 passed**.
 - `swift test --filter StdioTransportTests`: **18 passed**.
 - `swift test --filter ServerTests`: **22 passed**.

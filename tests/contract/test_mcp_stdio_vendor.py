@@ -41,11 +41,12 @@ LOCALOCR_MCP_SWIFT_ROOTS = (
     Path("Sources/LocalOCRMCP"),
     Path("tests/LocalOCRMCPTests"),
 )
+SWIFT_IMPORT_KIND = r"(?:typealias|struct|class|enum|protocol|let|var|func|macro)"
 LEGACY_MCP_IMPORT = re.compile(
-    r"(?m)^\s*(?:@testable\s+)?import\s+MCP(?:\.|\s|$)"
+    rf"\bimport\s+(?:{SWIFT_IMPORT_KIND}\s+)?MCP\b"
 )
 MCP_STDIO_IMPORT = re.compile(
-    r"(?m)^\s*(?:@testable\s+)?import\s+MCPStdio(?:\.|\s|$)"
+    rf"\bimport\s+(?:{SWIFT_IMPORT_KIND}\s+)?MCPStdio\b"
 )
 MCP_STDIO_TYPE_USAGE = re.compile(
     r"\b(?:Value|CallTool|ListTools|Tool|Server|Transport|StdioTransport|Initialize|"
@@ -143,6 +144,81 @@ def _copied_tree(tmp_path: Path) -> Path:
     return copy
 
 
+def _swift_code_without_comments_and_strings(source: str) -> str:
+    """Mask Swift comments and string literals while preserving code positions."""
+    masked = list(source)
+    length = len(source)
+
+    def blank(index: int) -> None:
+        if source[index] not in "\r\n":
+            masked[index] = " "
+
+    index = 0
+    while index < length:
+        if source.startswith("//", index):
+            while index < length and source[index] not in "\r\n":
+                blank(index)
+                index += 1
+            continue
+
+        if source.startswith("/*", index):
+            depth = 1
+            blank(index)
+            blank(index + 1)
+            index += 2
+            while index < length and depth:
+                if source.startswith("/*", index):
+                    blank(index)
+                    blank(index + 1)
+                    index += 2
+                    depth += 1
+                elif source.startswith("*/", index):
+                    blank(index)
+                    blank(index + 1)
+                    index += 2
+                    depth -= 1
+                else:
+                    blank(index)
+                    index += 1
+            continue
+
+        hash_count = 0
+        quote_index = index
+        while quote_index < length and source[quote_index] == "#":
+            hash_count += 1
+            quote_index += 1
+        if hash_count == 0:
+            quote_index = index
+        if quote_index < length and source[quote_index] == '"':
+            quote_length = 3 if source.startswith('"""', quote_index) else 1
+            closing = ('"' * quote_length) + ('#' * hash_count)
+            content_index = quote_index + quote_length
+            for position in range(index, content_index):
+                blank(position)
+
+            while content_index < length:
+                if source.startswith(closing, content_index):
+                    for position in range(content_index, content_index + len(closing)):
+                        blank(position)
+                    content_index += len(closing)
+                    break
+                if hash_count == 0 and source[content_index] == "\\":
+                    blank(content_index)
+                    content_index += 1
+                    if content_index < length:
+                        blank(content_index)
+                        content_index += 1
+                    continue
+                blank(content_index)
+                content_index += 1
+            index = content_index
+            continue
+
+        index += 1
+
+    return "".join(masked)
+
+
 def _validate_localocr_mcp_imports(root: Path) -> None:
     swift_files = sorted(
         path
@@ -154,9 +230,10 @@ def _validate_localocr_mcp_imports(root: Path) -> None:
     for path in swift_files:
         relative_path = path.relative_to(root).as_posix()
         source = path.read_text()
-        assert LEGACY_MCP_IMPORT.search(source) is None, relative_path
-        if MCP_STDIO_TYPE_USAGE.search(source):
-            assert MCP_STDIO_IMPORT.search(source), relative_path
+        code = _swift_code_without_comments_and_strings(source)
+        assert LEGACY_MCP_IMPORT.search(code) is None, relative_path
+        if MCP_STDIO_TYPE_USAGE.search(code):
+            assert MCP_STDIO_IMPORT.search(code), relative_path
 
 
 def test_package_uses_local_mcp_stdio() -> None:
@@ -218,6 +295,54 @@ def test_localocr_mcp_import_policy_discovers_new_nested_swift_files(tmp_path: P
         _validate_localocr_mcp_imports(copy)
 
     missing_import.write_text("import MCPStdio\nimport Testing\nlet probe: Value = .null\n")
+    _validate_localocr_mcp_imports(copy)
+
+
+def test_localocr_mcp_import_policy_rejects_every_swift_import_form(tmp_path: Path) -> None:
+    """Catches scoped imports and imports decorated with attributes or access levels."""
+    copy = _copied_tree(tmp_path)
+    probe = copy / "Sources" / "LocalOCRMCP" / "LegacyImportForms.swift"
+    forbidden_imports = (
+        "import struct MCP.Value",
+        "import class MCP.Client",
+        "import enum MCP.CallTool",
+        "import protocol MCP.Transport",
+        "import typealias MCP.ID",
+        "import let MCP.someValue",
+        "import var MCP.someVariable",
+        "import func MCP.someFunction",
+        "private import MCP",
+        "fileprivate import MCP",
+        "internal import MCP",
+        "public import MCP",
+        "package import MCP",
+        "@testable import MCP",
+        "@_exported import MCP",
+        "@preconcurrency import MCP",
+        "@_spi(Testing) import MCP",
+        "@_implementationOnly internal import MCP",
+        "@_spi(Testing) public import enum MCP.Value",
+        "@_spi(Testing)\npublic import struct\nMCP.Value",
+    )
+
+    for declaration in forbidden_imports:
+        probe.write_text(f"{declaration}\n")
+        with pytest.raises(AssertionError, match="LegacyImportForms.swift"):
+            _validate_localocr_mcp_imports(copy)
+
+    probe.write_text(
+        '''import MCPStdio
+// import MCP
+/* public import struct MCP.Value
+   /* @_spi(Testing) import MCP */
+*/
+let ordinary = "@_spi(Testing) import MCP"
+let multiline = """
+package import enum MCP.CallTool
+"""
+let raw = #"import protocol MCP.Transport"#
+'''
+    )
     _validate_localocr_mcp_imports(copy)
 
 
