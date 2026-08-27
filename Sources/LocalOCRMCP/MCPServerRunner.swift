@@ -34,9 +34,24 @@ public struct MCPServerRunner: Sendable {
 
     func run(transport: any Transport) async throws {
         let server = await makeServer()
-        try await server.start(transport: transport)
-        await server.waitUntilCompleted()
-        await server.stop()
+        try await withTaskCancellationHandler {
+            do {
+                try Task.checkCancellation()
+                try await server.start(transport: transport)
+                try Task.checkCancellation()
+                await server.waitUntilCompleted()
+                try Task.checkCancellation()
+                await server.stop()
+                try Task.checkCancellation()
+            } catch {
+                await server.stop()
+                throw error
+            }
+        } onCancel: {
+            Task {
+                await server.stop()
+            }
+        }
     }
 
     public func runStdio() async throws {

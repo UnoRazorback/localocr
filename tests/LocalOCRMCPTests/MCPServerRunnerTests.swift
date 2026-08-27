@@ -1,3 +1,5 @@
+import Foundation
+import Logging
 import MCP
 @testable import LocalOCRMCP
 import Testing
@@ -48,6 +50,53 @@ import Testing
         await client.disconnect()
         try await runnerTask.value
     }
+
+    @Test func cancellingRunnerStopsServerAndDisconnectsAnOpenClientPromptly() async throws {
+        let runner = MCPServerRunner(dispatcher: RecordingDispatcher())
+        let (clientTransport, serverTransport) = await InMemoryTransport.createConnectedPair()
+        let client = Client(name: "runner-cancellation-test-client", version: "1.0.0")
+        let runnerTask = Task {
+            try await runner.run(transport: serverTransport)
+        }
+
+        _ = try await client.connect(transport: clientTransport)
+        _ = try await client.listTools()
+
+        let safetyDisconnect = Task {
+            do {
+                try await Task.sleep(for: .seconds(1))
+            } catch {
+                return false
+            }
+            await client.disconnect()
+            return true
+        }
+
+        runnerTask.cancel()
+        let result = await runnerTask.result
+        safetyDisconnect.cancel()
+
+        #expect(await safetyDisconnect.value == false)
+        switch result {
+        case .success:
+            Issue.record("A cancelled runner must finish with CancellationError")
+        case let .failure(error):
+            #expect(error is CancellationError)
+        }
+        await #expect(throws: (any Error).self) {
+            _ = try await client.listTools()
+        }
+    }
+
+    @Test func runnerPreservesStartErrorAndDisconnectsTransport() async {
+        let transport = FailingStartTransport()
+        let runner = MCPServerRunner(dispatcher: RecordingDispatcher())
+
+        await #expect(throws: RunnerProbeError.startFailed) {
+            try await runner.run(transport: transport)
+        }
+        #expect(await transport.disconnectCount() == 1)
+    }
 }
 
 private struct ToolCall: Sendable, Equatable {
@@ -65,5 +114,36 @@ private actor RecordingDispatcher: MCPToolDispatching {
 
     func calls() -> [ToolCall] {
         recordedCalls
+    }
+}
+
+private enum RunnerProbeError: Error, Equatable {
+    case startFailed
+}
+
+private actor FailingStartTransport: Transport {
+    nonisolated let logger = Logger(label: "localocr.runner-tests.failing-start")
+    private var recordedDisconnectCount = 0
+
+    func connect() async throws {
+        throw RunnerProbeError.startFailed
+    }
+
+    func disconnect() async {
+        recordedDisconnectCount += 1
+    }
+
+    func send(_ data: Data) async throws {
+        throw RunnerProbeError.startFailed
+    }
+
+    func receive() -> AsyncThrowingStream<Data, any Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func disconnectCount() -> Int {
+        recordedDisconnectCount
     }
 }
