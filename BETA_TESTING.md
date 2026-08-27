@@ -35,6 +35,27 @@ You can cancel a running batch, retry only failed items after it completes,
 reveal the chosen output folder, or select **Start New Batch** to clear the queue.
 This candidate uses the same local-only processing boundary as Beta 1.
 
+## Next-version candidate: Local Intelligence and agent connection
+
+The current source tree adds three optional Apple Foundation Models actions to
+the single-document result: summarize, suggest a name/category/tags, and
+extract `date`, `total`, and `reference_number`. Results are temporary and
+non-destructive, while Batch remains OCR-only. This next-version candidate is
+not yet published and is not included in the Beta 1 download above.
+
+Local Intelligence requires macOS 26 or later, an eligible Mac, Apple
+Intelligence enabled, its on-device model ready, and a supported Apple
+Intelligence language. LocalOCR uses no Private Cloud Compute and has no cloud
+model fallback. The candidate also adds a Help guide and explicit
+external-provider acknowledgment before any of its nine MCP tools may open a
+document. These changes still require separate candidate, signing,
+notarization, downloaded-package, and target-Mac release gates.
+
+Development compilation and automated verification for this candidate use
+stable Xcode 26.6 (`17F113`), Swift 6.3.3, and the macOS 26.5 SDK while keeping
+the package/app deployment target at macOS 14. This is not a live Foundation
+Models result or a release-compatibility claim; those gates remain open.
+
 ## Five-minute desktop test
 
 Use a non-sensitive sample document and complete these six steps:
@@ -48,7 +69,7 @@ Use a non-sensitive sample document and complete these six steps:
 
 ## Privacy
 
-Recognition uses Apple Vision and PDFKit locally. LocalOCR does not upload documents, recognized text, filenames, paths, thumbnails, hashes, cache entries, or outputs. It provides no cloud OCR, cloud storage, HTTP MCP listener, or network MCP service. Local cache entries may be written at `~/Library/Caches/com.rayconsulting.localocr/ocr-v1`; there is no history of documents or results.
+Recognition uses Apple Vision and PDFKit locally. LocalOCR does not upload documents, recognized text, filenames, paths, thumbnails, hashes, cache entries, or outputs. It provides no cloud OCR, cloud storage, HTTP MCP listener, or network MCP service. Local cache entries may be written at `~/Library/Caches/com.rayconsulting.localocr/ocr-v1`; there is no history of documents or results. If you separately connect an MCP client, that client or its AI provider may transmit paths, text, and tool results outside your Mac; local stdio is not a provider privacy guarantee.
 
 ## Compatibility and build provenance
 
@@ -63,7 +84,8 @@ Later Apple beta builds may introduce regressions; report the exact macOS versio
 - Apple silicon only; macOS 14 or later is required.
 - No Intel, Windows, or Linux support.
 - The default desktop workflow is one document at a time. The Beta 2 batch
-  candidate has no run history, language/settings wizard, or guided MCP setup.
+  candidate has no run history or language/settings wizard. The still-later
+  next-version candidate adds an MCP Help guide, but not automatic setup.
 - MCP setup is manual and uses local stdio.
 - Beta output behavior may change; retain your original documents.
 
@@ -75,10 +97,15 @@ Use the repository [beta feedback form](https://github.com/UnoRazorback/localocr
 
 ## Advanced: MCP setup
 
-This optional path is separate from the desktop flow. The published Beta 1 app
-processes one document at a time; the Beta 2 candidate keeps that flow as the
-default and adds reviewed desktop batches. Its bundled local stdio MCP server
-exposes the six tools below, including batch PDF OCR. The installed helper is:
+This optional advanced path is separate from the desktop flow. Start with the
+desktop app unless you need agent automation. The published Beta 1 helper has
+the historical six OCR/PDF tools. The next-version candidate expands the same
+local stdio server to nine tools and requires explicit external-data consent;
+it is not yet published. Follow the [canonical MCP FAQ](docs/mcp.md#advanced-setup)
+for the complete disclosure, consent flow, tool parameters, source-build path,
+generic stdio configuration, permissions, and troubleshooting.
+
+For an app installed in `/Applications`, the bundled helper is:
 
 ```text
 /Applications/LocalOCR Studio.app/Contents/Helpers/localocr-mcp
@@ -97,7 +124,7 @@ Use `/mcp` in Codex to inspect the connected server. The Codex CLI, IDE extensio
 ### Claude Code
 
 ```bash
-claude mcp add --transport stdio localocr -- \
+claude mcp add --transport stdio --scope local localocr -- \
   "/Applications/LocalOCR Studio.app/Contents/Helpers/localocr-mcp"
 claude mcp list
 ```
@@ -115,12 +142,23 @@ Use your client's current documentation to configure this generic stdio server; 
 }
 ```
 
-The available tools are `get_pdf_page_count`, `inspect_pdf`, `ocr_pdf`, `ocr_pdf_batch`, `ocr_image`, and `make_searchable_pdf`. macOS and the MCP client continue to enforce filesystem permissions.
+The nine next-version tools are `get_pdf_page_count`, `inspect_pdf`, `ocr_pdf`,
+`ocr_pdf_batch`, `ocr_image`, `make_searchable_pdf`, `summarize_document`,
+`organize_document`, and `extract_document_fields`. The last three require
+Apple Foundation Models availability; the six OCR/PDF tools remain available
+without it. All nine require the external-data acknowledgment because the MCP
+client or provider may handle their arguments and results. macOS and the MCP
+client continue to enforce filesystem permissions. LocalOCR does not
+automatically edit either client's configuration.
 
 Safe example prompts, using fictional non-sensitive fixtures:
 
 - “Use `ocr_pdf` for `/Users/your-name/Documents/LocalOCR-Test/sample.pdf`.”
 - “Use `ocr_image` for `/Users/your-name/Documents/LocalOCR-Test/receipt.jpg`.”
 - “Use `ocr_pdf_batch` for `/Users/your-name/Documents/LocalOCR-Test/one.pdf` and `/Users/your-name/Documents/LocalOCR-Test/two.pdf`.”
+- “Use `summarize_document` for `/Users/your-name/Documents/LocalOCR-Test/letter.pdf` and return three factual bullets.”
 
-See [the complete MCP tool schema](docs/mcp.md) for parameters and results.
+Keep original documents and use non-sensitive fixtures for a first connection.
+Codex, Claude Code, and other clients control their own configuration, account
+privacy, retention, training, and provider behavior; consult their current
+authoritative documentation before sharing sensitive material.

@@ -61,6 +61,34 @@ batch is processing.
 - **Process Another Document** immediately returns to the drop/open screen
   without relaunching the app or deleting any saved output.
 
+## Local Intelligence in the next-version candidate
+
+After one document finishes OCR, the next-version candidate can use Apple
+Foundation Models to **Summarize**, **Suggest Name & Tags**, or **Extract
+Fields** (`date`, `total`, and `reference_number`). These are separate actions
+in the single-document result view. They use the recognized page text, retain
+page citations or evidence, and do not send the original PDF or image bytes to
+the model.
+
+Local Intelligence results are temporary and non-destructive. They remain in
+the current result view only until you process another document, switch
+workspaces, or close the window. LocalOCR does not rename, move, rewrite, or
+automatically save the source based on a suggestion. Copy or save anything you
+want to retain, and keep the original document because OCR and model output can
+contain errors.
+
+Batch remains OCR-only: it never invokes Local Intelligence. The three actions
+require macOS 26 or later, an eligible Mac, Apple Intelligence enabled, the
+on-device model ready, and a supported Apple Intelligence language. When any
+requirement is unavailable, the app explains the applicable state and normal
+single-document and batch OCR continue to work.
+
+This desktop use stays inside LocalOCR and Apple's on-device Foundation Models
+framework. It does not use Private Cloud Compute, a third-party model, or a
+cloud fallback. It does not require MCP consent because no external agent or
+MCP client is involved. The separate acknowledgment described below is
+required only before an MCP client can call document tools.
+
 ## Advanced CLI and MCP
 
 The Studio GUI calls the LocalOCR service directly. It does not launch either
@@ -84,9 +112,11 @@ If the app is installed elsewhere, use:
 <installed-app-path>/Contents/Helpers/localocr-mcp
 ```
 
-as the MCP client's absolute command path. See [the MCP guide](mcp.md) for its
-tools and client-configuration shape. The adjacent
-`Contents/Helpers/localocr` executable provides the command-line interface.
+as the MCP client's absolute command path. See the canonical
+[advanced MCP setup and FAQ](mcp.md#advanced-setup) for all nine tools,
+external-provider risk, consent, and current client-configuration examples.
+The adjacent `Contents/Helpers/localocr` executable provides the command-line
+interface.
 
 ## Beta status
 
@@ -98,6 +128,11 @@ expanded app to `/Applications` and open it normally. Do not use a staging
 copy or bypass Gatekeeper. The [Beta 2 candidate notes](release/v0.3.0-beta.1-notes.md)
 document the desktop batch candidate separately; they are not a download,
 signature, notarization, or acceptance record.
+
+The Local Intelligence and nine-tool consent work is also a next-version
+candidate until it independently passes its remaining build, live-model,
+signature, notarization, downloaded-package, and target-Mac release gates. No
+new version, tag, download, or publication is claimed here.
 
 ## Compatibility and build provenance
 

@@ -8,6 +8,7 @@ FILES = {
     "readme": ROOT / "README.md",
     "studio": ROOT / "docs/studio.md",
     "mcp": ROOT / "docs/mcp.md",
+    "cli": ROOT / "docs/cli.md",
 }
 
 
@@ -33,6 +34,25 @@ def test_mcp_guide_has_installed_helper_and_verified_client_commands():
     text = FILES["mcp"].read_text()
     assert "/Applications/LocalOCR Studio.app/Contents/Helpers/localocr-mcp" in text
     assert "codex mcp add localocr --" in text
-    assert "claude mcp add --transport stdio localocr --" in text
+    assert "claude mcp add --transport stdio --scope local localocr --" in text
     assert "https://learn.chatgpt.com/docs/extend/mcp" in text
     assert "https://code.claude.com/docs/en/mcp" in text
+
+
+def test_desktop_first_docs_point_to_one_canonical_advanced_setup():
+    for key in ("readme", "studio"):
+        text = FILES[key].read_text()
+        assert "docs/mcp.md#advanced-setup" in text or "mcp.md#advanced-setup" in text
+
+    beta = (ROOT / "BETA_TESTING.md").read_text()
+    assert "docs/mcp.md#advanced-setup" in beta
+
+
+def test_cli_and_mcp_docs_align_on_consent_management():
+    for command in (
+        "localocr mcp-consent status",
+        "localocr mcp-consent accept",
+        "localocr mcp-consent revoke",
+    ):
+        assert command in FILES["cli"].read_text()
+        assert command in FILES["mcp"].read_text()

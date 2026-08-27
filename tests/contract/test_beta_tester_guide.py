@@ -42,7 +42,7 @@ def test_beta_guide_contains_advanced_client_commands():
     helper = "/Applications/LocalOCR Studio.app/Contents/Helpers/localocr-mcp"
     assert helper in text
     assert "codex mcp add localocr --" in text
-    assert "claude mcp add --transport stdio localocr --" in text
+    assert "claude mcp add --transport stdio --scope local localocr --" in text
     assert "--scope user" in text
     for tool in (
         "get_pdf_page_count",
@@ -51,8 +51,19 @@ def test_beta_guide_contains_advanced_client_commands():
         "ocr_pdf_batch",
         "ocr_image",
         "make_searchable_pdf",
+        "summarize_document",
+        "organize_document",
+        "extract_document_fields",
     ):
         assert tool in text
+
+
+def test_beta_guide_keeps_desktop_first_and_links_to_the_canonical_mcp_faq():
+    text = GUIDE.read_text()
+    assert text.index("## What the desktop app does") < text.index("## Advanced: MCP setup")
+    assert "[canonical MCP FAQ](docs/mcp.md#advanced-setup)" in text
+    assert "next-version candidate" in text
+    assert "not yet published" in text
 
 
 def test_guide_and_release_notes_use_exact_candidate_identity():

@@ -15,8 +15,8 @@ Build it from source with `swift build`, run it during development with
 localocr <command> [options]
 ```
 
-Available commands are `page-count`, `inspect`, `ocr`, `batch`, `image`, and
-`searchable`. `localocr --help` (or `-h`) lists commands,
+Available commands are `page-count`, `inspect`, `ocr`, `batch`, `image`,
+`searchable`, and `mcp-consent`. `localocr --help` (or `-h`) lists commands,
 `localocr <command> --help` (or `-h`) shows command usage, and
 `localocr --version` (or `-V`) prints the version.
 
@@ -131,6 +131,31 @@ localocr searchable /path/to/document.pdf --output /path/to/document_searchable.
 The destination must be a different path from the source, its parent directory
 must exist, and LocalOCR will not overwrite an existing destination. A result
 can name an output while listing `failed_pages`; treat that output as partial.
+
+### `mcp-consent <status|accept|revoke>`
+
+Manage the external-data acknowledgment required before any `localocr-mcp`
+document tool opens a chosen file. This receipt is for agent access through
+MCP; ordinary CLI OCR and Local Intelligence inside Studio do not require it.
+
+```bash
+localocr mcp-consent status
+localocr mcp-consent accept
+localocr mcp-consent revoke
+```
+
+`status` prints `current` and exits `0` when the receipt is current, or prints
+`required` and exits `2` when acceptance is missing, invalid, revoked, or
+outdated. `accept` displays the external-provider disclosure and both approved
+acknowledgments. It requires an interactive terminal and records acceptance
+only after two `y` or `yes` answers; no flag can bypass those confirmations.
+`revoke` is noninteractive, removes authorization for subsequent MCP document
+calls, prints `revoked`, and exits `0` on success.
+
+The local consent receipt is content-free: it does not record document paths,
+recognized text, or a provider identity. Read the [canonical MCP FAQ](mcp.md)
+before enabling agent access; a local stdio connection does not guarantee that
+the client or its AI provider keeps arguments and results on this Mac.
 
 ## Output streams and exit codes
 

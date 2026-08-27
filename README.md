@@ -20,7 +20,11 @@ next desktop workflow without changing the published-download instructions.
 - Inspect a PDF's existing text layer before OCR.
 - OCR selected PDF pages or ImageIO-decodable images with Apple Vision.
 - Create a new searchable PDF with an invisible recognized-text layer.
-- Expose the same operations to MCP clients over local stdio.
+- In the next-version candidate, produce temporary, grounded summaries,
+  organization suggestions, and requested fields with Apple's on-device
+  Foundation Models framework on eligible Macs.
+- Expose nine purpose-limited document operations to MCP clients over local
+  stdio after explicit external-data acknowledgment.
 
 PDF OCR preserves pages that already have usable native text unless
 `--force-ocr` (or `force_ocr`) is selected. Original input files are never
@@ -43,6 +47,22 @@ name instead of overwriting. You can cancel, retry failed items, reveal the
 chosen output folder, or start a new batch. See [the Studio guide](docs/studio.md)
 for the full desktop flow and [the Beta 2 candidate notes](docs/release/v0.3.0-beta.1-notes.md)
 for its release boundary. MCP and CLI remain advanced, local-use interfaces.
+Start with the desktop app; configure an agent only if you need automation, and
+then follow the canonical [advanced MCP setup and FAQ](docs/mcp.md#advanced-setup).
+
+### Next-version Local Intelligence candidate
+
+For a single processed document, the current source candidate adds three
+optional actions: summarize, suggest a name/category/tags, and extract `date`,
+`total`, and `reference_number`. The results are temporary and non-destructive;
+they clear when the document/workspace/window changes and never rename or move
+the source. Desktop batch remains OCR-only.
+
+These actions require macOS 26 or later, an eligible Mac, Apple Intelligence
+enabled, its on-device model ready, and a supported Apple Intelligence
+language. LocalOCR uses no Private Cloud Compute and has no cloud model
+fallback. This work is not part of the published Beta 1 and has no new
+version, tag, signed download, notarization, or release acceptance yet.
 
 ## Quick start from source
 
@@ -124,9 +144,12 @@ prerelease notes identify the corresponding facts for an available build.
 ### Beta limitations
 
 - macOS 14 or later on Apple silicon is required.
-- OCR, recognized text, cache data, and document paths remain local; there is
-  no cloud OCR, cloud storage, or network MCP transport.
+- LocalOCR's OCR, cache, Foundation Models, and stdio-server processing remain
+  local; there is no cloud OCR, cloud storage, or network MCP transport. A
+  connected client/provider may separately transmit MCP arguments and results.
 - The MCP server uses local stdio and client configuration remains manual.
+- The published Beta 1 helper has the historical six OCR/PDF tools. The
+  nine-tool external-consent work remains an unpublished next-version candidate.
 - Windows, Linux, and Intel Macs are not supported.
 - Beta behavior and file-format results may change; keep original documents
   and report substantive issues through the feedback URL in the published
@@ -147,7 +170,8 @@ program will consume the result. See [the full CLI reference](docs/cli.md).
 
 ## MCP server
 
-`localocr-mcp` exposes the following local tools:
+The next-version `localocr-mcp` source candidate exposes the following local
+tools after the current external-data acknowledgment is accepted:
 
 | Tool | Purpose |
 | --- | --- |
@@ -157,10 +181,16 @@ program will consume the result. See [the full CLI reference](docs/cli.md).
 | `ocr_pdf_batch` | OCR several PDFs without one failure stopping the batch. |
 | `ocr_image` | OCR one ImageIO-decodable image. |
 | `make_searchable_pdf` | Create a new PDF with an invisible searchable-text layer. |
+| `summarize_document` | Produce a grounded summary with page citations using on-device Local Intelligence. |
+| `organize_document` | Suggest a grounded title, category, and tags without changing the source. |
+| `extract_document_fields` | Extract only requested named fields with optional page evidence. |
 
-Read [manual MCP setup and tool parameters](docs/mcp.md) before configuring a
-client. The server reads only the local paths a client supplies and has no
-HTTP listener or network transport.
+Read the canonical [advanced MCP setup and FAQ](docs/mcp.md#advanced-setup)
+before configuring a client. The server reads only the local paths a client
+supplies and has no HTTP listener or network transport. LocalOCR itself makes
+no network request, but a connected MCP client or its AI provider may transmit
+paths, document text, and tool results outside the Mac; review that product's
+current privacy and retention terms before accepting.
 
 ## Testing
 
@@ -182,7 +212,8 @@ PyMuPDF, Homebrew, or a network service at runtime.
 LocalOCR currently targets local, on-device PDF and image OCR. It does not
 provide cloud OCR, cloud document storage, automatic client configuration, or
 cross-platform support. Beta 1 remains the current published release. The
-implemented desktop-batch Beta 2 candidate is unpublished and still requires
-fresh post-fix verification. Continue collecting desktop and advanced-MCP
+implemented desktop-batch Beta 2 candidate and the newer Local Intelligence,
+consent, and nine-tool work are unpublished and still require fresh
+candidate/release verification. Continue collecting desktop and advanced-MCP
 feedback as input to later product decisions while preserving local-only
 behavior.
