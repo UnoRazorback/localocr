@@ -41,17 +41,13 @@ LOCALOCR_MCP_SWIFT_ROOTS = (
     Path("Sources/LocalOCRMCP"),
     Path("tests/LocalOCRMCPTests"),
 )
-SWIFT_IMPORT_KIND = r"(?:typealias|struct|class|enum|protocol|let|var|func|macro)"
-LEGACY_MCP_IMPORT = re.compile(
-    rf"\bimport\s+(?:{SWIFT_IMPORT_KIND}\s+)?MCP\b"
-)
-MCP_STDIO_IMPORT = re.compile(
-    rf"\bimport\s+(?:{SWIFT_IMPORT_KIND}\s+)?MCPStdio\b"
+SWIFT_IMPORT_DECL = re.compile(
+    r'(?m)^\s*\(import_decl\b[^\n]*\bmodule="([^"]+)"'
 )
 MCP_STDIO_TYPE_USAGE = re.compile(
-    r"\b(?:Value|CallTool|ListTools|Tool|Server|Transport|StdioTransport|Initialize|"
-    r"InitializedNotification|CancelledNotification|MCPError|Ping|Metadata|ID)\b|"
-    r"\b(?:Message|Request|Response)\s*<"
+    r'\b(?:id|name|inherits)="(?:Value|CallTool|ListTools|Tool|Server|Transport|'
+    r'StdioTransport|Initialize|InitializedNotification|CancelledNotification|MCPError|'
+    r'Ping|Metadata|ID|Message|Request|Response)"'
 )
 
 
@@ -144,79 +140,35 @@ def _copied_tree(tmp_path: Path) -> Path:
     return copy
 
 
-def _swift_code_without_comments_and_strings(source: str) -> str:
-    """Mask Swift comments and string literals while preserving code positions."""
-    masked = list(source)
-    length = len(source)
+def _swift_parse_tree(source: str) -> str:
+    try:
+        result = subprocess.run(
+            ["swiftc", "-frontend", "-dump-parse", "-enable-bare-slash-regex", "-"],
+            input=source,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as error:
+        raise AssertionError("Swift parser is unavailable") from error
 
-    def blank(index: int) -> None:
-        if source[index] not in "\r\n":
-            masked[index] = " "
+    if result.returncode != 0:
+        raise AssertionError("Swift parser failed")
+    if not result.stdout.lstrip().startswith('(source_file "<stdin>"'):
+        raise AssertionError("Swift parser returned an unrecognized parse tree")
+    return result.stdout
 
-    index = 0
-    while index < length:
-        if source.startswith("//", index):
-            while index < length and source[index] not in "\r\n":
-                blank(index)
-                index += 1
-            continue
 
-        if source.startswith("/*", index):
-            depth = 1
-            blank(index)
-            blank(index + 1)
-            index += 2
-            while index < length and depth:
-                if source.startswith("/*", index):
-                    blank(index)
-                    blank(index + 1)
-                    index += 2
-                    depth += 1
-                elif source.startswith("*/", index):
-                    blank(index)
-                    blank(index + 1)
-                    index += 2
-                    depth -= 1
-                else:
-                    blank(index)
-                    index += 1
-            continue
+def _swift_imported_modules_from_parse_tree(parse_tree: str) -> tuple[str, ...]:
+    import_nodes = re.findall(r"(?m)^\s*\(import_decl\b", parse_tree)
+    modules = tuple(SWIFT_IMPORT_DECL.findall(parse_tree))
+    if len(modules) != len(import_nodes):
+        raise AssertionError("Swift parser returned an unrecognized import declaration")
+    return modules
 
-        hash_count = 0
-        quote_index = index
-        while quote_index < length and source[quote_index] == "#":
-            hash_count += 1
-            quote_index += 1
-        if hash_count == 0:
-            quote_index = index
-        if quote_index < length and source[quote_index] == '"':
-            quote_length = 3 if source.startswith('"""', quote_index) else 1
-            closing = ('"' * quote_length) + ('#' * hash_count)
-            content_index = quote_index + quote_length
-            for position in range(index, content_index):
-                blank(position)
 
-            while content_index < length:
-                if source.startswith(closing, content_index):
-                    for position in range(content_index, content_index + len(closing)):
-                        blank(position)
-                    content_index += len(closing)
-                    break
-                if hash_count == 0 and source[content_index] == "\\":
-                    blank(content_index)
-                    content_index += 1
-                    if content_index < length:
-                        blank(content_index)
-                        content_index += 1
-                    continue
-                blank(content_index)
-                content_index += 1
-            index = content_index
-            continue
-
-        index += 1
-
-    return "".join(masked)
+def _swift_imported_modules(source: str) -> tuple[str, ...]:
+    return _swift_imported_modules_from_parse_tree(_swift_parse_tree(source))
 
 
 def _validate_localocr_mcp_imports(root: Path) -> None:
@@ -230,10 +182,12 @@ def _validate_localocr_mcp_imports(root: Path) -> None:
     for path in swift_files:
         relative_path = path.relative_to(root).as_posix()
         source = path.read_text()
-        code = _swift_code_without_comments_and_strings(source)
-        assert LEGACY_MCP_IMPORT.search(code) is None, relative_path
-        if MCP_STDIO_TYPE_USAGE.search(code):
-            assert MCP_STDIO_IMPORT.search(code), relative_path
+        parse_tree = _swift_parse_tree(source)
+        imported_modules = _swift_imported_modules_from_parse_tree(parse_tree)
+        module_roots = {module.partition(".")[0] for module in imported_modules}
+        assert "MCP" not in module_roots, relative_path
+        if MCP_STDIO_TYPE_USAGE.search(parse_tree):
+            assert "MCPStdio" in module_roots, relative_path
 
 
 def test_package_uses_local_mcp_stdio() -> None:
@@ -344,6 +298,51 @@ let raw = #"import protocol MCP.Transport"#
 '''
     )
     _validate_localocr_mcp_imports(copy)
+
+
+def test_localocr_mcp_import_policy_defers_regex_literals_to_swift_parser(tmp_path: Path) -> None:
+    """Allows import-like regex text but rejects a real import after regex comment tokens."""
+    copy = _copied_tree(tmp_path)
+    probe = copy / "Sources" / "LocalOCRMCP" / "RegexImportLookalikes.swift"
+    probe.write_text(
+        "let bare = /import MCP/\n"
+        "let raw = #/import MCP/#\n"
+        "let commentTokens = #/a/*b/#\n"
+    )
+    _validate_localocr_mcp_imports(copy)
+
+    probe.write_text(
+        "let commentTokens = #/a/*b/#\n"
+        "import MCP\n"
+    )
+    with pytest.raises(AssertionError, match="RegexImportLookalikes.swift"):
+        _validate_localocr_mcp_imports(copy)
+
+
+def test_swift_import_parser_is_available_and_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Makes parser absence or a nonzero parse result a hard contract failure."""
+    assert shutil.which("swiftc") is not None
+
+    def unavailable(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("swiftc")
+
+    monkeypatch.setattr(subprocess, "run", unavailable)
+    with pytest.raises(AssertionError, match="Swift parser is unavailable"):
+        _swift_imported_modules("import MCP\n")
+
+    def parse_failure(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="parse failed")
+
+    monkeypatch.setattr(subprocess, "run", parse_failure)
+    with pytest.raises(AssertionError, match="Swift parser failed"):
+        _swift_imported_modules("import MCP\n")
+
+    def invalid_tree(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="unexpected", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", invalid_tree)
+    with pytest.raises(AssertionError, match="unrecognized parse tree"):
+        _swift_imported_modules("import MCP\n")
 
 
 def test_manifest_is_closed_and_pinned() -> None:

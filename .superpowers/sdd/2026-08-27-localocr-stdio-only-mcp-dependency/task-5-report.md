@@ -76,25 +76,45 @@ cancellation, non-clean EOF, lifecycle double cleanup, and diagnostic stdout.
 
 - Review found that the first recursive contract's anchored regex did not
   recognize Swift's scoped declaration imports or imports preceded by general
-  attributes and access modifiers. The validator now masks nested block and
-  line comments plus ordinary, multiline, and raw Swift strings, then matches
-  the import declaration core: `import`, an optional Swift declaration kind,
-  and the exact module token. This rejects direct or scoped `MCP` imports with
-  any preceding attribute/access combination without confusing `MCPStdio` or
-  source-like text in comments and strings.
+  attributes and access modifiers. The round-2 validator masked nested block
+  and line comments plus ordinary, multiline, and raw Swift strings, then
+  matched the import declaration core: `import`, an optional Swift declaration
+  kind, and the exact module token.
 - The adversarial matrix covers all scoped declaration kinds, every applicable
   Swift import access level, `@testable`, `@_exported`, `@preconcurrency`,
   `@_spi`, and `@_implementationOnly`, plus attribute/access/scoped and
   multiline combinations. Nested comments and ordinary, multiline, and raw
   string lookalikes are accepted as non-code.
 
+## Fix round 3
+
+- Review found the hand lexer was incomplete for Swift bare and raw regex
+  literals: `/import MCP/` and `#/import MCP/#` could be false positives, while
+  the `/*` inside `#/a/*b/#` could mask a following real import. The hand lexer
+  has been removed from migration import detection.
+- Each discovered Swift source is now parsed through the local compiler with
+  `swiftc -frontend -dump-parse -enable-bare-slash-regex -`. This parsing-only
+  surface reads stdin and requires no imported module resolution. The contract
+  extracts every `import_decl`, compares the extracted count with the parser's
+  import-node count, and checks the exact module root. Parser absence, nonzero
+  exit, an unrecognized parse tree, or an unrecognized import declaration all
+  fail closed. MCP-type-use detection also reads parser identifiers rather than
+  lexing comments, strings, or regex literals.
+- Adversarial coverage accepts `/import MCP/`, `#/import MCP/#`, and
+  `#/a/*b/#`, then rejects a real `import MCP` following that last raw regex.
+  The prior comment/string and complete import-form matrix remains green.
+
 ## Verification
 
 - `.venv/bin/python -m pytest tests/contract/test_mcp_stdio_vendor.py -q -k import_policy_rejects_every_swift_import_form`:
   initially failed on `import struct MCP.Value`, then **1 passed** after the
   lexical matcher change.
+- `.venv/bin/python -m pytest tests/contract/test_mcp_stdio_vendor.py -q -k 'localocr_mcp_import_policy or swift_import_parser_is_available'`:
+  initially exposed the regex false positive and missing parser helper, then
+  **4 passed** with parser availability, nonzero failure, and parse-tree-shape
+  failures verified fail-closed.
 - `.venv/bin/python -m pytest tests/contract/test_mcp_stdio_vendor.py -q`:
-  **41 passed**; five pre-existing SWIG deprecation warnings.
+  **43 passed**; five pre-existing SWIG deprecation warnings.
 - `swift test --filter ProtocolTypesTests`: **8 passed**.
 - `swift test --filter StdioTransportTests`: **18 passed**.
 - `swift test --filter ServerTests`: **22 passed**.
