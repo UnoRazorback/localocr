@@ -64,6 +64,13 @@ validate_canonical_system_install_name() {
 validate_install_name() {
     local install_name="${1:-}"
 
+    case "$install_name" in
+        /System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork|\
+        /System/Library/Frameworks/Network.framework/Versions/A/Network)
+            echo "network framework dependency is forbidden in local-only candidate: $install_name" >&2
+            return 1
+            ;;
+    esac
     if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
         return 0
     fi

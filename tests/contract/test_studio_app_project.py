@@ -97,6 +97,57 @@ def _assert_fragments_in_order(source: str, fragments: tuple[str, ...]) -> None:
         cursor = position + len(fragment)
 
 
+FOUNDATION_MODELS_SYMBOLS = (
+    "import FoundationModels",
+    "FoundationModelsIntelligenceProvider",
+    "SystemLanguageModel",
+    "LanguageModelSession",
+    "GenerationOptions",
+    "@Generable",
+    "@Guide",
+)
+
+
+def _assert_foundation_models_references_are_compile_guarded(
+    source: str,
+    source_name: str,
+) -> None:
+    conditional_stack: list[str] = []
+    active_foundation_guards = 0
+
+    for line_number, line in enumerate(source.splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith("#if canImport(FoundationModels)"):
+            conditional_stack.append("foundation-positive")
+            active_foundation_guards += 1
+            continue
+        if stripped.startswith("#if"):
+            conditional_stack.append("other")
+            continue
+        if stripped.startswith(("#else", "#elseif")):
+            if conditional_stack and conditional_stack[-1] == "foundation-positive":
+                conditional_stack[-1] = "foundation-negative"
+                active_foundation_guards -= 1
+            continue
+        if stripped.startswith("#endif"):
+            assert conditional_stack, f"unmatched #endif in {source_name}:{line_number}"
+            if conditional_stack.pop() == "foundation-positive":
+                active_foundation_guards -= 1
+            continue
+        if stripped.startswith("//"):
+            continue
+        referenced = [symbol for symbol in FOUNDATION_MODELS_SYMBOLS if symbol in line]
+        assert not referenced or active_foundation_guards > 0, (
+            f"unguarded Foundation Models reference in {source_name}:{line_number}: {referenced}"
+        )
+
+    assert not conditional_stack, f"unterminated compile condition in {source_name}"
+
+
+def _available_block_body(source: str, availability: str) -> str:
+    return _swift_function_body(source, f"if #available({availability}, *)")
+
+
 def test_result_screen_has_a_visible_process_another_reset_action() -> None:
     root_view = _read(ROOT_VIEW)
     result_view = _read(RESULT_VIEW)
@@ -184,14 +235,37 @@ def test_foundation_models_symbols_are_compile_and_availability_guarded() -> Non
     provider = _read(INTELLIGENCE_PROVIDER)
     generated_types = _read(INTELLIGENCE_GENERATED_TYPES)
     mcp_entry = _read(MCP_ENTRY_POINT)
+    app_entry = _read(APP_ENTRY_POINT)
 
-    for source in (provider, generated_types):
-        assert source.startswith("#if canImport(FoundationModels)") or (
-            "#if canImport(FoundationModels)\nimport FoundationModels" in source
-        )
-        assert "@available(macOS 26.0, *)" in source
-    assert "#if canImport(FoundationModels)" in mcp_entry
-    assert "if #available(macOS 26.0, *)" in mcp_entry
+    guarded_sources = {
+        str(INTELLIGENCE_PROVIDER): provider,
+        str(INTELLIGENCE_GENERATED_TYPES): generated_types,
+        str(MCP_ENTRY_POINT): mcp_entry,
+        str(APP_ENTRY_POINT): app_entry,
+    }
+    for source_name, source in guarded_sources.items():
+        _assert_foundation_models_references_are_compile_guarded(source, source_name)
+
+    assert "@available(macOS 26.0, *)" in provider
+    assert "@available(macOS 26.0, *)" in generated_types
+    for entry_source in (mcp_entry, app_entry):
+        available_body = _available_block_body(entry_source, "macOS 26.0")
+        assert "FoundationModelsIntelligenceProvider()" in available_body
+
+
+def test_foundation_models_guard_contract_rejects_appended_unguarded_symbols() -> None:
+    for source_path in (
+        INTELLIGENCE_PROVIDER,
+        INTELLIGENCE_GENERATED_TYPES,
+        MCP_ENTRY_POINT,
+        APP_ENTRY_POINT,
+    ):
+        malicious = _read(source_path) + "\nlet leaked = FoundationModelsIntelligenceProvider()\n"
+        with pytest.raises(AssertionError, match="unguarded Foundation Models reference"):
+            _assert_foundation_models_references_are_compile_guarded(
+                malicious,
+                str(source_path),
+            )
 
 
 def test_shipping_sources_do_not_import_network_frameworks() -> None:

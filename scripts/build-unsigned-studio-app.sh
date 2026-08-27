@@ -21,11 +21,30 @@ studio_output_candidate=""
 studio_output_candidate_identity=""
 studio_output_root_identity=""
 
+validate_no_network_framework_dependency() {
+    local binary="$1"
+    local dependency
+
+    while IFS= read -r dependency; do
+        case "$dependency" in
+            /System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork|\
+            /System/Library/Frameworks/Network.framework/Versions/A/Network)
+                echo "network framework dependency is forbidden in local-only candidate: $binary: $dependency" >&2
+                return 1
+                ;;
+        esac
+    done < <(
+        /usr/bin/otool -L "$binary" |
+            /usr/bin/awk 'NR > 1 { sub(/^[[:space:]]+/, ""); print $1 }'
+    )
+}
+
 validate_local_intelligence_candidate_binary() {
     local binary="$1"
     local minimum_macos
 
     release_validate_binary_policy "$binary" true true || return 1
+    validate_no_network_framework_dependency "$binary" || return 1
     minimum_macos="$(release_binary_minimum_macos "$binary")" || return 1
     [[ "$minimum_macos" == "$studio_minimum_os" ]] || {
         echo "Local Intelligence Studio candidate must target macOS $studio_minimum_os exactly: found $minimum_macos" >&2

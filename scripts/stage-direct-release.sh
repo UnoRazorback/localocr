@@ -24,15 +24,13 @@ validate_arm64_architecture() {
 
 validate_minimum_macos() {
     local version="${1:-}"
-    local major
 
     [[ "$version" =~ ^[0-9]+([.][0-9]+){1,2}$ ]] || {
         echo "invalid minimum macOS version: $version" >&2
         return 1
     }
-    major="${version%%.*}"
-    [[ "$major" -ge 14 ]] || {
-        echo "release binaries must require macOS 14 or later" >&2
+    [[ "$version" == "14.0" ]] || {
+        echo "Local Intelligence release binaries must target macOS 14.0 exactly" >&2
         return 1
     }
 }
@@ -227,6 +225,13 @@ validate_canonical_system_install_name() {
 validate_install_name() {
     local install_name="${1:-}"
 
+    case "$install_name" in
+        /System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork|\
+        /System/Library/Frameworks/Network.framework/Versions/A/Network)
+            echo "network framework dependency is forbidden in local-only candidate: $install_name" >&2
+            return 1
+            ;;
+    esac
     if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
         return 0
     fi
@@ -639,6 +644,10 @@ case "${1:-}" in
     --test-minimum-macos)
         [[ "$#" -eq 2 ]] || exit 2
         validate_minimum_macos "$2"
+        ;;
+    --test-install-name)
+        [[ "$#" -eq 2 ]] || exit 2
+        validate_install_name "$2"
         ;;
     --test-cleanup-safety)
         [[ "$#" -eq 3 ]] || exit 2

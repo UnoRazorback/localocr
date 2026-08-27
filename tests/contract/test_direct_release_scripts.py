@@ -3125,14 +3125,32 @@ exit 64
     assert not list(dist.glob(".localocr-cleanup.*"))
 
 
-def test_verifier_requires_arm64_and_exact_macos_14_target() -> None:
-    _assert_script_test_accepts("verify", "--test-architecture", "arm64")
+@pytest.mark.parametrize("script", ("stage", "verify"))
+def test_release_candidate_requires_arm64_and_exact_macos_14_target(script: str) -> None:
+    _assert_script_test_accepts(script, "--test-architecture", "arm64")
     for architecture in ("x86_64", "arm64 x86_64"):
-        _assert_script_test_rejects("verify", "--test-architecture", architecture)
+        _assert_script_test_rejects(script, "--test-architecture", architecture)
 
-    _assert_script_test_accepts("verify", "--test-minimum-macos", "14.0")
+    _assert_script_test_accepts(script, "--test-minimum-macos", "14.0")
     for minimum_version in ("14.6", "15.0", "13.6", "10.15", ""):
-        _assert_script_test_rejects("verify", "--test-minimum-macos", minimum_version)
+        _assert_script_test_rejects(script, "--test-minimum-macos", minimum_version)
+
+
+@pytest.mark.parametrize("script", ("stage", "verify"))
+@pytest.mark.parametrize(
+    "install_name",
+    (
+        "/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork",
+        "/System/Library/Frameworks/Network.framework/Versions/A/Network",
+    ),
+)
+def test_release_candidate_rejects_network_frameworks(
+    script: str,
+    install_name: str,
+) -> None:
+    result = _run_script_test(script, "--test-install-name", install_name)
+    assert result.returncode != 0, result.stdout
+    assert "network framework dependency is forbidden" in result.stderr
 
 
 def test_candidate_build_scripts_apply_local_intelligence_binary_policy() -> None:
@@ -3144,6 +3162,7 @@ def test_candidate_build_scripts_apply_local_intelligence_binary_policy() -> Non
     assert "validate_local_intelligence_candidate_binary" in studio
     for script in (native, studio):
         assert "release_validate_binary_policy" in script
+        assert "validate_no_network_framework_dependency" in script
         assert "-framework Network" not in script
         assert "-framework CFNetwork" not in script
 

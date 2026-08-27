@@ -18,6 +18,10 @@ VERSION = "0.3.0"
 SYSTEM_LIBRARY_PREFIXES = ("/System/Library/", "/usr/lib/")
 COMPATIBILITY_SPAN_INSTALL_NAME = "@rpath/libswiftCompatibilitySpan.dylib"
 SYSTEM_SWIFT_RPATH = "/usr/lib/swift"
+FORBIDDEN_NETWORK_INSTALL_NAMES = {
+    "/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork",
+    "/System/Library/Frameworks/Network.framework/Versions/A/Network",
+}
 FORBIDDEN_RUNTIME_STRING_FRAGMENTS = (
     ".venv",
     "python",
@@ -76,14 +80,33 @@ def _minimum_macos(otool_output: str) -> str:
     raise AssertionError("LC_BUILD_VERSION minos was not found")
 
 
+def _is_canonical_system_install_name(install_name: str) -> bool:
+    relative_path = ""
+    for prefix in SYSTEM_LIBRARY_PREFIXES:
+        if install_name.startswith(prefix):
+            relative_path = install_name.removeprefix(prefix)
+            break
+    if not relative_path or "//" in install_name or install_name.endswith("/"):
+        return False
+    return all(component not in {"", ".", ".."} for component in relative_path.split("/"))
+
+
 def _assert_allowed_install_names(install_names: list[str]) -> None:
     unexpected = [
         install_name
         for install_name in install_names
-        if not install_name.startswith(SYSTEM_LIBRARY_PREFIXES)
+        if not _is_canonical_system_install_name(install_name)
         and install_name != COMPATIBILITY_SPAN_INSTALL_NAME
     ]
     assert not unexpected, f"unapproved dylib install names: {unexpected}"
+    network_libraries = [
+        install_name
+        for install_name in install_names
+        if install_name in FORBIDDEN_NETWORK_INSTALL_NAMES
+    ]
+    assert not network_libraries, (
+        f"network libraries are forbidden in local-only release artifacts: {network_libraries}"
+    )
 
 
 def _assert_allowed_rpaths(rpaths: list[str]) -> None:
@@ -204,6 +227,9 @@ def test_release_artifact_policy_rejects_malicious_load_paths_and_rpaths() -> No
     malicious_dependencies = """\
 /tmp/evil.dylib (compatibility version 1.0.0, current version 1.0.0)
 @rpath/third-party.dylib (compatibility version 1.0.0, current version 1.0.0)
+/usr/lib/../tmp/evil.dylib (compatibility version 1.0.0, current version 1.0.0)
+/System/Library/Frameworks/../PrivateFrameworks/Evil.framework/Evil (compatibility version 1.0.0, current version 1.0.0)
+/usr/lib//evil.dylib (compatibility version 1.0.0, current version 1.0.0)
 """
     malicious_rpaths = """\
 Load command 20
@@ -221,8 +247,19 @@ Load command 21
     except AssertionError as error:
         assert "/tmp/evil.dylib" in str(error)
         assert "@rpath/third-party.dylib" in str(error)
+        assert "/usr/lib/../tmp/evil.dylib" in str(error)
+        assert "/System/Library/Frameworks/../PrivateFrameworks" in str(error)
+        assert "/usr/lib//evil.dylib" in str(error)
     else:
         raise AssertionError("malicious dylib paths were accepted")
+
+    for network_library in FORBIDDEN_NETWORK_INSTALL_NAMES:
+        try:
+            _assert_allowed_install_names([network_library])
+        except AssertionError as error:
+            assert "network libraries are forbidden" in str(error)
+        else:
+            raise AssertionError(f"network library was accepted: {network_library}")
 
     try:
         _assert_allowed_rpaths(_rpaths(malicious_rpaths))
