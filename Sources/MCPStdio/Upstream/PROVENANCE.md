@@ -24,6 +24,10 @@ listed in `manifest.json`; unlisted source is rejected by contract tests.
 This initial boundary intentionally contains only the local `MCPStdioBuild`
 identity. Later reviewed tasks add each selected upstream source with its
 origin, upstream SHA-256, local SHA-256, and an adaptation record when changed.
+`origin-inventory.json` is the checked-in complete `Sources/MCP` Swift-source
+inventory and SHA-256 record for this exact upstream snapshot. Contract tests
+validate derived origins and upstream hashes against that inventory, so normal
+CI does not need the upstream checkout.
 
 ## Exclusions
 

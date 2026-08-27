@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -16,10 +17,48 @@ MANIFEST = VENDOR / "Upstream" / "manifest.json"
 LICENSE = VENDOR / "Upstream" / "LICENSE"
 PROVENANCE = VENDOR / "Upstream" / "PROVENANCE.md"
 UPSTREAM_COMMIT = "a0ae212ebf6eab5f754c3129608bc5557637e605"
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+FORBIDDEN_SOURCE_PATH = re.compile(
+    r"(?:^|/)(?:Client|Authorization|[^/]*(?:HTTP|OAuth|EventSource|Network|Socket)[^/]*)(?:/|\.swift$)"
+)
+FORBIDDEN_SOURCE_CONTENT = (
+    re.compile(r"(?m)^\s*import\s+(?:CFNetwork|Network)\b"),
+    re.compile(r"\b(?:URLSession|URLRequest|URLResponse|HTTPURLResponse|EventSource)\b"),
+    re.compile(r"\bOAuth[A-Za-z0-9_]*\b"),
+    re.compile(r"\bHTTP[A-Za-z0-9_]*\b"),
+    re.compile(r"\b(?:NWConnection|NWListener|NWTCPConnection|CFNetwork)\b"),
+    re.compile(r"\b(?:socket|Socket)[A-Za-z0-9_]*\b"),
+    re.compile(r"\b(?:actor|class|struct|enum)\s+Client\b"),
+)
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and SHA256_PATTERN.fullmatch(value) is not None
+
+
+def _origin_hashes(vendor: Path) -> dict[str, str]:
+    inventory = vendor / "Upstream" / "origin-inventory.json"
+    assert inventory.is_file()
+    data = json.loads(inventory.read_text())
+    assert data["schema_version"] == 1
+    assert data["upstream"] == {
+        "repository": "https://github.com/modelcontextprotocol/swift-sdk",
+        "release": "0.12.1",
+        "commit": UPSTREAM_COMMIT,
+    }
+    entries = {entry["path"]: entry["sha256"] for entry in data["files"]}
+    assert len(entries) == len(data["files"])
+    for path, sha256 in entries.items():
+        assert path.startswith("Sources/MCP/")
+        assert path.endswith(".swift")
+        assert Path(path).as_posix() == path
+        assert ".." not in Path(path).parts
+        assert _is_sha256(sha256)
+    return entries
 
 
 def _validate_vendor(root: Path) -> None:
@@ -35,6 +74,7 @@ def _validate_vendor(root: Path) -> None:
     assert data["upstream"]["hash_command"] == "shasum -a 256 <file>"
     assert isinstance(data["upstream"]["selection_rule"], str)
     assert isinstance(data["upstream"]["exclusions"], list)
+    origin_hashes = _origin_hashes(vendor)
 
     actual = {path.relative_to(vendor).as_posix() for path in vendor.rglob("*.swift")}
     entries = {entry["path"]: entry for entry in data["files"]}
@@ -46,22 +86,21 @@ def _validate_vendor(root: Path) -> None:
         local_path = vendor / path
         assert local_path.is_file()
         assert entry["local_sha256"] == _sha256(local_path)
-        assert len(entry["local_sha256"]) == 64
-        assert entry["local_sha256"].islower()
-        assert entry["local_sha256"].isalnum()
+        assert _is_sha256(entry["local_sha256"])
 
-        if entry.get("local_only"):
+        if "local_only" in entry:
+            assert entry["local_only"] is True
             assert set(entry) == {"path", "local_only", "local_sha256"}
             continue
 
-        assert entry.get("local_only") is not True
         origin = entry["origin"]
-        assert origin.startswith("Sources/MCP/")
+        assert origin in origin_hashes
         assert ".." not in Path(origin).parts
+        assert origin.endswith(".swift")
+        assert Path(origin).as_posix() == origin
         upstream_hash = entry["upstream_sha256"]
-        assert len(upstream_hash) == 64
-        assert upstream_hash.islower()
-        assert upstream_hash.isalnum()
+        assert _is_sha256(upstream_hash)
+        assert upstream_hash == origin_hashes[origin]
         if entry["local_sha256"] != upstream_hash:
             assert path in adaptations
             assert adaptations[path]["reason"].strip()
@@ -70,8 +109,10 @@ def _validate_vendor(root: Path) -> None:
     assert (vendor / "Upstream" / "LICENSE").is_file()
     assert (vendor / "Upstream" / "PROVENANCE.md").is_file()
 
-    forbidden = {"HTTPClientTransport.swift", "NetworkTransport.swift"}
-    assert not (forbidden & actual)
+    for path in actual:
+        assert FORBIDDEN_SOURCE_PATH.search(path) is None
+        source = (vendor / path).read_text()
+        assert not any(pattern.search(source) for pattern in FORBIDDEN_SOURCE_CONTENT)
 
 
 def _copied_tree(tmp_path: Path) -> Path:
@@ -92,6 +133,26 @@ def test_package_uses_local_mcp_stdio() -> None:
 def test_manifest_is_closed_and_pinned() -> None:
     """Catches a source added outside the reviewed, pinned manifest."""
     _validate_vendor(ROOT)
+
+
+def test_origin_inventory_is_pinned_and_hashed() -> None:
+    """Catches a missing deterministic origin inventory for derived Swift source."""
+    inventory_path = VENDOR / "Upstream" / "origin-inventory.json"
+    assert inventory_path.is_file()
+    inventory = json.loads(inventory_path.read_text())
+    assert inventory["upstream"]["commit"] == UPSTREAM_COMMIT
+    assert any(entry["path"] == "Sources/MCP/Base/ID.swift" for entry in inventory["files"])
+
+
+def test_origin_inventory_rejects_non_hex_hash(tmp_path: Path) -> None:
+    """Catches a 64-character inventory value outside lowercase hexadecimal."""
+    copy = _copied_tree(tmp_path)
+    inventory_path = copy / "Sources" / "MCPStdio" / "Upstream" / "origin-inventory.json"
+    inventory = json.loads(inventory_path.read_text())
+    inventory["files"][0]["sha256"] = "g" * 64
+    inventory_path.write_text(json.dumps(inventory))
+    with pytest.raises(AssertionError):
+        _validate_vendor(copy)
 
 
 def test_manifest_rejects_duplicate_source_entries(tmp_path: Path) -> None:
@@ -125,7 +186,42 @@ def test_manifest_rejects_malformed_hashes_and_invalid_origins(tmp_path: Path) -
     copy = _copied_tree(tmp_path)
     manifest = copy / "Sources" / "MCPStdio" / "Upstream" / "manifest.json"
     data = json.loads(manifest.read_text())
-    data["files"][0]["local_sha256"] = "not-a-sha256"
+    data["files"][0]["local_sha256"] = "g" * 64
+    manifest.write_text(json.dumps(data))
+    with pytest.raises(AssertionError):
+        _validate_vendor(copy)
+
+    data = json.loads(MANIFEST.read_text())
+    derived = copy / "Sources" / "MCPStdio" / "Derived.swift"
+    derived.write_text("public enum Derived {}\n")
+    data["files"].append(
+        {
+            "path": "Derived.swift",
+            "origin": "Sources/MCP/Base",
+            "upstream_sha256": "a" * 64,
+            "local_sha256": _sha256(derived),
+        }
+    )
+    manifest.write_text(json.dumps(data))
+    with pytest.raises(AssertionError):
+        _validate_vendor(copy)
+
+
+def test_manifest_rejects_unknown_pinned_origin(tmp_path: Path) -> None:
+    """Catches a plausible-looking origin absent from the pinned source inventory."""
+    copy = _copied_tree(tmp_path)
+    manifest = copy / "Sources" / "MCPStdio" / "Upstream" / "manifest.json"
+    data = json.loads(manifest.read_text())
+    derived = copy / "Sources" / "MCPStdio" / "Derived.swift"
+    derived.write_text("public enum Derived {}\n")
+    data["files"].append(
+        {
+            "path": "Derived.swift",
+            "origin": "Sources/MCP/Base/NotInPinnedSnapshot.swift",
+            "upstream_sha256": "a" * 64,
+            "local_sha256": _sha256(derived),
+        }
+    )
     manifest.write_text(json.dumps(data))
     with pytest.raises(AssertionError):
         _validate_vendor(copy)
@@ -146,6 +242,47 @@ def test_manifest_rejects_malformed_hashes_and_invalid_origins(tmp_path: Path) -
         _validate_vendor(copy)
 
 
+def test_manifest_rejects_non_normalized_origin(tmp_path: Path) -> None:
+    """Catches a traversing origin even when it resolves to an upstream source."""
+    copy = _copied_tree(tmp_path)
+    manifest = copy / "Sources" / "MCPStdio" / "Upstream" / "manifest.json"
+    data = json.loads(manifest.read_text())
+    derived = copy / "Sources" / "MCPStdio" / "Derived.swift"
+    derived.write_text("public enum Derived {}\n")
+    data["files"].append(
+        {
+            "path": "Derived.swift",
+            "origin": "Sources/MCP/Base/../Base/ID.swift",
+            "upstream_sha256": "519d7804eabbf14299b8f067374bf714aa03303b711d2c4423e0078e8e4ee4da",
+            "local_sha256": _sha256(derived),
+        }
+    )
+    manifest.write_text(json.dumps(data))
+    with pytest.raises(AssertionError):
+        _validate_vendor(copy)
+
+
+def test_manifest_rejects_upstream_hash_that_disagrees_with_inventory(tmp_path: Path) -> None:
+    """Catches a derived record whose declared upstream hash is not the pinned hash."""
+    copy = _copied_tree(tmp_path)
+    manifest = copy / "Sources" / "MCPStdio" / "Upstream" / "manifest.json"
+    data = json.loads(manifest.read_text())
+    derived = copy / "Sources" / "MCPStdio" / "Derived.swift"
+    derived.write_text("public enum Derived {}\n")
+    data["files"].append(
+        {
+            "path": "Derived.swift",
+            "origin": "Sources/MCP/Base/ID.swift",
+            "upstream_sha256": "a" * 64,
+            "local_sha256": _sha256(derived),
+        }
+    )
+    data["adaptations"].append({"path": "Derived.swift", "reason": "test mutation"})
+    manifest.write_text(json.dumps(data))
+    with pytest.raises(AssertionError):
+        _validate_vendor(copy)
+
+
 def test_manifest_requires_recorded_derived_adaptations(tmp_path: Path) -> None:
     """Catches a modified upstream source without a reviewer-visible reason."""
     copy = _copied_tree(tmp_path)
@@ -156,8 +293,8 @@ def test_manifest_requires_recorded_derived_adaptations(tmp_path: Path) -> None:
     data["files"].append(
         {
             "path": "Derived.swift",
-            "origin": "Sources/MCP/Base/Derived.swift",
-            "upstream_sha256": "a" * 64,
+            "origin": "Sources/MCP/Base/ID.swift",
+            "upstream_sha256": "519d7804eabbf14299b8f067374bf714aa03303b711d2c4423e0078e8e4ee4da",
             "local_sha256": _sha256(derived),
         }
     )
@@ -166,10 +303,50 @@ def test_manifest_requires_recorded_derived_adaptations(tmp_path: Path) -> None:
         _validate_vendor(copy)
 
 
-def test_manifest_rejects_forbidden_transport_names(tmp_path: Path) -> None:
-    """Catches network transport source files entering the stdio-only target."""
+def test_manifest_rejects_non_boolean_local_only(tmp_path: Path) -> None:
+    """Catches a truthy string used in place of the local-only boolean."""
     copy = _copied_tree(tmp_path)
-    forbidden = copy / "Sources" / "MCPStdio" / "HTTPClientTransport.swift"
-    forbidden.write_text("public enum HTTPClientTransport {}\n")
+    manifest = copy / "Sources" / "MCPStdio" / "Upstream" / "manifest.json"
+    data = json.loads(manifest.read_text())
+    data["files"][0]["local_only"] = "true"
+    manifest.write_text(json.dumps(data))
+    with pytest.raises(AssertionError):
+        _validate_vendor(copy)
+
+
+@pytest.mark.parametrize(
+    ("path", "source"),
+    [
+        ("Client/Client.swift", "public actor Client {}\n"),
+        ("HTTPClientTransport.swift", "public enum Safe {}\n"),
+        ("WebSocketTransport.swift", "public enum Safe {}\n"),
+        ("Authorization/Safe.swift", "public enum Safe {}\n"),
+        ("HTTPServer/Safe.swift", "public enum Safe {}\n"),
+        ("Safe.swift", "import Network\n"),
+        ("Safe.swift", "import CFNetwork\n"),
+        ("Safe.swift", "let session = URLSession.shared\n"),
+        ("Safe.swift", "let source = EventSource()\n"),
+        ("Safe.swift", "let auth = OAuthToken()\n"),
+        ("Safe.swift", "let proxy = HTTPProxy()\n"),
+        ("Safe.swift", "let connection = NWConnection()\n"),
+        ("Safe.swift", "let fd = socket(0, 0, 0)\n"),
+        ("Safe.swift", "let socket = SocketConnection()\n"),
+        ("Safe.swift", "public actor Client {}\n"),
+    ],
+)
+def test_manifest_rejects_prohibited_shipping_source(
+    tmp_path: Path, path: str, source: str
+) -> None:
+    """Catches client and network transport surfaces in shipping Swift source."""
+    copy = _copied_tree(tmp_path)
+    source_path = copy / "Sources" / "MCPStdio" / path
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text(source)
+    manifest = copy / "Sources" / "MCPStdio" / "Upstream" / "manifest.json"
+    data = json.loads(manifest.read_text())
+    data["files"].append(
+        {"path": path, "local_only": True, "local_sha256": _sha256(source_path)}
+    )
+    manifest.write_text(json.dumps(data))
     with pytest.raises(AssertionError):
         _validate_vendor(copy)
