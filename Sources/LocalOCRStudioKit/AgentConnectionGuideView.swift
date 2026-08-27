@@ -46,26 +46,33 @@ public struct AgentConnectionGuideView: View {
             TabView {
                 clientInstructions(
                     commands: model.codexCommands,
-                    note: "Run these commands in Terminal, then use /mcp in Codex to inspect the connection.",
-                    copyIdentifier: "studio.agent-guide.copy-codex"
+                    guidance: model.codexScopeGuidance,
+                    removalCommand: model.codexRemovalCommand,
+                    copyIdentifier: "studio.agent-guide.copy-codex",
+                    removalCopyIdentifier: "studio.agent-guide.copy-codex-remove"
                 )
                 .tabItem { Text("Codex CLI") }
 
                 clientInstructions(
                     commands: model.claudeCodeCommands,
-                    note: "Run these commands in Terminal, then use /mcp in Claude Code. The default scope is the current project.",
-                    copyIdentifier: "studio.agent-guide.copy-claude"
+                    guidance: model.claudeCodeScopeGuidance,
+                    removalCommand: model.claudeCodeRemovalCommand,
+                    copyIdentifier: "studio.agent-guide.copy-claude",
+                    removalCopyIdentifier: "studio.agent-guide.copy-claude-remove"
                 )
                 .tabItem { Text("Claude Code") }
 
-                clientInstructions(
-                    commands: model.genericStdioJSON,
-                    note: "Use your client's current documentation to add this stdio entry and verify it. LocalOCR does not edit the configuration for you.",
-                    copyIdentifier: "studio.agent-guide.copy-json"
-                )
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Use your client's current documentation to add, inspect, and remove this stdio entry. LocalOCR does not edit the configuration for you.")
+                    codeBlock(
+                        model.genericStdioJSON,
+                        copyIdentifier: "studio.agent-guide.copy-json"
+                    )
+                }
+                .padding(.top, 8)
                 .tabItem { Text("Other stdio clients") }
             }
-            .frame(height: 190)
+            .frame(height: 270)
         }
     }
 
@@ -114,12 +121,14 @@ public struct AgentConnectionGuideView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Nine document tools")
                     .font(.headline)
-                Text(
-                    "get_pdf_page_count, inspect_pdf, ocr_pdf, ocr_pdf_batch, ocr_image, make_searchable_pdf, summarize_document, organize_document, extract_document_fields"
-                )
+                Text("OCR and PDF tools: \(model.ocrAndPDFTools.joined(separator: ", "))")
+                Text("Local Intelligence tools: \(model.localIntelligenceTools.joined(separator: ", "))")
+                Text(model.localIntelligenceRequirements)
                 Text("Safe examples")
                     .font(.headline)
-                Text("Try “Inspect this local PDF” or “OCR these test PDFs,” using absolute paths to non-sensitive files.")
+                ForEach(model.safeExamplePrompts, id: \.self) { prompt in
+                    Text("• \(prompt)")
+                }
                 Text("If setup fails, confirm the helper path, client configuration, macOS file permissions, current acknowledgment status, and Local Intelligence availability. The MCP client—not LocalOCR—must have permission to read each selected file.")
             }
         }
@@ -138,12 +147,17 @@ public struct AgentConnectionGuideView: View {
 
     private func clientInstructions(
         commands: String,
-        note: String,
-        copyIdentifier: String
+        guidance: String,
+        removalCommand: String,
+        copyIdentifier: String,
+        removalCopyIdentifier: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(note)
+            Text(guidance)
             codeBlock(commands, copyIdentifier: copyIdentifier)
+            Text("Removal")
+                .font(.headline)
+            codeBlock(removalCommand, copyIdentifier: removalCopyIdentifier)
         }
         .padding(.top, 8)
     }

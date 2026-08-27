@@ -21,9 +21,17 @@ struct AgentConnectionGuideModelTests {
         codex mcp add localocr -- '/tmp/Test User'\"'\"'s Apps/LocalOCR Studio.app/Contents/Helpers/localocr-mcp'
         codex mcp list
         """)
+        #expect(model.codexRemovalCommand == "codex mcp remove localocr")
+        #expect(model.codexScopeGuidance == """
+        Codex has no project or user scope option for MCP add/remove. The installed CLI stores this server in the Codex host's user configuration, shared by Codex CLI, the IDE extension, and the desktop app on that host. Use codex mcp list or /mcp to inspect it. Run the removal command separately to disconnect it.
+        """)
         #expect(model.claudeCodeCommands == """
-        claude mcp add --transport stdio localocr -- '/tmp/Test User'\"'\"'s Apps/LocalOCR Studio.app/Contents/Helpers/localocr-mcp'
+        claude mcp add --transport stdio --scope local localocr -- '/tmp/Test User'\"'\"'s Apps/LocalOCR Studio.app/Contents/Helpers/localocr-mcp'
         claude mcp list
+        """)
+        #expect(model.claudeCodeRemovalCommand == "claude mcp remove --scope local localocr")
+        #expect(model.claudeCodeScopeGuidance == """
+        Claude Code defaults to local scope for the current project; the command makes that scope explicit. Use --scope user only when you intentionally want LocalOCR across projects. Use claude mcp list or /mcp to inspect it, and remove it from the same scope where you added it.
         """)
 
         let json = try #require(model.genericStdioJSON.data(using: .utf8))
@@ -34,6 +42,45 @@ struct AgentConnectionGuideModelTests {
         #expect(object["args"] as? [String] == [])
         #expect(!model.codexCommands.contains("/Applications/"))
         #expect(!model.claudeCodeCommands.contains("/Users/scott"))
+    }
+
+    @Test("guide distinguishes Foundation Models tools and availability from OCR")
+    func intelligenceRequirementsAndOCRFallback() {
+        let model = AgentConnectionGuideModel(
+            bundleURL: URL(fileURLWithPath: "/tmp/LocalOCR Studio.app"),
+            consentStore: GuideConsentStore()
+        )
+
+        #expect(model.localIntelligenceTools == [
+            "summarize_document",
+            "organize_document",
+            "extract_document_fields",
+        ])
+        #expect(model.ocrAndPDFTools == [
+            "get_pdf_page_count",
+            "inspect_pdf",
+            "ocr_pdf",
+            "ocr_pdf_batch",
+            "ocr_image",
+            "make_searchable_pdf",
+        ])
+        #expect(model.localIntelligenceRequirements == """
+        summarize_document, organize_document, and extract_document_fields require Apple Foundation Models: macOS 26 or later, an eligible Mac, Apple Intelligence enabled, the on-device model ready, and a currently supported Apple Intelligence language. The six OCR and PDF tools remain available when Local Intelligence is unavailable.
+        """)
+    }
+
+    @Test("safe examples use explicit local paths and narrow document tasks")
+    func safeExamplesAreConcreteAndNarrow() {
+        let model = AgentConnectionGuideModel(
+            bundleURL: URL(fileURLWithPath: "/tmp/LocalOCR Studio.app"),
+            consentStore: GuideConsentStore()
+        )
+
+        #expect(model.safeExamplePrompts == [
+            "Inspect /Users/Shared/LocalOCR Test Files/test-invoice.pdf and report only its page count and whether it already has searchable text.",
+            "OCR /Users/Shared/LocalOCR Test Files/test-scan.png and return only the recognized text.",
+            "Summarize /Users/Shared/LocalOCR Test Files/test-letter.pdf in three factual bullets using Local Intelligence.",
+        ])
     }
 
     @Test("guide presents the approved disclosure and both acknowledgments verbatim")

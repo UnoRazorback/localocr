@@ -26,8 +26,37 @@ public final class AgentConnectionGuideModel {
 
     public let helperPath: String
     public let codexCommands: String
+    public let codexRemovalCommand = "codex mcp remove localocr"
+    public let codexScopeGuidance = """
+    Codex has no project or user scope option for MCP add/remove. The installed CLI stores this server in the Codex host's user configuration, shared by Codex CLI, the IDE extension, and the desktop app on that host. Use codex mcp list or /mcp to inspect it. Run the removal command separately to disconnect it.
+    """
     public let claudeCodeCommands: String
+    public let claudeCodeRemovalCommand = "claude mcp remove --scope local localocr"
+    public let claudeCodeScopeGuidance = """
+    Claude Code defaults to local scope for the current project; the command makes that scope explicit. Use --scope user only when you intentionally want LocalOCR across projects. Use claude mcp list or /mcp to inspect it, and remove it from the same scope where you added it.
+    """
     public let genericStdioJSON: String
+    public let localIntelligenceTools = [
+        "summarize_document",
+        "organize_document",
+        "extract_document_fields",
+    ]
+    public let ocrAndPDFTools = [
+        "get_pdf_page_count",
+        "inspect_pdf",
+        "ocr_pdf",
+        "ocr_pdf_batch",
+        "ocr_image",
+        "make_searchable_pdf",
+    ]
+    public let localIntelligenceRequirements = """
+    summarize_document, organize_document, and extract_document_fields require Apple Foundation Models: macOS 26 or later, an eligible Mac, Apple Intelligence enabled, the on-device model ready, and a currently supported Apple Intelligence language. The six OCR and PDF tools remain available when Local Intelligence is unavailable.
+    """
+    public let safeExamplePrompts = [
+        "Inspect /Users/Shared/LocalOCR Test Files/test-invoice.pdf and report only its page count and whether it already has searchable text.",
+        "OCR /Users/Shared/LocalOCR Test Files/test-scan.png and return only the recognized text.",
+        "Summarize /Users/Shared/LocalOCR Test Files/test-letter.pdf in three factual bullets using Local Intelligence.",
+    ]
     public var disclosure: String { Self.externalDataDisclosure }
     public var externalProviderRiskAcknowledgment: String {
         Self.approvedExternalProviderRiskAcknowledgment
@@ -69,7 +98,7 @@ public final class AgentConnectionGuideModel {
         codex mcp list
         """
         claudeCodeCommands = """
-        claude mcp add --transport stdio localocr -- \(shellPath)
+        claude mcp add --transport stdio --scope local localocr -- \(shellPath)
         claude mcp list
         """
         genericStdioJSON = Self.makeGenericStdioJSON(helperPath: helperPath)
