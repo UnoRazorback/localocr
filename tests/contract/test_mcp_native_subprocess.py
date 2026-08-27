@@ -144,7 +144,6 @@ def test_native_helper_preserves_localocr_stdio_contract_and_clean_eof(tmp_path:
     os.chmod(home, 0o700)
     request.addfinalizer(lambda: shutil.rmtree(home))
     fixture = ROOT / "tests" / "LocalOCRCoreTests" / "Fixtures" / "mixed.pdf"
-    cancellation_fixture = ROOT / "tests" / "LocalOCRCoreTests" / "Fixtures" / "image-only.pdf"
     missing = tmp_path / "missing.pdf"
     server = MCPProcess(home)
     request.addfinalizer(server.terminate)
@@ -191,13 +190,12 @@ def test_native_helper_preserves_localocr_stdio_contract_and_clean_eof(tmp_path:
     assert inspection["result"]["structuredContent"] == inspection_text
     assert inspection_text["pages"] == 2
 
-    server.send(
-        _tool_call(
-            6,
-            "ocr_pdf_batch",
-            {"file_paths": [str(cancellation_fixture)] * 64},
-        )
-    )
+    # Active cancellation is deterministically covered by ServerTests' CallGate.
+    # The shipping-process check proves only late cancellation after this known
+    # terminal response, then drains the connection through EOF below.
+    server.send(_tool_call(6, "get_pdf_page_count", {"file_path": str(fixture)}))
+    completed = server.receive(6)
+    assert _tool_text(completed) == "2"
     server.send(
         {
             "jsonrpc": "2.0",
@@ -205,9 +203,6 @@ def test_native_helper_preserves_localocr_stdio_contract_and_clean_eof(tmp_path:
             "params": {"requestId": 6, "reason": "active compatibility probe"},
         }
     )
-    cancellation = server.receive(6)
-    assert cancellation["error"]["code"] == -32603
-    assert "image-only.pdf" not in json.dumps(cancellation)
 
     server.send(_request(7, "ping", {}))
     assert server.receive(7)["result"] == {}

@@ -57,14 +57,24 @@ reject_symlink_path() {
 
 require_json_lines() {
     local response="$1"
-    local line
 
-    while IFS= read -r line; do
-        [[ -z "$line" || "$line" == \{*\} ]] || {
-            echo "native MCP stdout contained a non-JSON-RPC line" >&2
-            exit 1
-        }
-    done <<< "$response"
+    if ! printf '%s\n' "$response" | /usr/bin/python3 -c '
+import json
+import sys
+
+for number, raw_line in enumerate(sys.stdin.buffer, start=1):
+    if not raw_line.endswith(b"\n"):
+        raise SystemExit(f"stdout line {number} was not newline-delimited")
+    try:
+        value = json.loads(raw_line[:-1])
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SystemExit(f"stdout line {number} was not exactly one JSON object: {error}")
+    if not isinstance(value, dict):
+        raise SystemExit(f"stdout line {number} was not a JSON object")
+'; then
+        echo "native MCP stdout contained a malformed JSON-RPC line" >&2
+        exit 1
+    fi
 }
 
 require_single_response() {
@@ -72,12 +82,50 @@ require_single_response() {
     local request_id="$2"
     local count
 
-    count="$(printf '%s\n' "$response" | grep -Ec "\\\"id\\\":${request_id}(,|})" || true)"
+    if ! count="$(printf '%s\n' "$response" | /usr/bin/python3 -c '
+import json
+import sys
+
+target = int(sys.argv[1])
+count = 0
+for number, raw_line in enumerate(sys.stdin.buffer, start=1):
+    try:
+        value = json.loads(raw_line)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SystemExit(f"stdout line {number} was not exactly one JSON object: {error}")
+    if not isinstance(value, dict):
+        raise SystemExit(f"stdout line {number} was not a JSON object")
+    if value.get("id") == target:
+        count += 1
+print(count)
+' "$request_id")"; then
+        echo "native MCP stdout could not be parsed for request ID $request_id" >&2
+        exit 1
+    fi
     if [[ "$count" != "1" ]]; then
         echo "native MCP did not emit exactly one response for request ID $request_id" >&2
         exit 1
     fi
 }
+
+smoke_json_parser_self_test() {
+    local valid='{"jsonrpc":"2.0","id":1,"result":{}}'
+    local concatenated='{"jsonrpc":"2.0","id":1,"result":{}}{"jsonrpc":"2.0","id":2,"result":{}}'
+    local nested_id='{"jsonrpc":"2.0","result":{"id":1}}'
+
+    require_json_lines "$valid"
+    require_single_response "$valid" 1
+    if (require_json_lines "$concatenated") >/dev/null 2>&1; then
+        echo "native MCP stdout parser accepted concatenated JSON objects" >&2
+        exit 1
+    fi
+    if (require_single_response "$nested_id" 1) >/dev/null 2>&1; then
+        echo "native MCP stdout parser counted a nested ID as a response ID" >&2
+        exit 1
+    fi
+}
+
+smoke_json_parser_self_test
 
 release_rpaths() {
     otool -l "$1" | awk '

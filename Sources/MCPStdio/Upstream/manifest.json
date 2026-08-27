@@ -86,7 +86,7 @@
       "path": "Base/StdioTransport.swift",
       "origin": "Sources/MCP/Base/Transports/StdioTransport.swift",
       "upstream_sha256": "56b5d57eb8168f97a149bd68d3502a359cf2c42ecd7661b10241957f5e4b2995",
-      "local_sha256": "ccf7c48903f63c4620f62fd65942f54b03144e88dea02c019ccae0a8d55d2ffa"
+      "local_sha256": "30667cbfbdc7e4ebd1d45fe1bee4b34bafa171d335e479f113cf57c2b808095b"
     },
     {
       "path": "Server/Tools.swift",
@@ -145,7 +145,7 @@
     },
     {
       "path": "Base/StdioTransport.swift",
-      "reason": "Hardens the upstream POSIX stdio transport with a one MiB input frame bound, CRLF normalization, bounded overflow draining that emits a content-free JSON-RPC parse-error signal without dispatching the oversized payload, an eight-frame fail-closed receive queue, receive-consumer termination handling, FIFO complete writes with cancellation-aware waiter removal, broken-pipe suppression, exact-once stream completion, idempotent disconnect, and content-free logging."
+      "reason": "Hardens the upstream POSIX stdio transport with a one MiB input frame bound, CRLF normalization, bounded overflow draining followed by fail-closed transport termination with a content-free parse error and no dispatch of the oversized or following payload, an eight-frame fail-closed receive queue, receive-consumer termination handling, FIFO complete writes with cancellation-aware waiter removal, broken-pipe suppression, exact-once stream completion, idempotent disconnect, and content-free logging."
     },
     {
       "path": "Server/Tools.swift",

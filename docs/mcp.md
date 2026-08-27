@@ -32,10 +32,12 @@ than embedding HTTP, OAuth, EventSource, URLSession, or other network
 transports. It supports normal generic, Codex, and Claude Code initialization
 handshakes, then exposes the same nine LocalOCR tools over newline-delimited
 JSON-RPC. The helper accepts at most 1 MiB of UTF-8 JSON per line (the newline
-is excluded). Malformed or over-limit input receives a JSON-RPC parse error;
-unknown methods receive method-not-found; notifications do not receive replies.
-Protocol records are the helper's only stdout output. Closing stdin ends the
-local session cleanly.
+is excluded). Malformed JSON receives a JSON-RPC parse error. An over-limit
+line is drained only to its newline boundary, then the transport fails closed
+with a parse error: it dispatches neither that line nor a following line, and
+the client must start a new helper session. Unknown methods receive
+method-not-found; notifications do not receive replies. Protocol records are
+the helper's only stdout output. Closing stdin ends the local session cleanly.
 
 This transport boundary is not an external-provider boundary. A connected
 client may still pass supplied paths, recognized text, tool arguments, or

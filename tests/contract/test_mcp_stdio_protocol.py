@@ -74,6 +74,16 @@ class RawMCPProcess:
         finally:
             selector.close()
 
+    def wait_for_stdout_close(self, timeout: float = 8.0) -> None:
+        assert self.process.stdout is not None
+        selector = selectors.DefaultSelector()
+        selector.register(self.process.stdout, selectors.EVENT_READ)
+        try:
+            assert selector.select(timeout), "timed out waiting for fail-closed stdout EOF"
+            assert self.process.stdout.readline() == b"", "fail-closed input unexpectedly produced stdout"
+        finally:
+            selector.close()
+
     def close(self) -> tuple[bytes, bytes]:
         assert self.process.stdin is not None
         assert self.process.stdout is not None
@@ -182,9 +192,10 @@ def test_notifications_never_receive_responses(mcp_process: RawMCPProcess) -> No
     mcp_process.assert_no_output()
 
 
-def test_duplicate_active_ids_are_rejected_without_replacing_original(mcp_process: RawMCPProcess) -> None:
-    # Releasing or overwriting an active reservation would allow two handlers
-    # to share one ID and produce ambiguous client correlation.
+def test_rapid_same_id_tool_frames_keep_their_response_ids_well_formed(mcp_process: RawMCPProcess) -> None:
+    # Active-ID rejection itself has a deterministic CallGate protocol test in
+    # ServerTests. A real subprocess has no production test hook to prove that
+    # the first tool handler reached its active state before this second write.
     initialize(mcp_process)
     call = request(71, "tools/call", {"name": "get_pdf_page_count", "arguments": {"file_path": "/missing.pdf"}})
     mcp_process.send(call)
@@ -192,40 +203,45 @@ def test_duplicate_active_ids_are_rejected_without_replacing_original(mcp_proces
     first, second = mcp_process.receive(), mcp_process.receive()
     responses = [first, second]
     assert [response["id"] for response in responses] == [71, 71]
-    assert sum(response.get("error", {}).get("code") == -32600 for response in responses) == 1
-    assert sum(response.get("result", {}).get("isError") is True for response in responses) == 1
+    assert all("error" in response or "result" in response for response in responses)
 
 
-def test_repeated_cancellation_produces_at_most_one_terminal_response(mcp_process: RawMCPProcess) -> None:
-    # Forgetting the terminal reservation transition would allow each cancel
-    # notification to send another result for the same request ID.
+def test_late_repeated_cancellation_is_silent_through_eof(mcp_process: RawMCPProcess) -> None:
+    # During-work idempotence is proved by ServerTests' CallGate. This real
+    # helper check first receives the terminal tool frame, so it deterministically
+    # covers only late cancellation and drains any unexpected output through EOF.
     initialize(mcp_process)
     mcp_process.send(request(72, "tools/call", {"name": "get_pdf_page_count", "arguments": {"file_path": "/missing.pdf"}}))
+    completed = mcp_process.receive()
+    assert completed["id"] == 72
+    assert completed["result"]["isError"] is True
     cancellation = {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 72}}
     mcp_process.send(cancellation)
     mcp_process.send(cancellation)
-    response = mcp_process.receive()
-    assert response["id"] == 72
-    assert response["error"]["code"] == -32603
-    mcp_process.assert_no_output()
+    trailing_stdout, stderr = mcp_process.close()
+    assert mcp_process.process.returncode == 0
+    assert trailing_stdout == b""
+    assert stderr == b""
 
 
-def test_exact_maximum_frame_is_dispatched_and_one_byte_larger_is_parse_error(mcp_process: RawMCPProcess) -> None:
-    # An off-by-one limit or closing the connection on an oversized line would
-    # fail this exact physical-byte boundary test.
+def test_exact_maximum_frame_is_dispatched_and_one_byte_larger_fails_closed(mcp_process: RawMCPProcess) -> None:
+    # An off-by-one limit, parse-error response, or dispatching the following
+    # line would violate the fail-closed transport framing contract.
     initialize(mcp_process)
     mcp_process.send_raw(oversized_unknown_method_frame(MAXIMUM_MESSAGE_BYTES))
     exact_limit = mcp_process.receive(timeout=8)
     assert exact_limit["id"] == 91
     assert exact_limit["error"]["code"] == -32601
 
-    mcp_process.send_raw(oversized_unknown_method_frame(MAXIMUM_MESSAGE_BYTES + 1))
-    oversized = mcp_process.receive(timeout=8)
-    assert oversized["id"] is None
-    assert oversized["error"]["code"] == -32700
-
-    mcp_process.send(request(92, "ping", {}))
-    assert mcp_process.receive(timeout=3) == {"id": 92, "jsonrpc": "2.0", "result": {}}
+    mcp_process.send_raw(oversized_unknown_method_frame(MAXIMUM_MESSAGE_BYTES + 1) + json.dumps(request(92, "ping", {}), separators=(",", ":")).encode() + b"\n")
+    mcp_process.wait_for_stdout_close()
+    assert mcp_process.process.wait(timeout=5) == 0
+    assert mcp_process.process.stdout is not None
+    assert mcp_process.process.stderr is not None
+    trailing_stdout, stderr = mcp_process.process.stdout.read(), mcp_process.process.stderr.read()
+    assert mcp_process.process.returncode == 0
+    assert trailing_stdout == b""
+    assert stderr == b""
 
 
 @pytest.mark.parametrize(

@@ -161,8 +161,7 @@ public actor StdioTransport: Transport {
                 }
                 if byteCount == 0 {
                     if discardingOversizedFrame {
-                        _ = yieldOversizedFrame()
-                        finish()
+                        finish(throwing: oversizedFrameError())
                     } else {
                         finish()
                     }
@@ -178,9 +177,8 @@ public actor StdioTransport: Transport {
                             continue
                         }
                         cursor = bytes.index(after: newline)
-                        guard yieldOversizedFrame() else { return }
-                        discardingOversizedFrame = false
-                        continue
+                        finish(throwing: oversizedFrameError())
+                        return
                     }
 
                     if let newline = bytes[cursor...].firstIndex(of: UInt8(ascii: "\n")) {
@@ -190,10 +188,8 @@ public actor StdioTransport: Transport {
                         let framedByteCount = pending.count + fragment.count
                         let messageByteCount = framedByteCount - (endsInCarriageReturn ? 1 : 0)
                         if messageByteCount > Self.maximumMessageBytes {
-                            guard yieldOversizedFrame() else { return }
-                            pending.removeAll(keepingCapacity: true)
-                            cursor = bytes.index(after: newline)
-                            continue
+                            finish(throwing: oversizedFrameError())
+                            return
                         }
 
                         pending.append(contentsOf: fragment)
@@ -297,24 +293,8 @@ public actor StdioTransport: Transport {
         writeWaiters.remove(at: index).continuation.resume(returning: .cancelled)
     }
 
-    /// Delivers a parse-error sentinel after draining an oversized physical line.
-    /// The server owns JSON-RPC response encoding, while the transport retains
-    /// byte-bound enforcement and never hands the oversized payload to dispatch.
-    private func yieldOversizedFrame() -> Bool {
-        switch messageContinuation.yield(Data([0xFF])) {
-        case .enqueued:
-            logger.trace("Stdio oversized message rejected")
-            return true
-        case .dropped:
-            finish(throwing: MCPError.internalError("stdio receive capacity exceeded"))
-            return false
-        case .terminated:
-            finish()
-            return false
-        @unknown default:
-            finish(throwing: MCPError.internalError("stdio receive failed"))
-            return false
-        }
+    private func oversizedFrameError() -> MCPError {
+        .parseError("message exceeds \(Self.maximumMessageBytes) bytes")
     }
 
     private func setNonBlocking(_ descriptor: FileDescriptor) throws {
