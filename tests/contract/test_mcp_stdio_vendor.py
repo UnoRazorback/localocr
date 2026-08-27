@@ -19,16 +19,22 @@ PROVENANCE = VENDOR / "Upstream" / "PROVENANCE.md"
 UPSTREAM_COMMIT = "a0ae212ebf6eab5f754c3129608bc5557637e605"
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 FORBIDDEN_SOURCE_PATH = re.compile(
-    r"(?:^|/)(?:Client|Authorization|[^/]*(?:HTTP|OAuth|EventSource|Network|Socket)[^/]*)(?:/|\.swift$)"
+    r"(?:^|/)(?:[^/]*Client[^/]*|Authorization|[^/]*(?:HTTP|OAuth|EventSource|Network|Socket)[^/]*)(?:/|\.swift$)"
 )
 FORBIDDEN_SOURCE_CONTENT = (
     re.compile(r"(?m)^\s*import\s+(?:CFNetwork|Network)\b"),
     re.compile(r"\b(?:URLSession|URLRequest|URLResponse|HTTPURLResponse|EventSource)\b"),
+    re.compile(r"\b(?:Data|NSData|String|NSString)\s*\(\s*contentsOf\s*:"),
+    re.compile(r"\bURL\s*\.\s*openConnection\s*\("),
+    re.compile(r"\bNS(?:MutableURLRequest|URLRequest|URLConnection|URLSession)\b"),
     re.compile(r"\bOAuth[A-Za-z0-9_]*\b"),
     re.compile(r"\bHTTP[A-Za-z0-9_]*\b"),
     re.compile(r"\b(?:NWConnection|NWListener|NWTCPConnection|CFNetwork)\b"),
     re.compile(r"\b(?:socket|Socket)[A-Za-z0-9_]*\b"),
-    re.compile(r"\b(?:actor|class|struct|enum)\s+Client\b"),
+    re.compile(
+        r"\b(?:actor|class|struct|enum|protocol)\s+(?!Client(?:Info|Capabilities)\b)[A-Za-z_][A-Za-z0-9_]*Client[A-Za-z0-9_]*\b"
+    ),
+    re.compile(r"\b(?:actor|class|struct|enum|protocol)\s+Client\b"),
 )
 
 
@@ -314,10 +320,34 @@ def test_manifest_rejects_non_boolean_local_only(tmp_path: Path) -> None:
         _validate_vendor(copy)
 
 
+def test_manifest_allows_json_data_encoding_and_file_descriptor_stdio(tmp_path: Path) -> None:
+    """Protects local JSON framing and descriptor-based stdio from remote-fetch rules."""
+    copy = _copied_tree(tmp_path)
+    source_path = copy / "Sources" / "MCPStdio" / "LocalFraming.swift"
+    source_path.write_text(
+        "let encoded = try JSONEncoder().encode(value)\n"
+        "let framed = Data(\"{}\".utf8)\n"
+        "let input = FileDescriptor.standardInput\n"
+    )
+    manifest = copy / "Sources" / "MCPStdio" / "Upstream" / "manifest.json"
+    data = json.loads(manifest.read_text())
+    data["files"].append(
+        {
+            "path": "LocalFraming.swift",
+            "local_only": True,
+            "local_sha256": _sha256(source_path),
+        }
+    )
+    manifest.write_text(json.dumps(data))
+    _validate_vendor(copy)
+
+
 @pytest.mark.parametrize(
     ("path", "source"),
     [
         ("Client/Client.swift", "public actor Client {}\n"),
+        ("MCPClient.swift", "public actor MCPClient {}\n"),
+        ("Remote.swift", "public struct MCPClient {}\n"),
         ("HTTPClientTransport.swift", "public enum Safe {}\n"),
         ("WebSocketTransport.swift", "public enum Safe {}\n"),
         ("Authorization/Safe.swift", "public enum Safe {}\n"),
@@ -325,6 +355,12 @@ def test_manifest_rejects_non_boolean_local_only(tmp_path: Path) -> None:
         ("Safe.swift", "import Network\n"),
         ("Safe.swift", "import CFNetwork\n"),
         ("Safe.swift", "let session = URLSession.shared\n"),
+        ("Remote.swift", 'let data = try Data(contentsOf: URL(string: "https://example.com")!)\n'),
+        ("Remote.swift", 'let text = try String(contentsOf: URL(string: "https://example.com")!)\n'),
+        ("Remote.swift", "let connection = URL.openConnection()\n"),
+        ("Remote.swift", "let request = NSURLRequest(url: URL(fileURLWithPath: \"/tmp/x\"))\n"),
+        ("Remote.swift", "let request = NSMutableURLRequest(url: URL(fileURLWithPath: \"/tmp/x\"))\n"),
+        ("Remote.swift", "let connection = NSURLConnection()\n"),
         ("Safe.swift", "let source = EventSource()\n"),
         ("Safe.swift", "let auth = OAuthToken()\n"),
         ("Safe.swift", "let proxy = HTTPProxy()\n"),

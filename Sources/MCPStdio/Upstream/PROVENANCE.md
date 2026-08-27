@@ -33,7 +33,10 @@ CI does not need the upstream checkout.
 
 Do not vendor clients; HTTP, OAuth, EventSource, URLSession, socket, Network,
 or CFNetwork transports; prompts; resources; sampling; completion; or logging
-control. In particular, `HTTPClientTransport.swift` and
+control. Shipping Swift also forbids renamed client implementations and
+Foundation remote-loading/request surfaces, including `Data` or `String`
+`contentsOf:` initializers, `URL.openConnection`, and legacy `NSURLConnection`
+or `NSURLRequest` constructors. In particular, `HTTPClientTransport.swift` and
 `NetworkTransport.swift` are forbidden source names.
 
 ## Dependencies
