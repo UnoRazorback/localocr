@@ -262,6 +262,92 @@ final class LocalOCRStudioUITests: XCTestCase {
         XCTAssertTrue(app.buttons["studio.process-another"].isEnabled)
     }
 
+    func testAvailableLocalIntelligenceExposesThreeIndependentActions() {
+        let app = launch(state: "intelligenceAvailable")
+
+        XCTAssertTrue(element("studio.local-intelligence", in: app).waitForExistence(timeout: 5))
+        XCTAssertEqual(
+            app.buttons["studio.intelligence.summarize"].label,
+            "Summarize document with Local Intelligence"
+        )
+        XCTAssertEqual(
+            app.buttons["studio.intelligence.organize"].label,
+            "Suggest document name and tags with Local Intelligence"
+        )
+        XCTAssertEqual(
+            app.buttons["studio.intelligence.fields"].label,
+            "Extract date, total, and reference number with Local Intelligence"
+        )
+        XCTAssertTrue(app.buttons["studio.copy"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.save-text"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.create-searchable"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.process-another"].isEnabled)
+    }
+
+    func testLocalIntelligenceFixturesExposeRunningResultsUnavailableAndErrorStates() {
+        let running = launch(state: "intelligenceRunning")
+        XCTAssertTrue(element("studio.intelligence.summary-progress", in: running).waitForExistence(timeout: 5))
+        XCTAssertFalse(running.buttons["studio.intelligence.summarize"].isEnabled)
+        XCTAssertTrue(running.buttons["studio.intelligence.organize"].isEnabled)
+        XCTAssertTrue(running.buttons["studio.copy"].isEnabled)
+        running.terminate()
+
+        let results = launch(state: "intelligenceResults")
+        XCTAssertTrue(results.staticTexts["Quarterly planning is complete [Page 2]"].waitForExistence(timeout: 5))
+        XCTAssertTrue(results.staticTexts["Suggested name: Quarterly Planning"].exists)
+        XCTAssertTrue(results.staticTexts["Category: Business"].exists)
+        XCTAssertTrue(results.staticTexts["Tags: planning, quarterly"].exists)
+        XCTAssertTrue(results.staticTexts["Date: 2026-08-27 [Page 1]"].exists)
+        XCTAssertTrue(results.staticTexts["Total: Not found"].exists)
+        XCTAssertTrue(results.staticTexts["Reference number: QP-27 [Page 2]"].exists)
+        results.terminate()
+
+        let unavailable = launch(state: "intelligenceMacOSUnavailable")
+        XCTAssertTrue(unavailable.staticTexts["Local Intelligence requires macOS 26 or later."].waitForExistence(timeout: 5))
+        XCTAssertTrue(unavailable.buttons["studio.copy"].isEnabled)
+        unavailable.terminate()
+
+        let disabled = launch(state: "intelligenceDisabled")
+        XCTAssertTrue(disabled.staticTexts["Turn on Apple Intelligence in System Settings to use Local Intelligence."].waitForExistence(timeout: 5))
+        disabled.terminate()
+
+        let notReady = launch(state: "intelligenceNotReady")
+        XCTAssertTrue(notReady.staticTexts["Apple Intelligence is downloading or not ready yet. Try again when setup is complete."].waitForExistence(timeout: 5))
+        notReady.terminate()
+
+        let error = launch(state: "intelligenceError")
+        XCTAssertTrue(error.staticTexts["Local Intelligence could not finish this request. Please try again."].waitForExistence(timeout: 5))
+        XCTAssertTrue(error.buttons["studio.intelligence.summarize"].isEnabled)
+    }
+
+    func testBatchScreensNeverExposeLocalIntelligenceActions() {
+        for state in ["batchReview", "batchProcessing", "batchComplete"] {
+            let app = launch(state: state)
+            XCTAssertTrue(element("studio.batch.workspace", in: app).waitForExistence(timeout: 5))
+            XCTAssertFalse(element("studio.local-intelligence", in: app).exists)
+            XCTAssertFalse(app.buttons["studio.intelligence.summarize"].exists)
+            XCTAssertFalse(app.buttons["studio.intelligence.organize"].exists)
+            XCTAssertFalse(app.buttons["studio.intelligence.fields"].exists)
+            app.terminate()
+        }
+    }
+
+    func testProcessAnotherDocumentClearsTemporaryLocalIntelligenceResults() {
+        let app = launch(state: "intelligenceResults")
+        let panel = element("studio.local-intelligence", in: app)
+
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            app.staticTexts["Quarterly planning is complete [Page 2]"]
+                .waitForExistence(timeout: 5)
+        )
+        app.buttons["studio.process-another"].click()
+
+        XCTAssertTrue(element("studio.drop-zone", in: app).waitForExistence(timeout: 5))
+        XCTAssertFalse(panel.exists)
+        XCTAssertFalse(app.staticTexts["Quarterly planning is complete [Page 2]"].exists)
+    }
+
     func testProcessAnotherDocumentReturnsToTheEmptyDropScreen() {
         let app = launch(state: "result")
         let processAnother = app.buttons["studio.process-another"]

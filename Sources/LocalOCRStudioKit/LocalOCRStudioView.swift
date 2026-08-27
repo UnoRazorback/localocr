@@ -1,5 +1,6 @@
 import AppKit
 import LocalOCRCore
+import LocalOCRIntelligence
 import Observation
 import SwiftUI
 import UniformTypeIdentifiers
@@ -51,6 +52,7 @@ final class StudioWorkspaceSession {
 @MainActor
 public struct LocalOCRStudioView: View {
     @State private var model: StudioViewModel
+    @State private var intelligenceModel: StudioIntelligenceViewModel
     @State private var workspaceSession: StudioWorkspaceSession
     private let actions: StudioDocumentActions
 
@@ -65,9 +67,14 @@ public struct LocalOCRStudioView: View {
     public init(
         model: StudioViewModel,
         actions: StudioDocumentActions,
-        batchCoordinator: StudioBatchCoordinator
+        batchCoordinator: StudioBatchCoordinator,
+        intelligenceModel: StudioIntelligenceViewModel = StudioIntelligenceViewModel(
+            provider: UnavailableIntelligenceProvider(.requiresMacOS26),
+            availability: .requiresMacOS26
+        )
     ) {
         self._model = State(initialValue: model)
+        self._intelligenceModel = State(initialValue: intelligenceModel)
         self._workspaceSession = State(initialValue: StudioWorkspaceSession(
             batchCoordinator: batchCoordinator
         ))
@@ -80,11 +87,16 @@ public struct LocalOCRStudioView: View {
         model: StudioViewModel,
         actions: StudioDocumentActions,
         batchCoordinator: StudioBatchCoordinator,
+        intelligenceModel: StudioIntelligenceViewModel = StudioIntelligenceViewModel(
+            provider: UnavailableIntelligenceProvider(.requiresMacOS26),
+            availability: .requiresMacOS26
+        ),
         workspaceMode: StudioWorkspaceMode = .single,
         isCreatingSearchablePDF: Bool,
         searchableProgress: StudioProgress?
     ) {
         self._model = State(initialValue: model)
+        self._intelligenceModel = State(initialValue: intelligenceModel)
         self._workspaceSession = State(initialValue: StudioWorkspaceSession(
             batchCoordinator: batchCoordinator,
             initialMode: workspaceMode
@@ -125,6 +137,7 @@ public struct LocalOCRStudioView: View {
                                 result: result,
                                 isCreatingSearchablePDF: isCreatingSearchablePDF,
                                 searchableProgress: searchableProgress,
+                                intelligenceModel: intelligenceModel,
                                 onProcessAnother: resetToEmpty,
                                 onCopy: { actions.copy(result) },
                                 onSaveText: { showTextSavePanel(for: result) },
@@ -170,10 +183,44 @@ public struct LocalOCRStudioView: View {
             }
         }
         .onDisappear(perform: handleDisappearance)
+        .onChange(of: currentIntelligenceResultIdentity, initial: true) {
+            synchronizeIntelligenceResult()
+        }
+        .task {
+            await intelligenceModel.refreshAvailability()
+        }
     }
 
     private var batchCoordinator: StudioBatchCoordinator {
         workspaceSession.batchCoordinator
+    }
+
+    private var currentIntelligenceResult: StudioDocumentResult? {
+        guard workspaceSession.mode == .single,
+              case let .result(result) = model.state
+        else { return nil }
+        return result
+    }
+
+    private var currentIntelligenceResultIdentity: String? {
+        currentIntelligenceResult.map {
+            "\($0.sourceURL.standardizedFileURL.path)|\($0.sourceSHA256)"
+        }
+    }
+
+    private func synchronizeIntelligenceResult() {
+        let result = currentIntelligenceResult
+        lifecycle.synchronizeIntelligenceResult(
+            identity: currentIntelligenceResultIdentity,
+            install: {
+                guard let result else { return }
+                intelligenceModel.setDocument(
+                    result.intelligenceDocument,
+                    identity: "\(result.sourceURL.standardizedFileURL.path)|\(result.sourceSHA256)"
+                )
+            },
+            clear: intelligenceModel.clearForWorkspaceSwitch
+        )
     }
 
     private func handleDisappearance() {
@@ -186,6 +233,7 @@ public struct LocalOCRStudioView: View {
         let task = searchablePDFTask
         searchablePDFTask = nil
         task?.cancel()
+        intelligenceModel.clearForWindowTeardown()
         model.clear()
         workspaceSession.handleDisappearance()
     }
@@ -226,6 +274,8 @@ public struct LocalOCRStudioView: View {
         pendingDropLoad?.cancel()
         pendingDropLoad = nil
         isDropTargeted = false
+        intelligenceModel.clearForWorkspaceSwitch()
+        lifecycle.invalidateIntelligenceResult()
         workspaceSession.enterBatch()
     }
 
@@ -287,6 +337,7 @@ public struct LocalOCRStudioView: View {
         let task = searchablePDFTask
         searchablePDFTask = nil
         task?.cancel()
+        intelligenceModel.clearForProcessAnotherDocument()
         model.open(sourceURL)
     }
 
@@ -302,6 +353,7 @@ public struct LocalOCRStudioView: View {
             searchablePDFTask = nil
             task?.cancel()
         } clearModel: {
+            intelligenceModel.clearForProcessAnotherDocument()
             model.clear()
         }
     }

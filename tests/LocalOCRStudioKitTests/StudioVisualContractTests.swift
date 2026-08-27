@@ -1,4 +1,5 @@
 @testable import LocalOCRStudioKit
+import LocalOCRIntelligence
 import Testing
 
 @Suite struct StudioVisualContractTests {
@@ -26,5 +27,32 @@ import Testing
         #expect(contract.title == "On device")
         #expect(contract.accessibilityLabel == "On device, documents stay on this Mac")
         #expect(contract.isInteractive == false)
+    }
+
+    @Test func localIntelligenceActionsHaveMeaningfulAccessibleLabels() {
+        let contract = StudioLocalIntelligenceContract(availability: .available)
+
+        #expect(contract.title == "Local Intelligence")
+        #expect(contract.summaryActionLabel == "Summarize document with Local Intelligence")
+        #expect(contract.organizationActionLabel == "Suggest document name and tags with Local Intelligence")
+        #expect(contract.fieldsActionLabel == "Extract date, total, and reference number with Local Intelligence")
+        #expect(contract.unavailableGuidance == nil)
+    }
+
+    @Test(arguments: [
+        (IntelligenceAvailability.requiresMacOS26, "Local Intelligence requires macOS 26 or later."),
+        (IntelligenceAvailability.deviceNotEligible, "This Mac is not eligible for Apple Intelligence."),
+        (IntelligenceAvailability.appleIntelligenceNotEnabled, "Turn on Apple Intelligence in System Settings to use Local Intelligence."),
+        (IntelligenceAvailability.modelNotReady, "Apple Intelligence is downloading or not ready yet. Try again when setup is complete."),
+        (IntelligenceAvailability.unsupportedLanguage, "The current Apple Intelligence language is not supported."),
+    ])
+    func localIntelligenceAvailabilityExplainsRecovery(
+        availability: IntelligenceAvailability,
+        guidance: String
+    ) {
+        #expect(
+            StudioLocalIntelligenceContract(availability: availability)
+                .unavailableGuidance == guidance
+        )
     }
 }

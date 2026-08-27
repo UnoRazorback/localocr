@@ -1,4 +1,5 @@
 import AppKit
+import LocalOCRIntelligence
 import LocalOCRStudioKit
 import SwiftUI
 
@@ -96,10 +97,29 @@ enum LocalOCRStudioRoot {
             planner: BatchOutputPlanner(),
             executor: StudioBatchExecutor(client: client)
         )
+        let intelligenceProvider: any DocumentIntelligenceProviding
+        let initialIntelligenceAvailability: IntelligenceAvailability
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *) {
+            intelligenceProvider = FoundationModelsIntelligenceProvider()
+            initialIntelligenceAvailability = .modelNotReady
+        } else {
+            intelligenceProvider = UnavailableIntelligenceProvider(.requiresMacOS26)
+            initialIntelligenceAvailability = .requiresMacOS26
+        }
+        #else
+        intelligenceProvider = UnavailableIntelligenceProvider(.requiresMacOS26)
+        initialIntelligenceAvailability = .requiresMacOS26
+        #endif
+        let intelligenceModel = StudioIntelligenceViewModel(
+            provider: intelligenceProvider,
+            availability: initialIntelligenceAvailability
+        )
         return LocalOCRStudioView(
             model: model,
             actions: actions,
-            batchCoordinator: batchCoordinator
+            batchCoordinator: batchCoordinator,
+            intelligenceModel: intelligenceModel
         )
     }
 }

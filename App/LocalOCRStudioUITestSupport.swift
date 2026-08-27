@@ -1,5 +1,6 @@
 #if DEBUG
 import Foundation
+import LocalOCRIntelligence
 @_spi(Testing) @_spi(UITesting) import LocalOCRStudioKit
 
 @MainActor
@@ -8,6 +9,15 @@ enum LocalOCRStudioUITestSupport {
         case empty
         case result
         case resultBusy
+        case intelligenceAvailable
+        case intelligenceRunning
+        case intelligenceResults
+        case intelligenceMacOSUnavailable
+        case intelligenceDeviceIneligible
+        case intelligenceDisabled
+        case intelligenceNotReady
+        case intelligenceUnsupportedLanguage
+        case intelligenceError
         case error
         case batchReview
         case batchProcessing
@@ -20,7 +30,11 @@ enum LocalOCRStudioUITestSupport {
             case .batchReview, .batchProcessing, .batchComplete,
                  .batchSkippedOnly, .batchPlanningFailure:
                 true
-            case .empty, .result, .resultBusy, .error:
+            case .empty, .result, .resultBusy, .intelligenceAvailable,
+                 .intelligenceRunning, .intelligenceResults,
+                 .intelligenceMacOSUnavailable, .intelligenceDeviceIneligible,
+                 .intelligenceDisabled, .intelligenceNotReady,
+                 .intelligenceUnsupportedLanguage, .intelligenceError, .error:
                 false
             }
         }
@@ -31,7 +45,11 @@ enum LocalOCRStudioUITestSupport {
                 .processing
             case .batchComplete:
                 .complete
-            case .empty, .result, .resultBusy, .error,
+            case .empty, .result, .resultBusy, .intelligenceAvailable,
+                 .intelligenceRunning, .intelligenceResults,
+                 .intelligenceMacOSUnavailable, .intelligenceDeviceIneligible,
+                 .intelligenceDisabled, .intelligenceNotReady,
+                 .intelligenceUnsupportedLanguage, .intelligenceError, .error,
                  .batchSkippedOnly, .batchPlanningFailure:
                 .review
             }
@@ -57,11 +75,16 @@ enum LocalOCRStudioUITestSupport {
             textWriter: AtomicStudioTextWriter()
         )
         let batchCoordinator = makeBatchCoordinator(for: state)
+        let intelligenceModel = makeIntelligenceModel(for: state)
 
         switch state {
         case .empty:
             break
-        case .result, .resultBusy, .error:
+        case .result, .resultBusy, .intelligenceAvailable,
+             .intelligenceRunning, .intelligenceResults,
+             .intelligenceMacOSUnavailable, .intelligenceDeviceIneligible,
+             .intelligenceDisabled, .intelligenceNotReady,
+             .intelligenceUnsupportedLanguage, .intelligenceError, .error:
             model.open(fixtureSourceURL)
         case .batchReview, .batchProcessing, .batchComplete,
              .batchSkippedOnly, .batchPlanningFailure:
@@ -73,6 +96,7 @@ enum LocalOCRStudioUITestSupport {
                 model: model,
                 actions: actions,
                 batchCoordinator: batchCoordinator,
+                intelligenceModel: intelligenceModel,
                 isCreatingSearchablePDF: true,
                 searchableProgress: .assembling
             )
@@ -83,6 +107,7 @@ enum LocalOCRStudioUITestSupport {
                 model: model,
                 actions: actions,
                 batchCoordinator: batchCoordinator,
+                intelligenceModel: intelligenceModel,
                 workspaceMode: .batch,
                 isCreatingSearchablePDF: false,
                 searchableProgress: nil
@@ -92,7 +117,8 @@ enum LocalOCRStudioUITestSupport {
         return LocalOCRStudioView(
             model: model,
             actions: actions,
-            batchCoordinator: batchCoordinator
+            batchCoordinator: batchCoordinator,
+            intelligenceModel: intelligenceModel
         )
     }
 
@@ -111,7 +137,11 @@ enum LocalOCRStudioUITestSupport {
             case .empty, .batchReview, .batchProcessing, .batchComplete,
                  .batchSkippedOnly, .batchPlanningFailure:
                 throw FixtureError.unavailable
-            case .result, .resultBusy:
+            case .result, .resultBusy, .intelligenceAvailable,
+                 .intelligenceRunning, .intelligenceResults,
+                 .intelligenceMacOSUnavailable, .intelligenceDeviceIneligible,
+                 .intelligenceDisabled, .intelligenceNotReady,
+                 .intelligenceUnsupportedLanguage, .intelligenceError:
                 progress(.recognizing(page: 2, total: 2))
                 return StudioDocumentResult(
                     sourceURL: sourceURL,
@@ -144,6 +174,144 @@ enum LocalOCRStudioUITestSupport {
     private enum FixtureError: Error {
         case expectedFailure
         case unavailable
+    }
+
+    private static func makeIntelligenceModel(
+        for state: FixtureState
+    ) -> StudioIntelligenceViewModel {
+        let providerMode: FixtureIntelligenceProvider.Mode
+        let availability: IntelligenceAvailability
+        switch state {
+        case .intelligenceRunning:
+            providerMode = .running
+            availability = .available
+        case .intelligenceResults:
+            providerMode = .results
+            availability = .available
+        case .intelligenceError:
+            providerMode = .failure
+            availability = .available
+        case .intelligenceMacOSUnavailable:
+            providerMode = .results
+            availability = .requiresMacOS26
+        case .intelligenceDeviceIneligible:
+            providerMode = .results
+            availability = .deviceNotEligible
+        case .intelligenceDisabled:
+            providerMode = .results
+            availability = .appleIntelligenceNotEnabled
+        case .intelligenceNotReady:
+            providerMode = .results
+            availability = .modelNotReady
+        case .intelligenceUnsupportedLanguage:
+            providerMode = .results
+            availability = .unsupportedLanguage
+        case .empty, .result, .resultBusy, .intelligenceAvailable, .error,
+             .batchReview, .batchProcessing, .batchComplete,
+             .batchSkippedOnly, .batchPlanningFailure:
+            providerMode = .results
+            availability = .available
+        }
+
+        let provider = FixtureIntelligenceProvider(
+            mode: providerMode,
+            availability: availability
+        )
+        let model = StudioIntelligenceViewModel(
+            provider: provider,
+            availability: availability
+        )
+        let identity = "\(fixtureSourceURL.standardizedFileURL.path)|\(String(repeating: "a", count: 64))"
+        model.setDocument(fixtureIntelligenceDocument, identity: identity)
+
+        switch state {
+        case .intelligenceRunning:
+            model.summarize()
+        case .intelligenceResults:
+            model.summarize()
+            model.organize()
+            model.extractFields()
+        case .intelligenceError:
+            model.summarize()
+        default:
+            break
+        }
+        return model
+    }
+
+    private static let fixtureIntelligenceDocument = IntelligenceDocument(pages: [
+        IntelligenceSourcePage(number: 1, text: "Date: 2026-08-27"),
+        IntelligenceSourcePage(
+            number: 2,
+            text: "Quarterly planning is complete. Reference: QP-27"
+        ),
+    ])
+
+    private struct FixtureIntelligenceProvider: DocumentIntelligenceProviding {
+        enum Mode: Sendable {
+            case results
+            case running
+            case failure
+        }
+
+        let mode: Mode
+        let availability: IntelligenceAvailability
+
+        func summarize(_ document: IntelligenceDocument) async throws -> IntelligenceSummary {
+            try await waitOrFailIfNeeded()
+            return IntelligenceSummary(
+                text: "Quarterly planning is complete",
+                citations: [IntelligenceCitation(page: 2, quote: "Quarterly planning is complete.")]
+            )
+        }
+
+        func organize(_ document: IntelligenceDocument) async throws -> OrganizationSuggestion {
+            try await waitOrFailIfNeeded()
+            return OrganizationSuggestion(
+                title: "Quarterly Planning",
+                category: "Business",
+                tags: ["planning", "quarterly"],
+                citations: [IntelligenceCitation(page: 2, quote: "Quarterly planning is complete.")]
+            )
+        }
+
+        func extract(
+            _ names: [String],
+            from document: IntelligenceDocument
+        ) async throws -> [ExtractedDocumentField] {
+            try await waitOrFailIfNeeded()
+            return [
+                ExtractedDocumentField(
+                    name: "date",
+                    value: "2026-08-27",
+                    sourcePage: 1,
+                    evidence: "Date: 2026-08-27"
+                ),
+                ExtractedDocumentField(
+                    name: "total",
+                    value: nil,
+                    sourcePage: nil,
+                    evidence: nil
+                ),
+                ExtractedDocumentField(
+                    name: "reference_number",
+                    value: "QP-27",
+                    sourcePage: 2,
+                    evidence: "Reference: QP-27"
+                ),
+            ]
+        }
+
+        private func waitOrFailIfNeeded() async throws {
+            switch mode {
+            case .results:
+                return
+            case .running:
+                try await Task.sleep(for: .seconds(3_600))
+            case .failure:
+                throw FixtureError.expectedFailure
+            }
+        }
     }
 
     private static func makeBatchCoordinator(

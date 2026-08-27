@@ -5,6 +5,25 @@ import LocalOCRCore
 final class StudioViewLifecycle {
     private var inputGeneration = UUID()
     private var searchableGeneration = UUID()
+    private var intelligenceResultIdentity: String?
+
+    func synchronizeIntelligenceResult(
+        identity: String?,
+        install: () -> Void,
+        clear: () -> Void
+    ) {
+        guard intelligenceResultIdentity != identity else { return }
+        intelligenceResultIdentity = identity
+        if identity == nil {
+            clear()
+        } else {
+            install()
+        }
+    }
+
+    func invalidateIntelligenceResult() {
+        intelligenceResultIdentity = nil
+    }
 
     func beginPendingInput() -> UUID {
         let generation = UUID()
@@ -19,11 +38,13 @@ final class StudioViewLifecycle {
     func invalidateForOpen() {
         inputGeneration = UUID()
         searchableGeneration = UUID()
+        intelligenceResultIdentity = nil
     }
 
     func invalidateForReset() {
         inputGeneration = UUID()
         searchableGeneration = UUID()
+        intelligenceResultIdentity = nil
     }
 
     func performReset(
@@ -38,6 +59,7 @@ final class StudioViewLifecycle {
     func invalidateForDisappearance() {
         inputGeneration = UUID()
         searchableGeneration = UUID()
+        intelligenceResultIdentity = nil
     }
 
     func resolveInput(
