@@ -187,6 +187,137 @@ import Testing
         #expect(await intelligence.operationCount() == 0)
     }
 
+    @Test func forgedCurrentConsentStatusesFailClosedBeforeEveryOperationalDependency() async {
+        let receipts = [
+            ExternalDataConsentReceipt(
+                schemaVersion: 2,
+                policyVersion: 1,
+                acceptedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                externalProviderRiskAccepted: true,
+                documentToolAccessAccepted: true
+            ),
+            ExternalDataConsentReceipt(
+                schemaVersion: 1,
+                policyVersion: 2,
+                acceptedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                externalProviderRiskAccepted: true,
+                documentToolAccessAccepted: true
+            ),
+            ExternalDataConsentReceipt(
+                schemaVersion: 1,
+                policyVersion: 1,
+                acceptedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                externalProviderRiskAccepted: false,
+                documentToolAccessAccepted: true
+            ),
+            ExternalDataConsentReceipt(
+                schemaVersion: 1,
+                policyVersion: 1,
+                acceptedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                externalProviderRiskAccepted: true,
+                documentToolAccessAccepted: false
+            ),
+        ]
+        let expected = "{\"error\":{\"code\":\"external_data_acknowledgment_required\",\"message\":\"Accept the LocalOCR MCP external-data acknowledgment in LocalOCR Studio Help or with `localocr mcp-consent accept`, then retry.\"}}"
+
+        for receipt in receipts {
+            let service = FakeOCRService()
+            let loader = FakeTextLoader()
+            let intelligence = FakeIntelligenceProvider()
+            let consent = FakeConsentStore(.current(receipt))
+            let dispatcher = makeDispatcher(
+                service: service,
+                textLoader: loader,
+                intelligence: intelligence,
+                consentStore: consent,
+                currentDirectory: currentDirectory
+            )
+
+            let legacy = await dispatcher.callTool(
+                name: "get_pdf_page_count",
+                arguments: ["file_path": "private.pdf"]
+            )
+            let intelligenceResult = await dispatcher.callTool(
+                name: "summarize_document",
+                arguments: ["file_path": "private.pdf"]
+            )
+
+            #expect(text(in: legacy) == expected)
+            #expect(text(in: intelligenceResult) == expected)
+            #expect(await consent.statusReadCount() == 2)
+            #expect(await service.totalCallCount() == 0)
+            #expect(await loader.loadCount() == 0)
+            #expect(await intelligence.operationCount() == 0)
+        }
+    }
+
+    @Test func cancellationWhileConsentStatusIsSuspendedStopsBeforeOperationalAccess() async {
+        let service = FakeOCRService()
+        let loader = FakeTextLoader()
+        let intelligence = FakeIntelligenceProvider()
+        let consent = SuspendingConsentStore()
+        let dispatcher = makeDispatcher(
+            service: service,
+            textLoader: loader,
+            intelligence: intelligence,
+            consentStore: consent,
+            currentDirectory: currentDirectory
+        )
+        let task = Task {
+            await dispatcher.callTool(
+                name: "get_pdf_page_count",
+                arguments: ["file_path": "private.pdf"]
+            )
+        }
+
+        await consent.waitUntilStatusRequested()
+        task.cancel()
+        await consent.resumeStatus(with: .current(currentConsentReceipt))
+        let result = await task.value
+
+        #expect(text(in: result) == "{\"error\":{\"code\":\"cancelled\",\"message\":\"OCR processing was cancelled.\"}}")
+        #expect(await consent.statusReadCount() == 1)
+        #expect(await service.totalCallCount() == 0)
+        #expect(await loader.loadCount() == 0)
+        #expect(await intelligence.operationCount() == 0)
+    }
+
+    @Test func cancellationWhileTextLoadingIsSuspendedStopsEveryIntelligenceOperation() async {
+        let calls: [(String, [String: Value])] = [
+            ("summarize_document", ["file_path": "private.pdf"]),
+            ("organize_document", ["file_path": "private.pdf"]),
+            ("extract_document_fields", ["file_path": "private.pdf", "fields": ["date", "total"]]),
+        ]
+        let document = IntelligenceDocument(pages: [
+            .init(number: 1, text: "Private recognized content")
+        ])
+
+        for (name, arguments) in calls {
+            let service = FakeOCRService()
+            let loader = SuspendingTextLoader()
+            let intelligence = FakeIntelligenceProvider()
+            let dispatcher = makeDispatcher(
+                service: service,
+                textLoader: loader,
+                intelligence: intelligence,
+                currentDirectory: currentDirectory
+            )
+            let task = Task {
+                await dispatcher.callTool(name: name, arguments: arguments)
+            }
+
+            await loader.waitUntilLoadRequested()
+            task.cancel()
+            await loader.resumeLoad(with: document)
+            let result = await task.value
+
+            #expect(text(in: result) == "{\"error\":{\"code\":\"cancelled\",\"message\":\"OCR processing was cancelled.\"}}")
+            #expect(await service.totalCallCount() == 0)
+            #expect(await loader.loadCount() == 1)
+            #expect(await intelligence.operationCount() == 0)
+        }
+    }
+
     @Test func currentConsentDispatchesEachPurposeLimitedIntelligenceOperationWithStructuredResults() async throws {
         let service = FakeOCRService()
         let loader = FakeTextLoader()
@@ -558,4 +689,74 @@ private actor FakeConsentStore: ExternalDataConsentStoring {
     }
 
     func statusReadCount() -> Int { reads }
+}
+
+private actor SuspendingConsentStore: ExternalDataConsentStoring {
+    private var statusContinuation: CheckedContinuation<ExternalDataConsentStatus, Never>?
+    private var statusWaiters: [CheckedContinuation<Void, Never>] = []
+    private var reads = 0
+
+    func status() async -> ExternalDataConsentStatus {
+        reads += 1
+        return await withCheckedContinuation { continuation in
+            statusContinuation = continuation
+            let waiters = statusWaiters
+            statusWaiters.removeAll()
+            for waiter in waiters {
+                waiter.resume()
+            }
+        }
+    }
+
+    func acceptBothStatements(at _: Date) async throws {}
+    func revoke() async throws {}
+
+    func waitUntilStatusRequested() async {
+        guard statusContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            statusWaiters.append(continuation)
+        }
+    }
+
+    func resumeStatus(with status: ExternalDataConsentStatus) {
+        let continuation = statusContinuation
+        statusContinuation = nil
+        continuation?.resume(returning: status)
+    }
+
+    func statusReadCount() -> Int { reads }
+}
+
+private actor SuspendingTextLoader: DocumentTextLoading {
+    private var loadContinuation: CheckedContinuation<IntelligenceDocument, Never>?
+    private var loadWaiters: [CheckedContinuation<Void, Never>] = []
+    private var loads = 0
+
+    func load(_ sourceURL: URL) async throws -> IntelligenceDocument {
+        _ = sourceURL
+        loads += 1
+        return await withCheckedContinuation { continuation in
+            loadContinuation = continuation
+            let waiters = loadWaiters
+            loadWaiters.removeAll()
+            for waiter in waiters {
+                waiter.resume()
+            }
+        }
+    }
+
+    func waitUntilLoadRequested() async {
+        guard loadContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            loadWaiters.append(continuation)
+        }
+    }
+
+    func resumeLoad(with document: IntelligenceDocument) {
+        let continuation = loadContinuation
+        loadContinuation = nil
+        continuation?.resume(returning: document)
+    }
+
+    func loadCount() -> Int { loads }
 }

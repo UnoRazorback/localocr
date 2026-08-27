@@ -29,12 +29,19 @@ public struct MCPToolDispatcher: Sendable {
         do {
             try Task.checkCancellation()
             let request = try decoder.decode(toolName: name, arguments: arguments)
-            guard case .current = await consentStore.status() else {
+            let consentStatus = await consentStore.status()
+            guard case let .current(receipt) = consentStatus,
+                  receipt.schemaVersion == ExternalDataConsentReceipt.currentSchemaVersion,
+                  receipt.policyVersion == ExternalDataConsentReceipt.currentPolicyVersion,
+                  receipt.externalProviderRiskAccepted,
+                  receipt.documentToolAccessAccepted
+            else {
                 return errorResult(
                     code: "external_data_acknowledgment_required",
                     message: "Accept the LocalOCR MCP external-data acknowledgment in LocalOCR Studio Help or with `localocr mcp-consent accept`, then retry."
                 )
             }
+            try Task.checkCancellation()
 
             let result: CallTool.Result
             switch request {
@@ -54,6 +61,7 @@ public struct MCPToolDispatcher: Sendable {
                 result = objectResult(try await service.makeSearchablePDF(request))
             case let .summarizeDocument(request):
                 let document = try await textLoader.load(request.fileURL)
+                try Task.checkCancellation()
                 do {
                     result = objectResult(try await intelligence.summarize(document))
                 } catch let error as IntelligenceError {
@@ -65,6 +73,7 @@ public struct MCPToolDispatcher: Sendable {
                 }
             case let .organizeDocument(request):
                 let document = try await textLoader.load(request.fileURL)
+                try Task.checkCancellation()
                 do {
                     result = objectResult(try await intelligence.organize(document))
                 } catch let error as IntelligenceError {
@@ -76,6 +85,7 @@ public struct MCPToolDispatcher: Sendable {
                 }
             case let .extractDocumentFields(request):
                 let document = try await textLoader.load(request.fileURL)
+                try Task.checkCancellation()
                 do {
                     result = objectResult(ExtractDocumentFieldsResponse(
                         fields: try await intelligence.extract(request.fields, from: document)
