@@ -24,7 +24,7 @@ FORBIDDEN_SOURCE_PATH = re.compile(
 FORBIDDEN_SOURCE_CONTENT = (
     re.compile(r"(?m)^\s*import\s+(?:CFNetwork|Network)\b"),
     re.compile(r"\b(?:URLSession|URLRequest|URLResponse|HTTPURLResponse|EventSource)\b"),
-    re.compile(r"\b(?:Data|NSData|String|NSString)\s*\(\s*contentsOf\s*:"),
+    re.compile(r"\b(?:Data|NSData|String|NSString)(?:\s*\.\s*init)?\s*\(\s*contentsOf\s*:"),
     re.compile(r"\bURL\s*\.\s*openConnection\s*\("),
     re.compile(r"\bNS(?:MutableURLRequest|URLRequest|URLConnection|URLSession)\b"),
     re.compile(r"\bOAuth[A-Za-z0-9_]*\b"),
@@ -356,7 +356,9 @@ def test_manifest_allows_json_data_encoding_and_file_descriptor_stdio(tmp_path: 
         ("Safe.swift", "import CFNetwork\n"),
         ("Safe.swift", "let session = URLSession.shared\n"),
         ("Remote.swift", 'let data = try Data(contentsOf: URL(string: "https://example.com")!)\n'),
+        ("Remote.swift", 'let data = try Data.init(contentsOf: URL(string: "https://example.com")!)\n'),
         ("Remote.swift", 'let text = try String(contentsOf: URL(string: "https://example.com")!)\n'),
+        ("Remote.swift", 'let text = try String.init(contentsOf: URL(string: "https://example.com")!)\n'),
         ("Remote.swift", "let connection = URL.openConnection()\n"),
         ("Remote.swift", "let request = NSURLRequest(url: URL(fileURLWithPath: \"/tmp/x\"))\n"),
         ("Remote.swift", "let request = NSMutableURLRequest(url: URL(fileURLWithPath: \"/tmp/x\"))\n"),
