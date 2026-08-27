@@ -5,7 +5,7 @@
     "release": "0.12.1",
     "commit": "a0ae212ebf6eab5f754c3129608bc5557637e605",
     "retrieved_on": "2026-08-27",
-    "selection_rule": "Only reviewed stdio-server source from Sources/MCP may be added; this initial boundary contains only the LocalOCR identity file.",
+    "selection_rule": "Only reviewed JSON-RPC, lifecycle, tool, ping, and cancellation source from Sources/MCP may be added; all retained adaptations are data-only and exclude client and network surfaces.",
     "exclusions": [
       "client",
       "HTTP",
@@ -27,7 +27,98 @@
       "path": "MCPStdio.swift",
       "local_only": true,
       "local_sha256": "33449fc8868c338aeb562b53f2311e9606bc4843043ecf6907a4070958e9027b"
+    },
+    {
+      "path": "Base/ID.swift",
+      "origin": "Sources/MCP/Base/ID.swift",
+      "upstream_sha256": "519d7804eabbf14299b8f067374bf714aa03303b711d2c4423e0078e8e4ee4da",
+      "local_sha256": "1a4a7dc872592790f9c507fd77b1b233e7b854610b8506e3fcaf4f3a77ef8b40"
+    },
+    {
+      "path": "Base/Value.swift",
+      "origin": "Sources/MCP/Base/Value.swift",
+      "upstream_sha256": "6a8399cb11db842faac9f549143058e24d15763705be65701ffba714111aabeb",
+      "local_sha256": "ab58a15f94ed97ccee4834f22d35fa94efea1c938f7362d9fabcbbe172081312"
+    },
+    {
+      "path": "Base/Error.swift",
+      "origin": "Sources/MCP/Base/Error.swift",
+      "upstream_sha256": "8e8e09ad9a44c50aa27109e4109630bb166d431bfa19ec833b8339b4f45dc1e5",
+      "local_sha256": "694c446f118f465a9ff4c8c5e3478a53c3463a6f1dbd29e64f120e2eb7c7ed2c"
+    },
+    {
+      "path": "Base/Messages.swift",
+      "origin": "Sources/MCP/Base/Messages.swift",
+      "upstream_sha256": "7162e0b3e6bc851bcc266ce8358e77c0026d3d91a4d6f2de07ff18f86f1b4f90",
+      "local_sha256": "49c1df8d4187238dd9f20a5f16ab470263146ba39fd65be4847820134af7dee6"
+    },
+    {
+      "path": "Base/Lifecycle.swift",
+      "origin": "Sources/MCP/Base/Lifecycle.swift",
+      "upstream_sha256": "e360527fa92f79b8fa5793d793aac60051825aa3b25932d83e6077b00bcbfeb3",
+      "local_sha256": "4a23d6c5dfaacdfa0016ee1888e11cc713636bb52e7a0b8a279c9b48b44a2bf1"
+    },
+    {
+      "path": "Base/Versioning.swift",
+      "origin": "Sources/MCP/Base/Versioning.swift",
+      "upstream_sha256": "90e48d38b27f138c3e33a4e3ea47c48f5e00b007c01a6c5dbc9287d4099912c5",
+      "local_sha256": "2321290c2405343f0c1548bb83c17932915a021691e9e727d7a1e5e7ba801363"
+    },
+    {
+      "path": "Base/Ping.swift",
+      "origin": "Sources/MCP/Base/Utilities/Ping.swift",
+      "upstream_sha256": "8256e931cd320ba1fc7d3a4b1958f330e80d253ae2e0521b44f8368618418711",
+      "local_sha256": "6e4e6e463da747e326489faeea159f8449569ec55167014c7f78a13e2fcff498"
+    },
+    {
+      "path": "Base/Cancellation.swift",
+      "origin": "Sources/MCP/Base/Utilities/Cancellation.swift",
+      "upstream_sha256": "31c75336c5351f15a88e8f29a580f8b55859d7899f41814aa9f92519a0e7682e",
+      "local_sha256": "16b3e5d3ad58a14cf7c21f8150787f744b48fbbd39bbee0f2616809a4014d7ba"
+    },
+    {
+      "path": "Server/Tools.swift",
+      "origin": "Sources/MCP/Server/Tools.swift",
+      "upstream_sha256": "79c4fc03714468c4a41c05544371ea7ffbf4517dc647db1b679abf8b71df7f0f",
+      "local_sha256": "9208afbdf93b6b58be1780fa3ab9310ef8d1b072d6bf40c9c7e2d9cbc3270672"
     }
   ],
-  "adaptations": []
+  "adaptations": [
+    {
+      "path": "Base/ID.swift",
+      "reason": "Keeps JSON-RPC scalar encoding while representing a null request ID explicitly and naming the integer case int for LocalOCR's typed contract."
+    },
+    {
+      "path": "Base/Value.swift",
+      "reason": "Retains only the JSON Value wire cases, Codable behavior, literal construction, accessors, and local data URL handling needed by LocalOCR tool schemas and results."
+    },
+    {
+      "path": "Base/Error.swift",
+      "reason": "Retains JSON-RPC standard and server errors while removing URL elicitation, transport errors, and the System dependency because the stdio type boundary has no network or client surface."
+    },
+    {
+      "path": "Base/Messages.swift",
+      "reason": "Retains public JSON-RPC request, response, and notification encoding while removing type-erased dispatch boxes that belong to the later server lifecycle implementation."
+    },
+    {
+      "path": "Base/Lifecycle.swift",
+      "reason": "Uses data-only nested lifecycle capability and implementation records instead of importing upstream Client and Server actors or their HTTP context."
+    },
+    {
+      "path": "Base/Versioning.swift",
+      "reason": "Limits the supported protocol set to the LocalOCR stdio compatibility versions and exposes deterministic negotiation without unrelated SDK version expansion."
+    },
+    {
+      "path": "Base/Ping.swift",
+      "reason": "Relocates the unchanged ping method into the audited Base directory used by the local module."
+    },
+    {
+      "path": "Base/Cancellation.swift",
+      "reason": "Relocates the cancellation notification into the audited Base directory and retains only its request ID and reason wire fields."
+    },
+    {
+      "path": "Server/Tools.swift",
+      "reason": "Retains LocalOCR's tool definitions, annotations, schemas, text content, list, and call messages while removing icons, resources, media, and resource-link content types."
+    }
+  ]
 }

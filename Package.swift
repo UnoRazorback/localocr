@@ -119,6 +119,12 @@ let package = Package(
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
         .testTarget(
+            name: "MCPStdioTests",
+            dependencies: ["MCPStdio"],
+            path: "tests/MCPStdioTests",
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
+        .testTarget(
             name: "LocalOCRIntelligenceTests",
             dependencies: ["LocalOCRIntelligence", "LocalOCRService", "LocalOCRCore"],
             path: "tests/LocalOCRIntelligenceTests",
