@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .library(name: "LocalOCRCore", targets: ["LocalOCRCore"]),
         .library(name: "LocalOCRService", targets: ["LocalOCRService"]),
+        .library(name: "LocalOCRIntelligence", targets: ["LocalOCRIntelligence"]),
         .library(name: "LocalOCRStudioKit", targets: ["LocalOCRStudioKit"]),
         .executable(name: "localocr", targets: ["LocalOCRCLIExecutable"]),
         .executable(name: "localocr-mcp", targets: ["LocalOCRMCPExecutable"])
@@ -32,13 +33,19 @@ let package = Package(
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
         .target(
+            name: "LocalOCRIntelligence",
+            dependencies: ["LocalOCRService"],
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
+        .target(
             name: "LocalOCRStudioKit",
-            dependencies: ["LocalOCRService", "LocalOCRCore"],
+            dependencies: ["LocalOCRIntelligence", "LocalOCRService", "LocalOCRCore"],
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
         .target(
             name: "LocalOCRCommandKit",
             dependencies: [
+                "LocalOCRIntelligence",
                 "LocalOCRService",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ],
@@ -47,6 +54,7 @@ let package = Package(
         .target(
             name: "LocalOCRMCP",
             dependencies: [
+                "LocalOCRIntelligence",
                 "LocalOCRService",
                 .product(name: "MCP", package: "swift-sdk")
             ],
@@ -97,6 +105,12 @@ let package = Package(
                 .product(name: "MCP", package: "swift-sdk")
             ],
             path: "tests/LocalOCRMCPTests",
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
+        .testTarget(
+            name: "LocalOCRIntelligenceTests",
+            dependencies: ["LocalOCRIntelligence", "LocalOCRService"],
+            path: "tests/LocalOCRIntelligenceTests",
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         )
     ]
