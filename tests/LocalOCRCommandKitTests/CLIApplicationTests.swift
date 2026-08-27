@@ -1,5 +1,7 @@
+import Foundation
 import Testing
 @testable import LocalOCRCommandKit
+import LocalOCRIntelligence
 import LocalOCRService
 
 @Test func inspectJSONUsesWireContractAndKeepsStderrEmpty() async {
@@ -153,7 +155,7 @@ import LocalOCRService
 }
 
 @Test func helpIsAvailableForEveryCommand() async {
-    for command in ["page-count", "inspect", "ocr", "batch", "image", "searchable"] {
+    for command in ["page-count", "inspect", "ocr", "batch", "image", "searchable", "mcp-consent"] {
         let harness = CLIHarness(service: FixtureService())
 
         #expect(await harness.run([command, "--help"]) == 0)
@@ -185,4 +187,124 @@ import LocalOCRService
 
     #expect(await operationHarness.run(["inspect", "/tmp/input.pdf"]) == 1)
     #expect(await cancellationHarness.run(["inspect", "/tmp/input.pdf"]) == 4)
+}
+
+@Test func mcpConsentStatusReportsWhetherConsentIsCurrent() async {
+    let requiredIO = FixtureConsentIO(isTerminal: false, answers: [])
+    let requiredHarness = CLIHarness(
+        service: FixtureService(),
+        consentStore: FixtureConsentStore(),
+        consentIO: requiredIO
+    )
+    let receipt = ExternalDataConsentReceipt(
+        schemaVersion: ExternalDataConsentReceipt.currentSchemaVersion,
+        policyVersion: ExternalDataConsentReceipt.currentPolicyVersion,
+        acceptedAt: Date(timeIntervalSinceReferenceDate: 0),
+        externalProviderRiskAccepted: true,
+        documentToolAccessAccepted: true
+    )
+    let currentIO = FixtureConsentIO(isTerminal: false, answers: [])
+    let currentHarness = CLIHarness(
+        service: FixtureService(),
+        consentStore: FixtureConsentStore(status: .current(receipt)),
+        consentIO: currentIO
+    )
+
+    #expect(await requiredHarness.run(["mcp-consent", "status"]) == 2)
+    #expect(requiredIO.stdoutText == "required\n")
+    #expect(await currentHarness.run(["mcp-consent", "status"]) == 0)
+    #expect(currentIO.stdoutText == "current\n")
+}
+
+@Test func mcpConsentAcceptFailsClosedOnEmptyOrEOFAtEitherAcknowledgment() async {
+    for answers: [String?] in [["", "yes"], ["yes", ""], [], ["yes"]] {
+        let store = FixtureConsentStore()
+        let io = FixtureConsentIO(isTerminal: true, answers: answers)
+        let harness = CLIHarness(service: FixtureService(), consentStore: store, consentIO: io)
+
+        #expect(await harness.run(["mcp-consent", "accept"]) == 2)
+        #expect(await store.acceptanceCount() == 0)
+    }
+}
+
+@Test func mcpConsentAcceptCancelsWhenEitherAcknowledgmentIsNo() async {
+    for answers: [String?] in [["n"], ["yes", "no"]] {
+        let store = FixtureConsentStore()
+        let io = FixtureConsentIO(isTerminal: true, answers: answers)
+        let harness = CLIHarness(service: FixtureService(), consentStore: store, consentIO: io)
+
+        #expect(await harness.run(["mcp-consent", "accept"]) == 2)
+        #expect(await store.acceptanceCount() == 0)
+    }
+}
+
+@Test func mcpConsentAcceptRejectsAnswersOtherThanYOrYes() async {
+    let store = FixtureConsentStore()
+    let io = FixtureConsentIO(isTerminal: true, answers: ["Y", "yes "])
+    let harness = CLIHarness(service: FixtureService(), consentStore: store, consentIO: io)
+
+    #expect(await harness.run(["mcp-consent", "accept"]) == 2)
+    #expect(await store.acceptanceCount() == 0)
+}
+
+@Test func mcpConsentAcceptRecordsConsentOnlyAfterTwoAffirmativeAcknowledgments() async {
+    let store = FixtureConsentStore()
+    let io = FixtureConsentIO(isTerminal: true, answers: ["Y", "YES"])
+    let harness = CLIHarness(service: FixtureService(), consentStore: store, consentIO: io)
+
+    #expect(await harness.run(["mcp-consent", "accept"]) == 0)
+    #expect(await store.acceptanceCount() == 1)
+    #expect(io.stdoutText.contains("""
+    LocalOCR and Apple Foundation Models process documents locally on this Mac,
+    and LocalOCR does not upload them. When you connect LocalOCR to an agent
+    through MCP, that MCP client or its AI provider may send filenames, paths,
+    document text, summaries, extracted fields, and tool results to an outside
+    service. Transmission, retention, model training, and other handling are
+    controlled by the agent and provider, not LocalOCR. Review their privacy and
+    data policies, and only continue if you are authorized to share the data.
+    """))
+    #expect(io.stdoutText.contains("I understand that my MCP client or agent may transmit LocalOCR inputs and results to an outside provider."))
+    #expect(io.stdoutText.contains("I confirm that I am authorized to share this data and choose to enable LocalOCR MCP document tools."))
+    #expect(io.stdoutText.contains("Accept external-provider transmission risk? [y/N]"))
+    #expect(io.stdoutText.contains("Allow LocalOCR MCP document tools to access chosen files? [y/N]"))
+}
+
+@Test func mcpConsentAcceptFailsClosedWithoutAnInteractiveTerminal() async {
+    let store = FixtureConsentStore()
+    let io = FixtureConsentIO(isTerminal: false, answers: [])
+    let harness = CLIHarness(service: FixtureService(), consentStore: store, consentIO: io)
+
+    #expect(await harness.run(["mcp-consent", "accept"]) == 2)
+    #expect(io.stderrText.contains("interactive terminal"))
+    #expect(await store.acceptanceCount() == 0)
+}
+
+@Test func mcpConsentAcceptRejectsFlagsThatCouldBypassInteraction() async {
+    let store = FixtureConsentStore()
+    let io = FixtureConsentIO(isTerminal: true, answers: ["yes", "yes"])
+    let harness = CLIHarness(service: FixtureService(), consentStore: store, consentIO: io)
+
+    #expect(await harness.run(["mcp-consent", "accept", "--yes"]) == 2)
+    #expect(await store.acceptanceCount() == 0)
+}
+
+@Test func mcpConsentRevokeWorksWithoutAnInteractiveTerminal() async {
+    let store = FixtureConsentStore()
+    let io = FixtureConsentIO(isTerminal: false, answers: [])
+    let harness = CLIHarness(service: FixtureService(), consentStore: store, consentIO: io)
+
+    #expect(await harness.run(["mcp-consent", "revoke"]) == 0)
+    #expect(await store.revocations() == 1)
+}
+
+@Test func mcpConsentStoreFailuresUseTheOperationalExitCode() async {
+    let io = FixtureConsentIO(isTerminal: true, answers: ["yes", "yes"])
+    let harness = CLIHarness(
+        service: FixtureService(),
+        consentStore: FailingConsentStore(),
+        consentIO: io
+    )
+
+    #expect(await harness.run(["mcp-consent", "accept"]) == 1)
+    #expect(harness.stderr.contains("error:"))
 }

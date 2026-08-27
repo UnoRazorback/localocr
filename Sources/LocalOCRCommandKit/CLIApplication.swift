@@ -1,5 +1,6 @@
 import Foundation
 import LocalOCRCore
+import LocalOCRIntelligence
 import LocalOCRService
 
 enum CLIArgumentError: Error, Sendable, CustomStringConvertible {
@@ -69,10 +70,19 @@ struct ParsedCommandOptions: Sendable {
 public struct CLIApplication: Sendable {
     let service: any LocalOCRServing
     let output: CommandOutput
+    let consentStore: any ExternalDataConsentStoring
+    let consentIO: any ConsentCommandIO
 
-    public init(service: any LocalOCRServing, output: CommandOutput) {
+    public init(
+        service: any LocalOCRServing,
+        output: CommandOutput,
+        consentStore: any ExternalDataConsentStoring = ExternalDataConsentStore(),
+        consentIO: any ConsentCommandIO = StandardConsentCommandIO()
+    ) {
         self.service = service
         self.output = output
+        self.consentStore = consentStore
+        self.consentIO = consentIO
     }
 
     public func run(arguments: [String]) async -> Int32 {
@@ -108,6 +118,7 @@ public struct CLIApplication: Sendable {
             case "batch": return try await runBatch(arguments: remainder)
             case "image": return try await runImage(arguments: remainder)
             case "searchable": return try await runSearchable(arguments: remainder)
+            case "mcp-consent": return try await runMCPConsent(arguments: remainder)
             default: throw CLIArgumentError.message("unknown command \(command)")
             }
         } catch is CancellationError {
@@ -147,7 +158,7 @@ public struct CLIApplication: Sendable {
     static let rootHelp = """
     Usage: localocr <command> [options]
 
-    Commands: page-count, inspect, ocr, batch, image, searchable
+    Commands: page-count, inspect, ocr, batch, image, searchable, mcp-consent
     """ + "\n"
 
     static func help(for command: String) -> String? {
@@ -158,7 +169,74 @@ public struct CLIApplication: Sendable {
         case "batch": "Usage: localocr batch <files...> [--pages <spec>] [--dpi <72...600>] [--force-ocr] [--detail] [--no-cache] [--json]\n"
         case "image": "Usage: localocr image <file> [--language <bcp47>]... [--no-language-correction] [--json]\n"
         case "searchable": "Usage: localocr searchable <file> [--output <file>] [--dpi <72...600>] [--force-ocr] [--no-cache] [--json]\n"
+        case "mcp-consent": "Usage: localocr mcp-consent <status|accept|revoke>\n"
         default: nil
         }
     }
+
+    func runMCPConsent(arguments: [String]) async throws -> Int32 {
+        guard arguments.count == 1, let operation = arguments.first else {
+            throw CLIArgumentError.message("usage: localocr mcp-consent <status|accept|revoke>")
+        }
+
+        switch operation {
+        case "status":
+            switch await consentStore.status() {
+            case .current:
+                consentIO.stdout("current\n")
+                return 0
+            case .required:
+                consentIO.stdout("required\n")
+                return 2
+            }
+        case "accept":
+            return try await acceptMCPConsent()
+        case "revoke":
+            try await consentStore.revoke()
+            consentIO.stdout("revoked\n")
+            return 0
+        default:
+            throw CLIArgumentError.message("unknown mcp-consent operation \(operation)")
+        }
+    }
+
+    private func acceptMCPConsent() async throws -> Int32 {
+        guard consentIO.isTerminal else {
+            consentIO.stderr("error: mcp-consent accept requires an interactive terminal\n")
+            return 2
+        }
+
+        consentIO.stdout(Self.externalDataDisclosure + "\n\n")
+        consentIO.stdout(Self.externalProviderRiskAcknowledgment + "\n")
+        guard promptForAcknowledgment("Accept external-provider transmission risk? [y/N] ") else {
+            return 2
+        }
+        consentIO.stdout(Self.documentToolAccessAcknowledgment + "\n")
+        guard promptForAcknowledgment("Allow LocalOCR MCP document tools to access chosen files? [y/N] ") else {
+            return 2
+        }
+
+        try await consentStore.acceptBothStatements(at: Date())
+        consentIO.stdout("accepted\n")
+        return 0
+    }
+
+    private func promptForAcknowledgment(_ prompt: String) -> Bool {
+        consentIO.stdout(prompt)
+        guard let answer = consentIO.readLine() else { return false }
+        return ["y", "yes"].contains(answer.lowercased())
+    }
+
+    static let externalDataDisclosure = """
+    LocalOCR and Apple Foundation Models process documents locally on this Mac,
+    and LocalOCR does not upload them. When you connect LocalOCR to an agent
+    through MCP, that MCP client or its AI provider may send filenames, paths,
+    document text, summaries, extracted fields, and tool results to an outside
+    service. Transmission, retention, model training, and other handling are
+    controlled by the agent and provider, not LocalOCR. Review their privacy and
+    data policies, and only continue if you are authorized to share the data.
+    """
+
+    static let externalProviderRiskAcknowledgment = "I understand that my MCP client or agent may transmit LocalOCR inputs and results to an outside provider."
+    static let documentToolAccessAcknowledgment = "I confirm that I am authorized to share this data and choose to enable LocalOCR MCP document tools."
 }

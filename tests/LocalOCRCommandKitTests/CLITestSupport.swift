@@ -1,6 +1,7 @@
 import Foundation
 import LocalOCRCore
 import LocalOCRCommandKit
+import LocalOCRIntelligence
 import LocalOCRService
 
 enum FixtureFailure: Error, Sendable {
@@ -187,6 +188,22 @@ final class CLIHarness: @unchecked Sendable {
         )
     }
 
+    init(
+        service: any LocalOCRServing,
+        consentStore: any ExternalDataConsentStoring,
+        consentIO: any ConsentCommandIO
+    ) {
+        application = CLIApplication(
+            service: service,
+            output: CommandOutput(
+                stdout: { [capture] text in capture.appendStdout(text) },
+                stderr: { [capture] text in capture.appendStderr(text) }
+            ),
+            consentStore: consentStore,
+            consentIO: consentIO
+        )
+    }
+
     var stdout: String {
         capture.readStdout()
     }
@@ -202,5 +219,89 @@ final class CLIHarness: @unchecked Sendable {
 
     func run(_ arguments: [String]) async -> Int32 {
         await application.run(arguments: arguments)
+    }
+}
+
+actor FixtureConsentStore: ExternalDataConsentStoring {
+    private var storedStatus: ExternalDataConsentStatus
+    private var acceptedDates: [Date] = []
+    private var revokeCount = 0
+
+    init(status: ExternalDataConsentStatus = .required) {
+        storedStatus = status
+    }
+
+    func status() async -> ExternalDataConsentStatus {
+        storedStatus
+    }
+
+    func acceptBothStatements(at date: Date) async throws {
+        acceptedDates.append(date)
+        storedStatus = .current(
+            ExternalDataConsentReceipt(
+                schemaVersion: ExternalDataConsentReceipt.currentSchemaVersion,
+                policyVersion: ExternalDataConsentReceipt.currentPolicyVersion,
+                acceptedAt: date,
+                externalProviderRiskAccepted: true,
+                documentToolAccessAccepted: true
+            )
+        )
+    }
+
+    func revoke() async throws {
+        revokeCount += 1
+        storedStatus = .required
+    }
+
+    func acceptanceCount() -> Int { acceptedDates.count }
+    func revocations() -> Int { revokeCount }
+}
+
+actor FailingConsentStore: ExternalDataConsentStoring {
+    func status() async -> ExternalDataConsentStatus {
+        .required
+    }
+
+    func acceptBothStatements(at date: Date) async throws {
+        throw FixtureFailure.operation
+    }
+
+    func revoke() async throws {
+        throw FixtureFailure.operation
+    }
+}
+
+final class FixtureConsentIO: @unchecked Sendable, ConsentCommandIO {
+    private let lock = NSLock()
+    let isTerminal: Bool
+    private var answers: [String?]
+    private var capturedStdout = ""
+    private var capturedStderr = ""
+
+    init(isTerminal: Bool, answers: [String?]) {
+        self.isTerminal = isTerminal
+        self.answers = answers
+    }
+
+    func readLine() -> String? {
+        lock.withLock {
+            answers.isEmpty ? nil : answers.removeFirst()
+        }
+    }
+
+    func stdout(_ text: String) {
+        lock.withLock { capturedStdout += text }
+    }
+
+    func stderr(_ text: String) {
+        lock.withLock { capturedStderr += text }
+    }
+
+    var stdoutText: String {
+        lock.withLock { capturedStdout }
+    }
+
+    var stderrText: String {
+        lock.withLock { capturedStderr }
     }
 }

@@ -8,7 +8,8 @@ public struct LocalOCRCommandSurface: AsyncParsableCommand {
         commandName: "localocr",
         version: LocalOCRRuntime.version,
         subcommands: [
-            PageCount.self, Inspect.self, OCR.self, Batch.self, Image.self, Searchable.self
+            PageCount.self, Inspect.self, OCR.self, Batch.self, Image.self, Searchable.self,
+            MCPConsent.self
         ]
     )
 
@@ -78,5 +79,31 @@ public struct LocalOCRCommandSurface: AsyncParsableCommand {
         @Flag(name: .long) public var json = false
         public init() {}
         public mutating func run() async throws {}
+    }
+
+    public struct MCPConsent: AsyncParsableCommand {
+        public static let configuration = CommandConfiguration(
+            commandName: "mcp-consent",
+            subcommands: [Status.self, Accept.self, Revoke.self]
+        )
+
+        public init() {}
+
+        public mutating func run() async throws {}
+
+        public struct Status: AsyncParsableCommand {
+            public init() {}
+            public mutating func run() async throws {}
+        }
+
+        public struct Accept: AsyncParsableCommand {
+            public init() {}
+            public mutating func run() async throws {}
+        }
+
+        public struct Revoke: AsyncParsableCommand {
+            public init() {}
+            public mutating func run() async throws {}
+        }
     }
 }

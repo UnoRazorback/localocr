@@ -66,3 +66,15 @@ import Testing
         _ = try LocalOCRCommandSurface.parseAsRoot(["batch", "--json"])
     }
 }
+
+@Test func argumentSurfaceRegistersMCPConsentCommands() throws {
+    _ = try LocalOCRCommandSurface.parseAsRoot(["mcp-consent", "status"])
+    _ = try LocalOCRCommandSurface.parseAsRoot(["mcp-consent", "accept"])
+    _ = try LocalOCRCommandSurface.parseAsRoot(["mcp-consent", "revoke"])
+}
+
+@Test func argumentSurfaceRejectsConsentBypassFlags() {
+    #expect(throws: (any Error).self) {
+        _ = try LocalOCRCommandSurface.parseAsRoot(["mcp-consent", "accept", "--yes"])
+    }
+}

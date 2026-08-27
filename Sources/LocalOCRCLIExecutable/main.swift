@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import LocalOCRCommandKit
+import LocalOCRIntelligence
 import LocalOCRService
 
 let application = CLIApplication(
@@ -12,7 +13,9 @@ let application = CLIApplication(
         stderr: { text in
             FileHandle.standardError.write(Data(text.utf8))
         }
-    )
+    ),
+    consentStore: ExternalDataConsentStore(),
+    consentIO: StandardConsentCommandIO()
 )
 
 let arguments = Array(CommandLine.arguments.dropFirst())
