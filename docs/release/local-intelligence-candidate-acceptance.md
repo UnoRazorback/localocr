@@ -11,7 +11,7 @@ or a release version/tag.
 
 ## Candidate identity
 
-- Candidate commit: `114518b54f68ccfa3de980da8c0964031a29862b`
+- Candidate commit: `fe869601968f4c3e3689698bab711aa625b2b435`
 - Branch: `feature/local-intelligence-mcp-faq`
 - Evidence date: 2026-08-27
 - Exact acceptance-check window recorded below: 2026-08-27T18:57:54Z through
@@ -80,13 +80,42 @@ The real stdio test observed exactly these nine tools, in order:
 `make_searchable_pdf`, `summarize_document`, `organize_document`, and
 `extract_document_fields`.
 
+### Review fix round 1
+
+At candidate commit `fe86960`, a fresh non-build verification ran from
+2026-08-27T19:06:25Z through 2026-08-27T19:06:26Z:
+
+```text
+bash -n scripts/build-native-tools.sh scripts/build-unsigned-studio-app.sh \
+  scripts/stage-direct-release.sh scripts/verify-direct-release.sh
+Result: pass
+
+.venv/bin/python -m pytest -q [11 named release-policy and guard tests]
+Result: 11 passed, 0 failed, 5 existing dependency deprecation warnings
+
+git diff --check
+Result: pass, no output
+```
+
+These tests prove that staging and verification require exact macOS 14.0,
+candidate scripts reject CFNetwork and Network framework dependencies, system
+install-name validation rejects `.`/`..`/empty traversal components, and every
+Foundation Models symbol in the provider, generated types, MCP entrypoint, and
+Studio app entrypoint is inside a positive compile guard. The guard contract
+also rejects an appended unguarded provider reference for each source.
+
+The artifact-policy test was then run separately against the existing
+`localocr-mcp` and failed, as required, because both forbidden frameworks are
+still linked. That failure is the current acceptance blocker and is not
+suppressed or reclassified as success.
+
 ## Complete automated matrix
 
 | Gate | Result at exact candidate commit | Evidence |
 |---|---|---|
 | Clean start | PASS | `git status --short` produced no output before the focused check. |
 | Script syntax | PASS | All three changed release scripts passed `bash -n`. |
-| Focused release contracts | PASS | 9 passed, 0 failed. |
+| Focused release contracts | PASS | Initial exact-candidate selection: 9 passed. Review fix round 1: 11 non-build policy tests passed. |
 | `swift test` | NOT RUN | A pre-existing whole-suite process and a focused contract process already held build/UI resources. No additional build was started. |
 | Direct `xcodebuild ... test` | NOT RUN | The existing Xcode UI-test child had not completed. It was not terminated, signaled, or restarted. This result is not counted. |
 | `./scripts/build-native-tools.sh` | NOT RUN | Deferred to avoid overlapping the existing test/build trees. |
@@ -108,25 +137,36 @@ c71b217a74e2e98c0d18ba98b5d1e2fbb03b1cf0ea26bd66c8dcd80cc3e1b5f8  dist/native-to
 142787b539c67d1bf397f053c034cfb9a45a713b7c89c24fe26d7dd933757740  dist/unsigned-app/LocalOCR Studio.app/Contents/MacOS/LocalOCR Studio
 ```
 
-Their modification times predate candidate commit `114518b`; therefore these
+Their modification times predate candidate commits `114518b` and `fe86960`; therefore these
 are diagnostic hashes only and **not accepted exact-commit candidate artifact
 hashes**.
 
 The required `otool -L` and `otool -l` inspection found:
 
 - both native helpers report `LC_BUILD_VERSION minos 14.0`;
-- all install names are Apple/system paths under `/System/Library` or
+- every install name is an Apple/system path under `/System/Library` or
   `/usr/lib`, plus the accepted weak
   `@rpath/libswiftCompatibilitySpan.dylib` in `localocr-mcp`;
 - the only reported RPATH is `/usr/lib/swift`; and
 - no `/Applications/Xcode`, `/Users`, Homebrew, `/usr/local`, SwiftPM checkout,
   `.build`, or worktree path appeared.
 
-`localocr-mcp` links Apple's system CFNetwork and Network frameworks transitively
-through the MCP SDK. LocalOCR sources do not import those frameworks, the app
-has no network client/server entitlement, and the product exposes stdio rather
-than an HTTP listener. This dependency observation does not prove absence of a
-runtime connection; that remains a manual gate.
+System location alone is insufficient for the local-only policy. The
+`localocr-mcp` artifact is rejected because it links CFNetwork and Network.
+Read-only source and symbol inspection traced this to the upstream
+`mcp-swift-sdk` `MCP` product: that single target compiles
+`NetworkTransport.swift`, `HTTPClientTransport.swift`, and OAuth/URLSession
+sources alongside `StdioTransport.swift`. The resulting executable has
+undefined `Network.NWConnection` and `NSURLSession` symbols and load commands
+for both frameworks even though LocalOCR uses only stdio.
+
+The parent package cannot exclude individual source files from a remote
+dependency product. Resolving this requires a separately testable stdio-only
+MCP target/fork or replacing the dependency with a minimal local stdio protocol
+implementation. That architecture change cannot be accepted without a clean
+build and full MCP compatibility suite, both unavailable while the existing UI
+build process remains active. Candidate build, stage, and verify scripts now
+fail closed on either framework instead of documenting the linkage away.
 
 ## Manual local candidate matrix
 
@@ -149,16 +189,18 @@ so the manual matrix was not partially inferred from older builds.
 
 ## Known limitations and remaining acceptance work
 
-1. Re-run the complete automated matrix from a clean exact commit after the
+1. Remove CFNetwork and Network from the shipped MCP helper using a tested
+   stdio-only MCP dependency boundary. Until then, builds must fail closed.
+2. Re-run the complete automated matrix from a clean exact commit after the
    existing Xcode/UI processes finish and an unlocked console is available.
-2. Build fresh native and unsigned-app artifacts from that same commit; replace
+3. Build fresh native and unsigned-app artifacts from that same commit; replace
    the diagnostic hashes above with exact-candidate hashes and repeat all
    dependency/RPATH scans.
-3. Complete every synthetic-document manual gate on an eligible machine.
-4. Investigate runtime network activity directly; static entitlements, imports,
+4. Complete every synthetic-document manual gate on an eligible machine.
+5. Investigate runtime network activity directly; static entitlements, imports,
    and dependency paths do not substitute for observation.
-5. Live Foundation Models accuracy, grounding, availability, and cancellation
+6. Live Foundation Models accuracy, grounding, availability, and cancellation
    need manual acceptance. Automated fixture results are not live-model proof.
-6. Developer ID signing, notarization, stapling, Gatekeeper, downloaded-package,
+7. Developer ID signing, notarization, stapling, Gatekeeper, downloaded-package,
    second-Mac, installation, version selection, tagging, and publication remain
    separate owner-authorized gates.
