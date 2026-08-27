@@ -67,6 +67,18 @@ require_json_lines() {
     done <<< "$response"
 }
 
+require_single_response() {
+    local response="$1"
+    local request_id="$2"
+    local count
+
+    count="$(printf '%s\n' "$response" | grep -Ec "\\\"id\\\":${request_id}(,|})" || true)"
+    if [[ "$count" != "1" ]]; then
+        echo "native MCP did not emit exactly one response for request ID $request_id" >&2
+        exit 1
+    fi
+}
+
 release_rpaths() {
     otool -l "$1" | awk '
         $1 == "cmd" && $2 == "LC_RPATH" { expect_path = 1; next }
@@ -216,6 +228,9 @@ initialize_response="$({
     sleep 1
 } | CFFIXED_USER_HOME="$test_home_root" HOME="$test_home_root" LOCALOCR_CACHE_DIR="$test_home_root/cache" "$mcp" 2>"$stderr_file")"
 require_json_lines "$initialize_response"
+require_single_response "$initialize_response" 1
+require_single_response "$initialize_response" 2
+require_single_response "$initialize_response" 3
 if ! printf '%s\n' "$initialize_response" | grep -q '"serverInfo"'; then
     echo "native MCP server did not complete initialization" >&2
     exit 1
@@ -296,6 +311,9 @@ compatibility_response="$({
     sleep 2
 } | CFFIXED_USER_HOME="$test_home_root" HOME="$test_home_root" LOCALOCR_CACHE_DIR="$test_home_root/cache" "$mcp" 2>"$stderr_file")"
 require_json_lines "$compatibility_response"
+require_single_response "$compatibility_response" 1
+require_single_response "$compatibility_response" 11
+require_single_response "$compatibility_response" 12
 if ! printf '%s\n' "$compatibility_response" | grep '"id":11' | grep -Fq '"text":"2"'; then
     echo "native MCP page-count compatibility call failed with current acknowledgment" >&2
     exit 1

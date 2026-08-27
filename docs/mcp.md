@@ -25,6 +25,23 @@ conversation or provider. Local stdio describes the transport between the
 client and helper; it is not a promise about the client's account, model, logs,
 retention, or network behavior.
 
+### Protocol compatibility and limits
+
+`localocr-mcp` vendors an audited, stdio-only subset of the MCP protocol rather
+than embedding HTTP, OAuth, EventSource, URLSession, or other network
+transports. It supports normal generic, Codex, and Claude Code initialization
+handshakes, then exposes the same nine LocalOCR tools over newline-delimited
+JSON-RPC. The helper accepts at most 1 MiB of UTF-8 JSON per line (the newline
+is excluded). Malformed or over-limit input receives a JSON-RPC parse error;
+unknown methods receive method-not-found; notifications do not receive replies.
+Protocol records are the helper's only stdout output. Closing stdin ends the
+local session cleanly.
+
+This transport boundary is not an external-provider boundary. A connected
+client may still pass supplied paths, recognized text, tool arguments, or
+results to its own service under that provider's privacy and retention terms.
+LocalOCR does not change, audit, or inherit those terms.
+
 ## External-provider disclosure and consent
 
 Every one of the nine document tools is blocked until the current LocalOCR MCP

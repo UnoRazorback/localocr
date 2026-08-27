@@ -154,9 +154,12 @@ def test_native_helper_preserves_localocr_stdio_contract_and_clean_eof(tmp_path:
             1,
             "initialize",
             {
-                "protocolVersion": "2025-06-18",
-                "capabilities": {},
-                "clientInfo": {"name": "raw-subprocess-contract", "version": "1.0"},
+                # Current Codex accepts the newer handshake shape. The vendored
+                # helper intentionally negotiates its supported 2025-06-18 wire
+                # version without requiring any client configuration edit.
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"roots": {"listChanged": True}, "sampling": {}},
+                "clientInfo": {"name": "codex-cli", "version": "0.136.0"},
             },
         )
     )
