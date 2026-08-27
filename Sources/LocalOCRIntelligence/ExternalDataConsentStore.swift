@@ -9,9 +9,35 @@ public enum ExternalDataConsentStoreError: Error, Sendable {
     case invalidReceiptEncoding
 }
 
-public actor ExternalDataConsentStore: ExternalDataConsentStoring {
-    private typealias OperationHook = @Sendable () throws -> Void
+struct ExternalDataConsentStoreHooks: Sendable {
+    typealias OperationHook = @Sendable () throws -> Void
+    typealias DescriptorSync = @Sendable (Int32) -> Int32
 
+    let beforeAcceptReproof: OperationHook
+    let beforeAcceptFinalMutation: OperationHook
+    let beforeRevokeReproof: OperationHook
+    let beforeRevokeFinalMutation: OperationHook
+    let beforeTemporaryCleanupFinalMutation: OperationHook
+    let synchronizeDescriptor: DescriptorSync
+
+    init(
+        beforeAcceptReproof: @escaping OperationHook = {},
+        beforeAcceptFinalMutation: @escaping OperationHook = {},
+        beforeRevokeReproof: @escaping OperationHook = {},
+        beforeRevokeFinalMutation: @escaping OperationHook = {},
+        beforeTemporaryCleanupFinalMutation: @escaping OperationHook = {},
+        synchronizeDescriptor: @escaping DescriptorSync = { fsync($0) }
+    ) {
+        self.beforeAcceptReproof = beforeAcceptReproof
+        self.beforeAcceptFinalMutation = beforeAcceptFinalMutation
+        self.beforeRevokeReproof = beforeRevokeReproof
+        self.beforeRevokeFinalMutation = beforeRevokeFinalMutation
+        self.beforeTemporaryCleanupFinalMutation = beforeTemporaryCleanupFinalMutation
+        self.synchronizeDescriptor = synchronizeDescriptor
+    }
+}
+
+public actor ExternalDataConsentStore: ExternalDataConsentStoring {
     private struct FileIdentity: Sendable, Equatable {
         let device: UInt64
         let inode: UInt64
@@ -25,6 +51,11 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
 
     private struct OpenedReceipt: Sendable {
         let descriptor: Int32
+        let identity: FileIdentity
+    }
+
+    private struct QuarantinedEntry: Sendable {
+        let name: String
         let identity: FileIdentity
     }
 
@@ -42,16 +73,14 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
     private let receiptName: String
     private let directoryComponents: [String]
     private let expectedReceiptOwnerID: uid_t
-    private let beforeAcceptRename: OperationHook
-    private let beforeRevokeUnlink: OperationHook
+    private let hooks: ExternalDataConsentStoreHooks
 
     public init(receiptURL: URL = ExternalDataConsentStore.defaultReceiptURL) {
         self.receiptURL = receiptURL
         receiptName = receiptURL.lastPathComponent
         directoryComponents = Array(receiptURL.pathComponents.dropFirst().dropLast())
         expectedReceiptOwnerID = geteuid()
-        beforeAcceptRename = {}
-        beforeRevokeUnlink = {}
+        hooks = ExternalDataConsentStoreHooks()
     }
 
     init(receiptURL: URL, expectedReceiptOwnerID: uid_t) {
@@ -59,8 +88,7 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
         receiptName = receiptURL.lastPathComponent
         directoryComponents = Array(receiptURL.pathComponents.dropFirst().dropLast())
         self.expectedReceiptOwnerID = expectedReceiptOwnerID
-        beforeAcceptRename = {}
-        beforeRevokeUnlink = {}
+        hooks = ExternalDataConsentStoreHooks()
     }
 
     init(
@@ -71,8 +99,7 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
         receiptName = receiptURL.lastPathComponent
         directoryComponents = Array(receiptURL.pathComponents.dropFirst().dropLast())
         expectedReceiptOwnerID = geteuid()
-        self.beforeAcceptRename = beforeAcceptRename
-        beforeRevokeUnlink = {}
+        hooks = ExternalDataConsentStoreHooks(beforeAcceptReproof: beforeAcceptRename)
     }
 
     init(
@@ -83,8 +110,15 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
         receiptName = receiptURL.lastPathComponent
         directoryComponents = Array(receiptURL.pathComponents.dropFirst().dropLast())
         expectedReceiptOwnerID = geteuid()
-        beforeAcceptRename = {}
-        self.beforeRevokeUnlink = beforeRevokeUnlink
+        hooks = ExternalDataConsentStoreHooks(beforeRevokeReproof: beforeRevokeUnlink)
+    }
+
+    init(receiptURL: URL, hooks: ExternalDataConsentStoreHooks) {
+        self.receiptURL = receiptURL
+        receiptName = receiptURL.lastPathComponent
+        directoryComponents = Array(receiptURL.pathComponents.dropFirst().dropLast())
+        expectedReceiptOwnerID = geteuid()
+        self.hooks = hooks
     }
 
     public func status() async -> ExternalDataConsentStatus {
@@ -129,48 +163,164 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
         defer { close(handles) }
         try reprove(handles)
         let parent = try requiredParent(in: handles)
-        try validateExistingReceiptForMutation(beneath: parent.descriptor)
+        let existingReceipt: OpenedReceipt?
+        do {
+            existingReceipt = try openValidatedReceipt(beneath: parent.descriptor)
+        } catch ExternalDataConsentStoreError.missingPath {
+            existingReceipt = nil
+        }
+        defer {
+            if let existingReceipt {
+                Darwin.close(existingReceipt.descriptor)
+            }
+        }
 
         let temporary = try createTemporaryReceipt(beneath: parent.descriptor)
         var shouldRemoveTemporary = true
         defer {
             Darwin.close(temporary.descriptor)
             if shouldRemoveTemporary {
-                removeEntryIfItMatches(
+                try? quarantineAndRemove(
                     named: temporary.name,
                     beneath: parent.descriptor,
-                    identity: temporary.identity
+                    expectedIdentity: temporary.identity,
+                    beforeFinalMutation: hooks.beforeTemporaryCleanupFinalMutation
                 )
             }
         }
 
         try writeAll(data, to: temporary.descriptor)
-        guard fsync(temporary.descriptor) == 0 else {
-            throw ExternalDataConsentStoreError.filesystemOperationFailed(errno)
-        }
+        try synchronize(temporary.descriptor)
 
-        try beforeAcceptRename()
+        try hooks.beforeAcceptReproof()
         try reprove(handles)
-        try validateExistingReceiptForMutation(beneath: parent.descriptor)
+        if let existingReceipt {
+            try requireEntry(
+                named: receiptName,
+                beneath: parent.descriptor,
+                matches: existingReceipt.identity
+            )
+        } else if try entryMetadata(named: receiptName, beneath: parent.descriptor) != nil {
+            throw ExternalDataConsentStoreError.insecureFilesystemState
+        }
         try requireEntry(
             named: temporary.name,
             beneath: parent.descriptor,
             matches: temporary.identity
         )
-        let renameStatus = temporary.name.withCString { temporaryName in
-            receiptName.withCString { finalName in
-                renameat(parent.descriptor, temporaryName, parent.descriptor, finalName)
+        try hooks.beforeAcceptFinalMutation()
+
+        if let existingReceipt {
+            try swapEntries(
+                temporary.name,
+                receiptName,
+                beneath: parent.descriptor
+            )
+            let commitMatches = entryIdentity(
+                named: receiptName,
+                beneath: parent.descriptor
+            ) == temporary.identity && entryIdentity(
+                named: temporary.name,
+                beneath: parent.descriptor
+            ) == existingReceipt.identity
+            do {
+                guard commitMatches else {
+                    throw ExternalDataConsentStoreError.insecureFilesystemState
+                }
+                try reprove(handles)
+            } catch {
+                recoverFailedSwap(
+                    temporaryName: temporary.name,
+                    expectedExistingIdentity: existingReceipt.identity,
+                    beneath: parent.descriptor
+                )
+                throw error
+            }
+
+            shouldRemoveTemporary = false
+            do {
+                try synchronize(parent.descriptor)
+            } catch {
+                recoverFailedSwap(
+                    temporaryName: temporary.name,
+                    expectedExistingIdentity: existingReceipt.identity,
+                    beneath: parent.descriptor
+                )
+                shouldRemoveTemporary = true
+                throw error
+            }
+            do {
+                try quarantineAndRemove(
+                    named: temporary.name,
+                    beneath: parent.descriptor,
+                    expectedIdentity: existingReceipt.identity,
+                    beforeFinalMutation: hooks.beforeTemporaryCleanupFinalMutation
+                )
+            } catch {
+                try? quarantineAndRemove(
+                    named: receiptName,
+                    beneath: parent.descriptor,
+                    expectedIdentity: temporary.identity,
+                    beforeFinalMutation: {}
+                )
+                throw error
+            }
+            do {
+                try reprove(handles)
+                try requireEntry(
+                    named: receiptName,
+                    beneath: parent.descriptor,
+                    matches: temporary.identity
+                )
+            } catch {
+                try? quarantineAndRemove(
+                    named: receiptName,
+                    beneath: parent.descriptor,
+                    expectedIdentity: temporary.identity,
+                    beforeFinalMutation: {}
+                )
+                throw error
+            }
+        } else {
+            let renameStatus = exclusiveRename(
+                temporary.name,
+                receiptName,
+                beneath: parent.descriptor
+            )
+            guard renameStatus == 0 else {
+                let renameError = errno
+                try? quarantineCurrentWithoutDeleting(beneath: parent.descriptor)
+                if renameError == EEXIST || renameError == ELOOP {
+                    throw ExternalDataConsentStoreError.insecureFilesystemState
+                }
+                throw ExternalDataConsentStoreError.filesystemOperationFailed(renameError)
+            }
+            shouldRemoveTemporary = false
+            guard entryIdentity(
+                named: receiptName,
+                beneath: parent.descriptor
+            ) == temporary.identity else {
+                try? quarantineCurrentWithoutDeleting(beneath: parent.descriptor)
+                throw ExternalDataConsentStoreError.insecureFilesystemState
+            }
+            do {
+                try reprove(handles)
+                try synchronize(parent.descriptor)
+                try requireEntry(
+                    named: receiptName,
+                    beneath: parent.descriptor,
+                    matches: temporary.identity
+                )
+            } catch {
+                try? quarantineAndRemove(
+                    named: receiptName,
+                    beneath: parent.descriptor,
+                    expectedIdentity: temporary.identity,
+                    beforeFinalMutation: {}
+                )
+                throw error
             }
         }
-        guard renameStatus == 0 else {
-            throw ExternalDataConsentStoreError.filesystemOperationFailed(errno)
-        }
-        shouldRemoveTemporary = false
-        try requireEntry(
-            named: receiptName,
-            beneath: parent.descriptor,
-            matches: temporary.identity
-        )
     }
 
     public func revoke() async throws {
@@ -191,19 +341,21 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
         }
         defer { Darwin.close(openedReceipt.descriptor) }
 
-        try beforeRevokeUnlink()
+        try hooks.beforeRevokeReproof()
         try reprove(handles)
         try requireEntry(
             named: receiptName,
             beneath: parent.descriptor,
             matches: openedReceipt.identity
         )
-        let unlinkStatus = receiptName.withCString { name in
-            unlinkat(parent.descriptor, name, 0)
-        }
-        guard unlinkStatus == 0 else {
-            throw ExternalDataConsentStoreError.filesystemOperationFailed(errno)
-        }
+        let quarantine = try moveToQuarantine(
+            named: receiptName,
+            beneath: parent.descriptor,
+            expectedIdentity: openedReceipt.identity,
+            beforeFinalMutation: hooks.beforeRevokeFinalMutation
+        )
+        try reprove(handles)
+        try removeQuarantinedEntry(quarantine, beneath: parent.descriptor)
     }
 
     private func openDirectoryChain(createApplicationDirectory: Bool) throws -> [DirectoryHandle] {
@@ -260,16 +412,23 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
                 }
 
                 let child = try openDirectory(named: component, beneath: parent.descriptor)
-                if wasCreated {
-                    guard fchmod(child.descriptor, 0o700) == 0 else {
-                        Darwin.close(child.descriptor)
-                        throw ExternalDataConsentStoreError.filesystemOperationFailed(errno)
+                do {
+                    if wasCreated {
+                        guard fchmod(child.descriptor, 0o700) == 0 else {
+                            throw ExternalDataConsentStoreError.filesystemOperationFailed(errno)
+                        }
                     }
+                    if isApplicationDirectory {
+                        try requirePrivateApplicationDirectory(child)
+                    }
+                    if wasCreated {
+                        try synchronize(parent.descriptor)
+                    }
+                    handles.append(child)
+                } catch {
+                    Darwin.close(child.descriptor)
+                    throw error
                 }
-                if isApplicationDirectory {
-                    try requirePrivateApplicationDirectory(child)
-                }
-                handles.append(child)
             }
             try reprove(handles)
             keepHandles = true
@@ -332,7 +491,7 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
         guard fstat(handle.descriptor, &metadata) == 0,
               fileType(metadata) == S_IFDIR,
               metadata.st_uid == geteuid(),
-              metadata.st_mode & 0o777 == 0o700
+              metadata.st_mode & 0o7777 == 0o700
         else {
             throw ExternalDataConsentStoreError.insecureFilesystemState
         }
@@ -400,17 +559,10 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
         }
     }
 
-    private func validateExistingReceiptForMutation(beneath parentDescriptor: Int32) throws {
-        guard let metadata = try entryMetadata(named: receiptName, beneath: parentDescriptor) else {
-            return
-        }
-        try validateReceiptMetadata(metadata)
-    }
-
     private func validateReceiptMetadata(_ metadata: stat) throws {
         guard fileType(metadata) == S_IFREG,
               metadata.st_uid == expectedReceiptOwnerID,
-              metadata.st_mode & 0o777 == 0o600
+              metadata.st_mode & 0o7777 == 0o600
         else {
             throw ExternalDataConsentStoreError.insecureFilesystemState
         }
@@ -441,14 +593,13 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
                 guard fstat(descriptor, &metadata) == 0,
                       fileType(metadata) == S_IFREG,
                       metadata.st_uid == geteuid(),
-                      metadata.st_mode & 0o777 == 0o600
+                      metadata.st_mode & 0o7777 == 0o600
                 else {
                     throw ExternalDataConsentStoreError.insecureFilesystemState
                 }
                 return (descriptor, name, identity(of: metadata))
             } catch {
                 Darwin.close(descriptor)
-                _ = name.withCString { unlinkat(parentDescriptor, $0, 0) }
                 throw error
             }
         }
@@ -468,18 +619,177 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
         }
     }
 
-    private func removeEntryIfItMatches(
+    private func synchronize(_ descriptor: Int32) throws {
+        while hooks.synchronizeDescriptor(descriptor) != 0 {
+            let code = errno
+            if code == EINTR { continue }
+            throw ExternalDataConsentStoreError.filesystemOperationFailed(code)
+        }
+    }
+
+    private func swapEntries(
+        _ firstName: String,
+        _ secondName: String,
+        beneath parentDescriptor: Int32
+    ) throws {
+        let status = firstName.withCString { first in
+            secondName.withCString { second in
+                renameatx_np(
+                    parentDescriptor,
+                    first,
+                    parentDescriptor,
+                    second,
+                    UInt32(RENAME_SWAP | RENAME_NOFOLLOW_ANY | RENAME_RESOLVE_BENEATH)
+                )
+            }
+        }
+        guard status == 0 else {
+            let code = errno
+            if code == ELOOP || code == ENOENT {
+                throw ExternalDataConsentStoreError.insecureFilesystemState
+            }
+            throw ExternalDataConsentStoreError.filesystemOperationFailed(code)
+        }
+    }
+
+    private func exclusiveRename(
+        _ sourceName: String,
+        _ destinationName: String,
+        beneath parentDescriptor: Int32
+    ) -> Int32 {
+        sourceName.withCString { source in
+            destinationName.withCString { destination in
+                renameatx_np(
+                    parentDescriptor,
+                    source,
+                    parentDescriptor,
+                    destination,
+                    UInt32(RENAME_EXCL | RENAME_NOFOLLOW_ANY | RENAME_RESOLVE_BENEATH)
+                )
+            }
+        }
+    }
+
+    private func entryIdentity(
+        named name: String,
+        beneath parentDescriptor: Int32
+    ) -> FileIdentity? {
+        do {
+            guard let metadata = try entryMetadata(named: name, beneath: parentDescriptor),
+                  fileType(metadata) == S_IFREG
+            else {
+                return nil
+            }
+            return identity(of: metadata)
+        } catch {
+            return nil
+        }
+    }
+
+    private func moveToQuarantine(
+        named sourceName: String,
+        beneath parentDescriptor: Int32,
+        expectedIdentity: FileIdentity,
+        beforeFinalMutation: ExternalDataConsentStoreHooks.OperationHook
+    ) throws -> QuarantinedEntry {
+        for _ in 0..<32 {
+            let quarantineName = ".\(receiptName).\(UUID().uuidString).quarantine"
+            try beforeFinalMutation()
+            let status = exclusiveRename(sourceName, quarantineName, beneath: parentDescriptor)
+            if status != 0 {
+                let code = errno
+                if code == EEXIST { continue }
+                if code == ELOOP || code == ENOENT {
+                    throw ExternalDataConsentStoreError.insecureFilesystemState
+                }
+                throw ExternalDataConsentStoreError.filesystemOperationFailed(code)
+            }
+
+            try synchronize(parentDescriptor)
+            guard entryIdentity(named: quarantineName, beneath: parentDescriptor) == expectedIdentity else {
+                throw ExternalDataConsentStoreError.insecureFilesystemState
+            }
+            return QuarantinedEntry(name: quarantineName, identity: expectedIdentity)
+        }
+        throw ExternalDataConsentStoreError.insecureFilesystemState
+    }
+
+    private func removeQuarantinedEntry(
+        _ quarantine: QuarantinedEntry,
+        beneath parentDescriptor: Int32
+    ) throws {
+        guard entryIdentity(named: quarantine.name, beneath: parentDescriptor) == quarantine.identity else {
+            throw ExternalDataConsentStoreError.insecureFilesystemState
+        }
+        let status = quarantine.name.withCString { name in
+            unlinkat(
+                parentDescriptor,
+                name,
+                AT_SYMLINK_NOFOLLOW_ANY | AT_RESOLVE_BENEATH | AT_UNIQUE
+            )
+        }
+        guard status == 0 else {
+            let code = errno
+            if code == ELOOP || code == ENOENT {
+                throw ExternalDataConsentStoreError.insecureFilesystemState
+            }
+            throw ExternalDataConsentStoreError.filesystemOperationFailed(code)
+        }
+        try synchronize(parentDescriptor)
+    }
+
+    private func quarantineAndRemove(
         named name: String,
         beneath parentDescriptor: Int32,
-        identity expectedIdentity: FileIdentity
-    ) {
-        guard let metadata = try? entryMetadata(named: name, beneath: parentDescriptor),
-              fileType(metadata) == S_IFREG,
-              identity(of: metadata) == expectedIdentity
-        else {
+        expectedIdentity: FileIdentity,
+        beforeFinalMutation: ExternalDataConsentStoreHooks.OperationHook
+    ) throws {
+        let quarantine = try moveToQuarantine(
+            named: name,
+            beneath: parentDescriptor,
+            expectedIdentity: expectedIdentity,
+            beforeFinalMutation: beforeFinalMutation
+        )
+        try removeQuarantinedEntry(quarantine, beneath: parentDescriptor)
+    }
+
+    private func quarantineCurrentWithoutDeleting(beneath parentDescriptor: Int32) throws {
+        guard try entryMetadata(named: receiptName, beneath: parentDescriptor) != nil else {
             return
         }
-        _ = name.withCString { unlinkat(parentDescriptor, $0, 0) }
+        for _ in 0..<32 {
+            let quarantineName = ".\(receiptName).\(UUID().uuidString).quarantine"
+            let status = exclusiveRename(receiptName, quarantineName, beneath: parentDescriptor)
+            if status == 0 {
+                try synchronize(parentDescriptor)
+                return
+            }
+            let code = errno
+            if code == EEXIST { continue }
+            if code == ENOENT { return }
+            if code == ELOOP {
+                throw ExternalDataConsentStoreError.insecureFilesystemState
+            }
+            throw ExternalDataConsentStoreError.filesystemOperationFailed(code)
+        }
+        throw ExternalDataConsentStoreError.insecureFilesystemState
+    }
+
+    private func recoverFailedSwap(
+        temporaryName: String,
+        expectedExistingIdentity: FileIdentity,
+        beneath parentDescriptor: Int32
+    ) {
+        do {
+            try swapEntries(temporaryName, receiptName, beneath: parentDescriptor)
+            try synchronize(parentDescriptor)
+        } catch {
+            // The caller still verifies the current name and quarantines anything unexpected.
+        }
+        guard entryIdentity(named: receiptName, beneath: parentDescriptor) != expectedExistingIdentity else {
+            return
+        }
+        try? quarantineCurrentWithoutDeleting(beneath: parentDescriptor)
     }
 
     private func entryMetadata(named name: String, beneath parentDescriptor: Int32) throws -> stat? {
@@ -544,8 +854,10 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
 
     private func decodeReceipt(_ data: Data) throws -> ExternalDataConsentReceipt {
         do {
-            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  Set(object.keys) == Set([
+            var memberScanner = JSONTopLevelMemberScanner(data: data)
+            let serializedMemberNames = try memberScanner.uniqueMemberNames()
+            guard try JSONSerialization.jsonObject(with: data) is [String: Any],
+                  serializedMemberNames == Set([
                       "schema_version",
                       "policy_version",
                       "accepted_at",
@@ -585,5 +897,167 @@ public actor ExternalDataConsentStore: ExternalDataConsentStoring {
             component != ".." &&
             !component.contains("/") &&
             !component.contains("\0")
+    }
+}
+
+private struct JSONTopLevelMemberScanner {
+    private let bytes: [UInt8]
+    private var index = 0
+
+    init(data: Data) {
+        bytes = Array(data)
+    }
+
+    mutating func uniqueMemberNames() throws -> Set<String> {
+        skipWhitespace()
+        try consume(ascii: "{")
+        skipWhitespace()
+        var names: Set<String> = []
+        if consumeIfPresent(ascii: "}") {
+            try requireEnd()
+            return names
+        }
+
+        while true {
+            let memberName = try parseString()
+            guard names.insert(memberName).inserted else {
+                throw ExternalDataConsentStoreError.invalidReceiptEncoding
+            }
+            skipWhitespace()
+            try consume(ascii: ":")
+            try skipValue(depth: 0)
+            skipWhitespace()
+            if consumeIfPresent(ascii: "}") {
+                try requireEnd()
+                return names
+            }
+            try consume(ascii: ",")
+            skipWhitespace()
+        }
+    }
+
+    private mutating func skipValue(depth: Int) throws {
+        guard depth <= 64 else {
+            throw ExternalDataConsentStoreError.invalidReceiptEncoding
+        }
+        skipWhitespace()
+        guard let byte = currentByte else {
+            throw ExternalDataConsentStoreError.invalidReceiptEncoding
+        }
+        switch byte {
+        case ascii("\""):
+            _ = try parseString()
+        case ascii("{"):
+            try skipObject(depth: depth + 1)
+        case ascii("["):
+            try skipArray(depth: depth + 1)
+        default:
+            let start = index
+            while let byte = currentByte,
+                  !isWhitespace(byte),
+                  byte != ascii(","),
+                  byte != ascii("}"),
+                  byte != ascii("]")
+            {
+                index += 1
+            }
+            guard index > start else {
+                throw ExternalDataConsentStoreError.invalidReceiptEncoding
+            }
+        }
+    }
+
+    private mutating func skipObject(depth: Int) throws {
+        try consume(ascii: "{")
+        skipWhitespace()
+        if consumeIfPresent(ascii: "}") { return }
+        while true {
+            _ = try parseString()
+            skipWhitespace()
+            try consume(ascii: ":")
+            try skipValue(depth: depth)
+            skipWhitespace()
+            if consumeIfPresent(ascii: "}") { return }
+            try consume(ascii: ",")
+            skipWhitespace()
+        }
+    }
+
+    private mutating func skipArray(depth: Int) throws {
+        try consume(ascii: "[")
+        skipWhitespace()
+        if consumeIfPresent(ascii: "]") { return }
+        while true {
+            try skipValue(depth: depth)
+            skipWhitespace()
+            if consumeIfPresent(ascii: "]") { return }
+            try consume(ascii: ",")
+            skipWhitespace()
+        }
+    }
+
+    private mutating func parseString() throws -> String {
+        skipWhitespace()
+        let start = index
+        try consume(ascii: "\"")
+        var escaped = false
+        while let byte = currentByte {
+            index += 1
+            if escaped {
+                escaped = false
+                continue
+            }
+            if byte == ascii("\\") {
+                escaped = true
+                continue
+            }
+            if byte == ascii("\"") {
+                let token = Data(bytes[start..<index])
+                do {
+                    return try JSONDecoder().decode(String.self, from: token)
+                } catch {
+                    throw ExternalDataConsentStoreError.invalidReceiptEncoding
+                }
+            }
+        }
+        throw ExternalDataConsentStoreError.invalidReceiptEncoding
+    }
+
+    private mutating func requireEnd() throws {
+        skipWhitespace()
+        guard index == bytes.count else {
+            throw ExternalDataConsentStoreError.invalidReceiptEncoding
+        }
+    }
+
+    private mutating func consume(ascii character: Character) throws {
+        guard consumeIfPresent(ascii: character) else {
+            throw ExternalDataConsentStoreError.invalidReceiptEncoding
+        }
+    }
+
+    private mutating func consumeIfPresent(ascii character: Character) -> Bool {
+        let expected = ascii(character)
+        guard currentByte == expected else { return false }
+        index += 1
+        return true
+    }
+
+    private mutating func skipWhitespace() {
+        while let byte = currentByte, isWhitespace(byte) {
+            index += 1
+        }
+    }
+
+    private var currentByte: UInt8? {
+        index < bytes.count ? bytes[index] : nil
+    }
+
+    private func isWhitespace(_ byte: UInt8) -> Bool {
+        byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D
+    }
+
+    private func ascii(_ character: Character) -> UInt8 {
+        character.asciiValue!
     }
 }

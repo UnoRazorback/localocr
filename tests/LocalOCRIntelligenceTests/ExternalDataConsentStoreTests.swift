@@ -166,6 +166,16 @@ import Testing
         #expect(await ExternalDataConsentStore(receiptURL: fixture.receiptURL).status() == .required)
     }
 
+    @Test(arguments: [mode_t(0o4600), mode_t(0o2600), mode_t(0o1600)])
+    func receiptWithSpecialPermissionBitsRequiresConsent(mode: mode_t) async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        try fixture.writeReceipt(acceptedAt: firstDate)
+        try chmod(fixture.receiptURL.path, mode).requireSuccess()
+
+        #expect(await ExternalDataConsentStore(receiptURL: fixture.receiptURL).status() == .required)
+    }
+
     @Test func nonPrivateApplicationDirectoryRequiresConsent() async throws {
         let fixture = try ConsentFixture()
         defer { fixture.remove() }
@@ -173,6 +183,32 @@ import Testing
         try chmod(fixture.applicationDirectory.path, 0o755).requireSuccess()
 
         #expect(await ExternalDataConsentStore(receiptURL: fixture.receiptURL).status() == .required)
+    }
+
+    @Test(arguments: [mode_t(0o4700), mode_t(0o2700), mode_t(0o1700)])
+    func applicationDirectoryWithSpecialPermissionBitsRequiresConsent(mode: mode_t) async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        try fixture.writeReceipt(acceptedAt: firstDate)
+        try chmod(fixture.applicationDirectory.path, mode).requireSuccess()
+
+        #expect(await ExternalDataConsentStore(receiptURL: fixture.receiptURL).status() == .required)
+    }
+
+    @Test func repeatedInvalidApplicationDirectoryChecksDoNotLeakDescriptors() async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        try fixture.writeReceipt(acceptedAt: firstDate)
+        try chmod(fixture.applicationDirectory.path, 0o755).requireSuccess()
+        let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL)
+        let descriptorsBefore = try openFileDescriptorCount()
+
+        for _ in 0..<32 {
+            #expect(await store.status() == .required)
+        }
+
+        let descriptorsAfter = try openFileDescriptorCount()
+        #expect(descriptorsAfter <= descriptorsBefore + 2)
     }
 
     @Test func receiptOwnedByAnotherUserRequiresConsent() async throws {
@@ -252,6 +288,49 @@ import Testing
         #expect(await ExternalDataConsentStore(receiptURL: fixture.receiptURL).status() == .required)
     }
 
+    @Test(arguments: [
+        "schema_version",
+        "policy_version",
+        "accepted_at",
+        "external_provider_risk_accepted",
+        "document_tool_access_accepted"
+    ])
+    func duplicateApprovedJSONMemberRequiresConsent(memberName: String) async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        let formatter = ISO8601DateFormatter()
+        let values = [
+            "schema_version": "1",
+            "policy_version": "1",
+            "accepted_at": "\"\(formatter.string(from: firstDate))\"",
+            "external_provider_risk_accepted": "true",
+            "document_tool_access_accepted": "true"
+        ]
+        let members = [
+            "\"schema_version\":1",
+            "\"policy_version\":1",
+            "\"accepted_at\":\"\(formatter.string(from: firstDate))\"",
+            "\"external_provider_risk_accepted\":true",
+            "\"document_tool_access_accepted\":true",
+            "\"\(memberName)\":\(try #require(values[memberName]))"
+        ]
+        try fixture.writeRaw(Data("{\(members.joined(separator: ","))}".utf8))
+
+        #expect(await ExternalDataConsentStore(receiptURL: fixture.receiptURL).status() == .required)
+    }
+
+    @Test func escapedDuplicateApprovedJSONMemberRequiresConsent() async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        let formatter = ISO8601DateFormatter()
+        let json = """
+        {"schema_version":1,"policy_version":1,"accepted_at":"\(formatter.string(from: firstDate))","external_provider_risk_accepted":true,"document_tool_access_accepted":true,"schema_\\u0076ersion":1}
+        """
+        try fixture.writeRaw(Data(json.utf8))
+
+        #expect(await ExternalDataConsentStore(receiptURL: fixture.receiptURL).status() == .required)
+    }
+
     @Test func acceptRejectsParentSubstitutionBeforeRenameWithoutWritingThroughLink() async throws {
         let fixture = try ConsentFixture()
         defer { fixture.remove() }
@@ -280,6 +359,57 @@ import Testing
             atPath: externalDirectory.appending(path: "mcp-consent.json").path
         ))
         #expect(try FileManager.default.contentsOfDirectory(atPath: movedDirectory.path).isEmpty)
+    }
+
+    @Test func acceptQuarantinesSourceSubstitutedAtTheFinalMutationInterval() async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        try fixture.createApplicationDirectory()
+        let replacementData = try fixture.receiptData(acceptedAt: secondDate)
+        let applicationDirectory = fixture.applicationDirectory
+        let preservedOwnedTemporary = fixture.baseURL.appending(path: "owned-accept-temp")
+        let hooks = ExternalDataConsentStoreHooks(
+            beforeAcceptFinalMutation: {
+                let candidate = try temporaryReceipt(in: applicationDirectory)
+                let temporaryURL = try #require(candidate)
+                try FileManager.default.moveItem(at: temporaryURL, to: preservedOwnedTemporary)
+                try replacementData.write(to: temporaryURL)
+                try chmod(temporaryURL.path, 0o600).requireSuccess()
+            }
+        )
+        let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL, hooks: hooks)
+
+        await #expect(throws: (any Error).self) {
+            try await store.acceptBothStatements(at: firstDate)
+        }
+
+        #expect(await store.status() == .required)
+        #expect(!FileManager.default.fileExists(atPath: fixture.receiptURL.path))
+        #expect(try directoryContainsFile(with: replacementData, at: applicationDirectory))
+        #expect(FileManager.default.fileExists(atPath: preservedOwnedTemporary.path))
+    }
+
+    @Test func acceptQuarantinesDestinationSubstitutedAtTheFinalMutationInterval() async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        try fixture.createApplicationDirectory()
+        let replacementData = try fixture.receiptData(acceptedAt: secondDate)
+        let receiptURL = fixture.receiptURL
+        let hooks = ExternalDataConsentStoreHooks(
+            beforeAcceptFinalMutation: {
+                try replacementData.write(to: receiptURL)
+                try chmod(receiptURL.path, 0o600).requireSuccess()
+            }
+        )
+        let store = ExternalDataConsentStore(receiptURL: receiptURL, hooks: hooks)
+
+        await #expect(throws: (any Error).self) {
+            try await store.acceptBothStatements(at: firstDate)
+        }
+
+        #expect(await store.status() == .required)
+        #expect(!FileManager.default.fileExists(atPath: receiptURL.path))
+        #expect(try directoryContainsFile(with: replacementData, at: fixture.applicationDirectory))
     }
 
     @Test func revokeRejectsParentSubstitutionWithoutDeletingEitherTarget() async throws {
@@ -313,6 +443,124 @@ import Testing
         #expect(try Data(contentsOf: movedDirectory.appending(path: "mcp-consent.json")) == originalReceiptData)
         #expect(try Data(contentsOf: externalReceipt) == externalData)
     }
+
+    @Test func revokeQuarantinesReceiptSubstitutedAtTheFinalMutationInterval() async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        try fixture.writeReceipt(acceptedAt: firstDate)
+        let replacementData = try fixture.receiptData(acceptedAt: secondDate)
+        let receiptURL = fixture.receiptURL
+        let preservedOriginal = fixture.baseURL.appending(path: "preserved-revoke-original")
+        let hooks = ExternalDataConsentStoreHooks(
+            beforeRevokeFinalMutation: {
+                try FileManager.default.moveItem(at: receiptURL, to: preservedOriginal)
+                try replacementData.write(to: receiptURL)
+                try chmod(receiptURL.path, 0o600).requireSuccess()
+            }
+        )
+        let store = ExternalDataConsentStore(receiptURL: receiptURL, hooks: hooks)
+
+        await #expect(throws: (any Error).self) {
+            try await store.revoke()
+        }
+
+        #expect(await store.status() == .required)
+        #expect(!FileManager.default.fileExists(atPath: receiptURL.path))
+        #expect(try Data(contentsOf: preservedOriginal) != replacementData)
+        #expect(try directoryContainsFile(with: replacementData, at: fixture.applicationDirectory))
+    }
+
+    @Test func temporaryCleanupQuarantinesAReplacementAtItsFinalMutationInterval() async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        try fixture.createApplicationDirectory()
+        let replacementData = Data("replacement-must-survive".utf8)
+        let applicationDirectory = fixture.applicationDirectory
+        let preservedOwnedTemporary = fixture.baseURL.appending(path: "preserved-cleanup-temp")
+        let hooks = ExternalDataConsentStoreHooks(
+            beforeAcceptReproof: {
+                throw ConsentProbeError.stopBeforeAcceptCommit
+            },
+            beforeTemporaryCleanupFinalMutation: {
+                let candidate = try temporaryReceipt(in: applicationDirectory)
+                let temporaryURL = try #require(candidate)
+                try FileManager.default.moveItem(at: temporaryURL, to: preservedOwnedTemporary)
+                try replacementData.write(to: temporaryURL)
+                try chmod(temporaryURL.path, 0o600).requireSuccess()
+            }
+        )
+        let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL, hooks: hooks)
+
+        await #expect(throws: (any Error).self) {
+            try await store.acceptBothStatements(at: firstDate)
+        }
+
+        #expect(!FileManager.default.fileExists(atPath: fixture.receiptURL.path))
+        #expect(try directoryContainsFile(with: replacementData, at: applicationDirectory))
+        #expect(FileManager.default.fileExists(atPath: preservedOwnedTemporary.path))
+    }
+
+    @Test func applicationDirectoryCreationSyncFailureDoesNotCreateAReceipt() async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        let syncFailure = DirectorySyncFailure(failingDirectoryCall: 1)
+        let hooks = ExternalDataConsentStoreHooks(synchronizeDescriptor: syncFailure.synchronize)
+        let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL, hooks: hooks)
+
+        await #expect(throws: (any Error).self) {
+            try await store.acceptBothStatements(at: firstDate)
+        }
+
+        #expect(!FileManager.default.fileExists(atPath: fixture.receiptURL.path))
+    }
+
+    @Test func acceptDirectorySyncFailureLeavesConsentRequired() async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        try fixture.createApplicationDirectory()
+        let syncFailure = DirectorySyncFailure(failingDirectoryCall: 1)
+        let hooks = ExternalDataConsentStoreHooks(synchronizeDescriptor: syncFailure.synchronize)
+        let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL, hooks: hooks)
+
+        await #expect(throws: (any Error).self) {
+            try await store.acceptBothStatements(at: firstDate)
+        }
+
+        #expect(await ExternalDataConsentStore(receiptURL: fixture.receiptURL).status() == .required)
+    }
+
+    @Test(arguments: [2, 3])
+    func replacingReceiptCleanupSyncFailureLeavesConsentRequired(
+        failingDirectoryCall: Int
+    ) async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        try fixture.writeReceipt(acceptedAt: firstDate)
+        let syncFailure = DirectorySyncFailure(failingDirectoryCall: failingDirectoryCall)
+        let hooks = ExternalDataConsentStoreHooks(synchronizeDescriptor: syncFailure.synchronize)
+        let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL, hooks: hooks)
+
+        await #expect(throws: (any Error).self) {
+            try await store.acceptBothStatements(at: secondDate)
+        }
+
+        #expect(await ExternalDataConsentStore(receiptURL: fixture.receiptURL).status() == .required)
+    }
+
+    @Test func revokePostUnlinkDirectorySyncFailureStillLeavesConsentRequired() async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        try fixture.writeReceipt(acceptedAt: firstDate)
+        let syncFailure = DirectorySyncFailure(failingDirectoryCall: 2)
+        let hooks = ExternalDataConsentStoreHooks(synchronizeDescriptor: syncFailure.synchronize)
+        let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL, hooks: hooks)
+
+        await #expect(throws: (any Error).self) {
+            try await store.revoke()
+        }
+
+        #expect(await ExternalDataConsentStore(receiptURL: fixture.receiptURL).status() == .required)
+    }
 }
 
 private struct ConsentFixture {
@@ -345,6 +593,24 @@ private struct ConsentFixture {
         documentToolAccessAccepted: Bool = true,
         extraKey: (String, Any)? = nil
     ) throws {
+        try writeRaw(receiptData(
+            schemaVersion: schemaVersion,
+            policyVersion: policyVersion,
+            acceptedAt: acceptedAt,
+            externalProviderRiskAccepted: externalProviderRiskAccepted,
+            documentToolAccessAccepted: documentToolAccessAccepted,
+            extraKey: extraKey
+        ))
+    }
+
+    func receiptData(
+        schemaVersion: Int = 1,
+        policyVersion: Int = 1,
+        acceptedAt: Date,
+        externalProviderRiskAccepted: Bool = true,
+        documentToolAccessAccepted: Bool = true,
+        extraKey: (String, Any)? = nil
+    ) throws -> Data {
         let formatter = ISO8601DateFormatter()
         var object: [String: Any] = [
             "schema_version": schemaVersion,
@@ -356,7 +622,7 @@ private struct ConsentFixture {
         if let extraKey {
             object[extraKey.0] = extraKey.1
         }
-        try writeRaw(JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
+        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
 
     func writeRaw(_ data: Data) throws {
@@ -381,6 +647,58 @@ private enum ConsentProbeError: Error {
     case receiptChangedBeforeCommit
     case secureTemporaryFileMissing
     case insecurePermissions
+    case stopBeforeAcceptCommit
+}
+
+private final class DirectorySyncFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private let failingDirectoryCall: Int
+    private var directoryCallCount = 0
+
+    init(failingDirectoryCall: Int) {
+        self.failingDirectoryCall = failingDirectoryCall
+    }
+
+    func synchronize(_ descriptor: Int32) -> Int32 {
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0 else {
+            return -1
+        }
+        guard metadata.st_mode & S_IFMT == S_IFDIR else {
+            return fsync(descriptor)
+        }
+        lock.lock()
+        directoryCallCount += 1
+        let shouldFail = directoryCallCount == failingDirectoryCall
+        lock.unlock()
+        if shouldFail {
+            __error().pointee = EIO
+            return -1
+        }
+        return fsync(descriptor)
+    }
+}
+
+private func temporaryReceipt(in directory: URL) throws -> URL? {
+    try FileManager.default.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: nil
+    ).first {
+        $0.lastPathComponent.hasPrefix(".mcp-consent.json.") &&
+            $0.lastPathComponent.hasSuffix(".tmp")
+    }
+}
+
+private func directoryContainsFile(with expectedData: Data, at directory: URL) throws -> Bool {
+    try FileManager.default.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: [.isRegularFileKey]
+    ).contains { url in
+        guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+            return false
+        }
+        return (try? Data(contentsOf: url)) == expectedData
+    }
 }
 
 private func permissions(of url: URL) throws -> mode_t {
@@ -393,6 +711,10 @@ private func permissions(of url: URL) throws -> mode_t {
 
 private struct POSIXTestError: Error {
     let code: Int32
+}
+
+private func openFileDescriptorCount() throws -> Int {
+    try FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count
 }
 
 private func physicalURL(for url: URL) throws -> URL {
