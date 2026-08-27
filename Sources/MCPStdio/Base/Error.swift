@@ -44,7 +44,8 @@ public enum MCPError: Error, Hashable, Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let code = try container.decode(Int.self, forKey: .code)
         let message = try container.decode(String.self, forKey: .message)
-        let detail = try container.decodeIfPresent([String: String].self, forKey: .data)?["detail"]
+        let data = try container.decodeIfPresent([String: Value].self, forKey: .data)
+        let detail = data?["detail"]?.stringValue ?? message
         switch code {
         case -32700: self = .parseError(detail)
         case -32600: self = .invalidRequest(detail)

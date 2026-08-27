@@ -40,6 +40,17 @@ public struct Tool: Hashable, Codable, Sendable {
         self._meta = _meta
     }
 
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        inputSchema = try container.decode(Value.self, forKey: .inputSchema)
+        outputSchema = try container.decodeIfPresent(Value.self, forKey: .outputSchema)
+        annotations = try container.decodeIfPresent(Annotations.self, forKey: .annotations) ?? .init()
+        _meta = try container.decodeIfPresent(Metadata.self, forKey: ._meta)
+    }
+
     public enum Content: Hashable, Codable, Sendable {
         /// LocalOCR emits only textual tool content; resources and media are not part of this server surface.
         case text(text: String, annotations: Value?, _meta: Metadata?)

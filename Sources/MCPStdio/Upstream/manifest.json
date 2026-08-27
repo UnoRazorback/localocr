@@ -38,13 +38,13 @@
       "path": "Base/Value.swift",
       "origin": "Sources/MCP/Base/Value.swift",
       "upstream_sha256": "6a8399cb11db842faac9f549143058e24d15763705be65701ffba714111aabeb",
-      "local_sha256": "ab58a15f94ed97ccee4834f22d35fa94efea1c938f7362d9fabcbbe172081312"
+      "local_sha256": "75829e888bbf1d723b28d3dd1b1f5a16d73a27ae7cb48fa75479cd781704ce5a"
     },
     {
       "path": "Base/Error.swift",
       "origin": "Sources/MCP/Base/Error.swift",
       "upstream_sha256": "8e8e09ad9a44c50aa27109e4109630bb166d431bfa19ec833b8339b4f45dc1e5",
-      "local_sha256": "694c446f118f465a9ff4c8c5e3478a53c3463a6f1dbd29e64f120e2eb7c7ed2c"
+      "local_sha256": "81ccb29e2740c53857cd9889e1c733c88a319422874809a62f668463a5d307b5"
     },
     {
       "path": "Base/Messages.swift",
@@ -80,7 +80,7 @@
       "path": "Server/Tools.swift",
       "origin": "Sources/MCP/Server/Tools.swift",
       "upstream_sha256": "79c4fc03714468c4a41c05544371ea7ffbf4517dc647db1b679abf8b71df7f0f",
-      "local_sha256": "9208afbdf93b6b58be1780fa3ab9310ef8d1b072d6bf40c9c7e2d9cbc3270672"
+      "local_sha256": "824cd722848c98e0c6e9fa7898ffc48108a430f481c436f151118f89f592c3b1"
     }
   ],
   "adaptations": [
@@ -90,11 +90,11 @@
     },
     {
       "path": "Base/Value.swift",
-      "reason": "Retains only the JSON Value wire cases, Codable behavior, literal construction, accessors, and local data URL handling needed by LocalOCR tool schemas and results."
+      "reason": "Retains the JSON Value wire cases, Codable behavior, literal construction, accessors, and upstream-compatible data URL parsing and text/plain default encoding needed by LocalOCR schemas and results."
     },
     {
       "path": "Base/Error.swift",
-      "reason": "Retains JSON-RPC standard and server errors while removing URL elicitation, transport errors, and the System dependency because the stdio type boundary has no network or client surface."
+      "reason": "Retains JSON-RPC standard and server errors, including Value-shaped error data and peer-message detail fallback, while removing URL elicitation, transport errors, and the System dependency."
     },
     {
       "path": "Base/Messages.swift",
@@ -118,7 +118,7 @@
     },
     {
       "path": "Server/Tools.swift",
-      "reason": "Retains LocalOCR's tool definitions, annotations, schemas, text content, list, and call messages while removing icons, resources, media, and resource-link content types."
+      "reason": "Retains LocalOCR's tool definitions, optional-annotation decoding, schemas, text content, list, and call messages while removing icons, resources, media, and resource-link content types."
     }
   ]
 }

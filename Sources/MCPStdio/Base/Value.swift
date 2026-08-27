@@ -41,7 +41,7 @@ extension Value: Codable {
         } else if let value = try? container.decode(Double.self) {
             self = .double(value)
         } else if let value = try? container.decode(String.self) {
-            self = Self.decodeString(value)
+            self = Self.parseDataURL(value) ?? .string(value)
         } else if let value = try? container.decode([Value].self) {
             self = .array(value)
         } else if let value = try? container.decode([String: Value].self) {
@@ -65,20 +65,40 @@ extension Value: Codable {
         }
     }
 
-    private static func decodeString(_ value: String) -> Value {
-        guard value.hasPrefix("data:"),
-              let separator = value.range(of: ","),
-              value[..<separator.lowerBound].hasSuffix(";base64"),
-              let data = Data(base64Encoded: String(value[separator.upperBound...]))
-        else { return .string(value) }
+    private static func parseDataURL(_ value: String) -> Value? {
+        guard value.hasPrefix("data:"), let comma = value.firstIndex(of: ",") else { return nil }
 
-        let header = String(value[value.index(value.startIndex, offsetBy: 5)..<separator.lowerBound])
-        let mimeType = String(header.dropLast(";base64".count))
-        return .data(mimeType: mimeType.isEmpty ? nil : mimeType, data)
+        var header = String(value[value.index(value.startIndex, offsetBy: 5)..<comma])
+        let payload = String(value[value.index(after: comma)...])
+        let isBase64 = header.hasSuffix(";base64")
+        if isBase64 { header.removeLast(";base64".count) }
+
+        let mediaType: String
+        let charset: String?
+        if let charsetMarker = header.range(of: ";charset=") {
+            mediaType = String(header[..<charsetMarker.lowerBound])
+            let value = String(header[charsetMarker.upperBound...])
+            guard !value.isEmpty, !value.contains(";") else { return nil }
+            charset = value
+        } else {
+            guard !header.contains(";") else { return nil }
+            mediaType = header
+            charset = nil
+        }
+
+        var mimeType = mediaType.isEmpty ? "text/plain" : mediaType
+        if let charset, mimeType.starts(with: "text/") { mimeType += ";charset=\(charset)" }
+
+        if isBase64 {
+            guard let data = Data(base64Encoded: payload) else { return nil }
+            return .data(mimeType: mimeType, data)
+        }
+        guard let data = payload.removingPercentEncoding?.data(using: .utf8) else { return nil }
+        return .data(mimeType: mimeType, data)
     }
 
     private static func dataURL(mimeType: String?, data: Data) -> String {
-        "data:\(mimeType ?? "application/octet-stream");base64,\(data.base64EncodedString())"
+        "data:\(mimeType ?? "text/plain");base64,\(data.base64EncodedString())"
     }
 }
 

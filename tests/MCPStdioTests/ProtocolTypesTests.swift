@@ -37,6 +37,17 @@ import Testing
         }
     }
 
+    @Test func valueMatchesUpstreamDataURLDefaultsAndPercentDecoding() throws {
+        let defaultMIME = Value.data(Data("plain".utf8))
+        let defaultMIMEURL = try JSONDecoder().decode(String.self, from: JSONEncoder().encode(defaultMIME))
+        let percentEncoded = Data(#""data:text/plain;charset=utf-8,hello%20world""#.utf8)
+        let implicitMIME = Data(#""data:,hello%20world""#.utf8)
+
+        #expect(defaultMIMEURL == "data:text/plain;base64,cGxhaW4=")
+        #expect(try JSONDecoder().decode(Value.self, from: percentEncoded) == .data(mimeType: "text/plain;charset=utf-8", Data("hello world".utf8)))
+        #expect(try JSONDecoder().decode(Value.self, from: implicitMIME) == .data(mimeType: "text/plain", Data("hello world".utf8)))
+    }
+
     @Test func toolMessagesPreserveAnnotationsSchemasArgumentsAndResults() throws {
         let tool = Tool(
             name: "inspect_pdf",
@@ -69,6 +80,13 @@ import Testing
         #expect(try decoder.decode(Response<CallTool>.self, from: encoder.encode(result)) == result)
     }
 
+    @Test func toolDecodingDefaultsOmittedAnnotationsToEmpty() throws {
+        let data = Data(#"{"name":"inspect_pdf","description":"Inspects a local PDF.","inputSchema":{"type":"object"}}"#.utf8)
+        let tool = try JSONDecoder().decode(Tool.self, from: data)
+
+        #expect(tool.annotations.isEmpty)
+    }
+
     @Test func pingAndCancellationUseTheirExactMCPMethods() throws {
         let ping = Ping.request(id: .int(7))
         let cancellation = Message<CancelledNotification>(params: .init(requestId: .string("slow-call"), reason: "client closed"))
@@ -90,5 +108,14 @@ import Testing
         #expect(encoded?["message"] as? String == "Invalid params: file_path is required")
         #expect((encoded?["data"] as? [String: String])?["detail"] == "file_path is required")
         #expect(try JSONDecoder().decode(MCPError.self, from: JSONEncoder().encode(error)) == error)
+    }
+
+    @Test func protocolErrorsDecodePeerDetailsFromJSONRPCValueDataOrMessageFallback() throws {
+        let decoder = JSONDecoder()
+        let structuredData = Data(#"{"code":-32602,"message":"Invalid params: file_path is required","data":{"detail":"file_path is required","attempt":1}}"#.utf8)
+        let messageOnly = Data(#"{"code":-32603,"message":"worker failed"}"#.utf8)
+
+        #expect(try decoder.decode(MCPError.self, from: structuredData) == .invalidParams("file_path is required"))
+        #expect(try decoder.decode(MCPError.self, from: messageOnly) == .internalError("worker failed"))
     }
 }
