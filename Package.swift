@@ -109,7 +109,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LocalOCRIntelligenceTests",
-            dependencies: ["LocalOCRIntelligence", "LocalOCRService"],
+            dependencies: ["LocalOCRIntelligence", "LocalOCRService", "LocalOCRCore"],
             path: "tests/LocalOCRIntelligenceTests",
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         )
