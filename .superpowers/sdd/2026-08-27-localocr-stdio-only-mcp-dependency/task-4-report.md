@@ -90,3 +90,79 @@ Task 5 must perform the module/dependency migration and run the root Swift and
 subprocess compatibility gates. No document, consent, signing, installation,
 process, release, publication, external configuration, or business state was
 changed.
+
+## Fix round 1: structured params, terminal ownership, and bounded admission
+
+### Corrective changes
+
+- The envelope now rejects a present `params` value unless it is an object or
+  array. Invalid requests receive `-32600`; invalid notifications remain
+  silent. `notifications/initialized` additionally requires omitted or
+  object-shaped params, because the notification has no positional form. Null,
+  scalar, and array params therefore cannot transition the server to ready.
+  A generic method whose Swift parameter type is `Value` can no longer bypass
+  the JSON-RPC structured-params rule with a scalar.
+- Every response-bearing request is reserved before lifecycle or method
+  dispatch. Registry entries now have explicit `executing` and `sending`
+  phases. Success, typed errors, and cancellation atomically claim the sending
+  phase; the ID remains reserved until `Transport.send` succeeds. A send or
+  encoding failure closes the connection and clears the registry. Duplicate
+  input during a blocked terminal send is rejected without invoking a second
+  handler, and cancellation retains the same terminal ownership rule.
+- `Server.maximumInFlightRequests` is fixed at **8** per connection. The count
+  includes both executing and terminal-sending requests. A distinct request
+  beyond the limit receives deterministic JSON-RPC server error `-32000`,
+  `Server error: too many in-flight requests`, and starts no handler work.
+  Duplicate detection takes precedence over overload detection.
+
+### In-flight limit rationale for the decision ledger
+
+Eight is the smallest non-arbitrary bound already supported by an audited
+adjacent resource boundary: `StdioTransport` buffers at most eight completed
+one-MiB input frames. Reusing that bound prevents the server from creating a
+larger tier of concurrent, potentially document-heavy LocalOCR work than the
+transport can queue, while preserving the approved concurrent-request and
+out-of-order response behavior. A limit of one would contradict that
+concurrency requirement; choosing two or four would impose a new stricter
+client throttle without an existing protocol or transport basis. The limit is
+fixed rather than configurable so the shipping resource policy remains
+auditable and deterministic.
+
+### TDD and self-review evidence
+
+- RED: null, scalar, and empty-array initialized notifications all unlocked the
+  server; a scalar reached a registered `Value` handler. GREEN: all malformed
+  initialized variants remain silent and a following ping stays lifecycle
+  gated, while scalar generic params return `-32600` before handler entry.
+- RED: while an original response was blocked in the transport, its ID had
+  already been removed and a second handler with the same ID ran successfully.
+  GREEN: the duplicate returns `-32600`, the original handler remains the only
+  handler invoked, and the original response is delivered after output resumes.
+- RED: the registry had no cancellation terminal state. GREEN: direct registry
+  coverage proves cancellation changes `executing` to `sending`, duplicate
+  reservation remains rejected, and release occurs only after terminal finish.
+- RED: there was no fixed in-flight bound. GREEN: eight suspended requests fill
+  the registry, the ninth receives exact overload code/message without handler
+  entry, successful completion reopens one slot, and delivered cancellation
+  independently reopens one slot.
+- Mutation review covers accepting null/scalar params, allowing array-shaped
+  initialized params, releasing IDs before send, omitting cancellation's
+  sending state, admitting a ninth handler, returning the wrong overload code,
+  and failing to reopen capacity after terminal delivery.
+
+### Fix-round verification
+
+- Exact-source focused `swift test --filter ServerTests`: 20 tests passed,
+  including three parameterized malformed-initialized cases.
+- `.venv/bin/python -m pytest tests/contract/test_mcp_stdio_vendor.py -q`:
+  38 passed with the same five pre-existing SWIG deprecation warnings.
+- Updated local SHA-256 values:
+  - `Server/Server.swift`:
+    `ee7f094e3da99539f7c036f5faa503113ea14048b891cd1a586525a3bbb604dc`
+  - `Server/RequestRegistry.swift`:
+    `98cebcb2348760c599d68f7a906c9e5c577f50914780878c231b103d22cc3f9d`
+
+Task 2-3 protocol types and transport remain unchanged. The Task 5 root-suite
+and module-migration gate remains carried; no production stub or unrelated
+process, document, consent, release, signing, publication, or external-state
+change was introduced.

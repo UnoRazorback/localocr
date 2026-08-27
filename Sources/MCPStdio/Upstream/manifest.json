@@ -98,12 +98,12 @@
       "path": "Server/Server.swift",
       "origin": "Sources/MCP/Server/Server.swift",
       "upstream_sha256": "61cd2439525e73a417cbc36711b7e0340a2442f14acbb1631915ee3d792962f3",
-      "local_sha256": "0d711da5daad108a332be7a3f44e394ca6d202635f6c9378a607e3992b3a30b3"
+      "local_sha256": "ee7f094e3da99539f7c036f5faa503113ea14048b891cd1a586525a3bbb604dc"
     },
     {
       "path": "Server/RequestRegistry.swift",
       "local_only": true,
-      "local_sha256": "f37506b1ebffd27716241f713ce6f024651ba18bb8bf9332b9f21d1037a70d5b"
+      "local_sha256": "98cebcb2348760c599d68f7a906c9e5c577f50914780878c231b103d22cc3f9d"
     }
   ],
   "adaptations": [
@@ -153,11 +153,11 @@
     },
     {
       "path": "Server/Server.swift",
-      "reason": "Adapts the upstream server to a strict inbound-only stdio lifecycle with initialize, initialized, ping, tools/list, tools/call, cancellation, correlated concurrent responses, deterministic standard errors, and content-free diagnostics; removes client requests, batches, HTTP context, resources, prompts, sampling, elicitation, roots, subscriptions, logging control, and every network-related surface."
+      "reason": "Adapts the upstream server to a strict inbound-only stdio lifecycle with structured JSON-RPC params, initialize gating, ping, tools/list, tools/call, cancellation, correlated concurrent responses, a fixed eight-request in-flight limit, deterministic standard and overload errors, terminal-send ID ownership, and content-free diagnostics; removes client requests, batches, HTTP context, resources, prompts, sampling, elicitation, roots, subscriptions, logging control, and every network-related surface."
     },
     {
       "path": "Server/RequestRegistry.swift",
-      "reason": "Adds a local actor registry that atomically rejects duplicate active IDs, assigns exactly one terminal path, makes cancellation idempotent, suppresses late completion, and cancels outstanding tasks during connection teardown."
+      "reason": "Adds a bounded local actor registry that atomically distinguishes duplicate and overloaded requests, retains IDs through explicit executing and terminal-sending states, makes cancellation idempotent, suppresses late completion, reopens capacity only after delivery, and cancels outstanding tasks during connection teardown."
     }
   ]
 }

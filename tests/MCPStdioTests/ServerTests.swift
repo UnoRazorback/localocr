@@ -1,6 +1,6 @@
 import Foundation
 import Logging
-import MCPStdio
+@testable import MCPStdio
 import Testing
 
 @Suite("Server lifecycle and dispatch")
@@ -95,6 +95,36 @@ struct ServerTests {
         #expect(await harness.outputCount == initialCount + 1)
     }
 
+    @Test(arguments: [Value.null, .string("scalar"), .array([])])
+    func malformedInitializedParamsRemainSilentAndDoNotTransitionReady(_ params: Value) async throws {
+        let harness = await ServerHarness.make()
+        try await harness.start()
+        await harness.send(initializeRequest(id: "initialize", version: Version.latest))
+        _ = try await harness.nextResponse()
+        let initializedOutputCount = await harness.outputCount
+
+        await harness.send(notification(method: InitializedNotification.name, params: params))
+        await harness.send(request(id: "still-gated", method: Ping.name))
+
+        #expect(try await harness.nextResponse() == .error(id: "still-gated", code: -32600))
+        #expect(await harness.outputCount == initializedOutputCount + 1)
+        await harness.send(notification(method: InitializedNotification.name, params: [:]))
+        await harness.send(request(id: "ready", method: Ping.name))
+        #expect(try await harness.nextResponse() == .success(id: "ready", result: [:]))
+    }
+
+    @Test
+    func genericHandlerRejectsScalarParamsAtEnvelopeDispatch() async throws {
+        let values = ValueCallRecorder()
+        let harness = await ServerHarness.make(values: values)
+        try await harness.startAndInitialize()
+
+        await harness.send(request(id: 6, method: ValueEchoMethod.name, params: "not-structured"))
+
+        #expect(try await harness.nextResponse() == .error(id: 6, code: -32600))
+        #expect(await values.values.isEmpty)
+    }
+
     @Test
     func eofCompletesAndDisconnectsTheTransport() async throws {
         let harness = await ServerHarness.make()
@@ -143,6 +173,40 @@ struct ServerTests {
     }
 
     @Test
+    func requestIDRemainsReservedWhileItsTerminalResponseIsBlocked() async throws {
+        let calls = ToolCallRecorder()
+        let gate = CallGate()
+        let harness = await ServerHarness.make(calls: calls, gate: gate)
+        try await harness.startAndInitialize()
+
+        await harness.send(request(id: 12, method: CallTool.name, params: ["name": "original"]))
+        await gate.waitUntilStarted("original")
+        await harness.blockNextWrite()
+        await gate.release("original")
+        await harness.waitUntilWriteBlocked()
+        await gate.release("duplicate")
+        await harness.send(request(id: 12, method: CallTool.name, params: ["name": "duplicate"]))
+
+        #expect(try await harness.nextResponse() == .error(id: 12, code: -32600))
+        #expect(await calls.names == ["original"])
+        await harness.releaseBlockedWrite()
+        let original = try await harness.nextResponse()
+        #expect(original.id == 12)
+        #expect(original.errorCode == nil)
+    }
+
+    @Test
+    func cancellationKeepsRegistryEntryReservedUntilTerminalSendFinishes() async {
+        let registry = RequestRegistry(limit: 1)
+
+        #expect(await registry.reserve(13) == .accepted)
+        #expect(await registry.beginCancellation(13))
+        #expect(await registry.reserve(13) == .duplicate)
+        await registry.finishTerminal(13)
+        #expect(await registry.reserve(13) == .accepted)
+    }
+
+    @Test
     func distinctConcurrentRequestsRespondInCompletionOrderWithCorrelatedIDs() async throws {
         let gate = CallGate()
         let harness = await ServerHarness.make(gate: gate)
@@ -157,6 +221,67 @@ struct ServerTests {
         #expect(try await harness.nextResponse().id == "slow-b")
         await gate.release("a")
         #expect(try await harness.nextResponse().id == "slow-a")
+    }
+
+    @Test
+    func inFlightLimitRejectsOverflowAndCompletionReopensOneSlot() async throws {
+        let calls = ToolCallRecorder()
+        let gate = CallGate()
+        let harness = await ServerHarness.make(calls: calls, gate: gate)
+        try await harness.startAndInitialize()
+
+        for index in 0..<Server.maximumInFlightRequests {
+            let name = "slot-\(index)"
+            await harness.send(request(id: .int(100 + index), method: CallTool.name, params: ["name": .string(name)]))
+            await gate.waitUntilStarted(name)
+        }
+        await gate.release("overflow")
+        await harness.send(request(id: 200, method: CallTool.name, params: ["name": "overflow"]))
+
+        let overload = try await harness.nextResponse()
+        #expect(overload.id == 200)
+        #expect(overload.errorCode == -32000)
+        #expect(overload.error?.message == "Server error: too many in-flight requests")
+        #expect(await calls.names.count == Server.maximumInFlightRequests)
+
+        await gate.release("slot-0")
+        #expect(try await harness.nextResponse().id == 100)
+        await harness.send(request(id: 201, method: CallTool.name, params: ["name": "replacement"]))
+        await gate.waitUntilStarted("replacement")
+        await gate.release("replacement")
+        #expect(try await harness.nextResponse().id == 201)
+
+        for index in 1..<Server.maximumInFlightRequests {
+            await gate.release("slot-\(index)")
+        }
+        await harness.stop()
+    }
+
+    @Test
+    func cancellationTerminalDeliveryReopensOneInFlightSlot() async throws {
+        let calls = ToolCallRecorder()
+        let gate = CallGate()
+        let harness = await ServerHarness.make(calls: calls, gate: gate)
+        try await harness.startAndInitialize()
+
+        for index in 0..<Server.maximumInFlightRequests {
+            let name = "cancel-slot-\(index)"
+            await harness.send(request(id: .int(300 + index), method: CallTool.name, params: ["name": .string(name)]))
+            await gate.waitUntilStarted(name)
+        }
+        await harness.send(cancel(id: 300))
+        #expect(try await harness.nextResponse() == .error(id: 300, code: -32603))
+
+        await harness.send(request(id: 400, method: CallTool.name, params: ["name": "after-cancel"]))
+        await gate.waitUntilStarted("after-cancel")
+        await gate.release("after-cancel")
+        #expect(try await harness.nextResponse().id == 400)
+        #expect(await calls.names.count == Server.maximumInFlightRequests + 1)
+
+        for index in 0..<Server.maximumInFlightRequests {
+            await gate.release("cancel-slot-\(index)")
+        }
+        await harness.stop()
     }
 
     @Test
@@ -244,6 +369,7 @@ private actor ServerHarness {
 
     static func make(
         calls: ToolCallRecorder = .init(),
+        values: ValueCallRecorder = .init(),
         gate: CallGate? = nil,
         logs: CapturedServerLogs = .init(),
         handlerFailure: String? = nil
@@ -272,6 +398,10 @@ private actor ServerHarness {
             return .init(content: [.text(text: text, annotations: nil, _meta: nil)])
         }
         await server.withMethodHandler(UnencodableMethod.self) { _ in UnencodableResult() }
+        await server.withMethodHandler(ValueEchoMethod.self) { parameters in
+            await values.record(parameters)
+            return parameters
+        }
         return ServerHarness(server: server, transport: transport)
     }
 
@@ -292,6 +422,9 @@ private actor ServerHarness {
     func send(_ data: Data) async { await transport.push(data) }
     func finishInput() async { await transport.finishInput() }
     func failFutureWrites() async { await transport.failFutureWrites() }
+    func blockNextWrite() async { await transport.blockNextWrite() }
+    func waitUntilWriteBlocked() async { await transport.waitUntilWriteBlocked() }
+    func releaseBlockedWrite() async { await transport.releaseBlockedWrite() }
     func nextResponse() async throws -> WireResponse { try JSONDecoder().decode(WireResponse.self, from: await transport.nextOutput()) }
     func nextResponseIfAvailable() async throws -> WireResponse? {
         guard let data = await transport.nextOutputIfAvailable() else { return nil }
@@ -319,6 +452,10 @@ private actor InMemoryTransport: Transport {
     private var nextOutputIndex = 0
     private var outputWaiters: [CheckedContinuation<Data, Never>] = []
     private var writesFail = false
+    private var shouldBlockNextWrite = false
+    private var writeIsBlocked = false
+    private var writeBlockedWaiters: [CheckedContinuation<Void, Never>] = []
+    private var writeReleaseWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(logger: Logger) {
         self.logger = logger
@@ -333,10 +470,23 @@ private actor InMemoryTransport: Transport {
         guard connected else { return }
         connected = false
         disconnectCount += 1
+        let releaseWaiters = writeReleaseWaiters
+        writeReleaseWaiters.removeAll()
+        releaseWaiters.forEach { $0.resume() }
         continuation.finish()
     }
 
     func send(_ data: Data) async throws {
+        guard connected, !writesFail else { throw MCPError.internalError("fixture output unavailable") }
+        if shouldBlockNextWrite {
+            shouldBlockNextWrite = false
+            writeIsBlocked = true
+            let blockedWaiters = writeBlockedWaiters
+            writeBlockedWaiters.removeAll()
+            blockedWaiters.forEach { $0.resume() }
+            await withCheckedContinuation { writeReleaseWaiters.append($0) }
+            writeIsBlocked = false
+        }
         guard connected, !writesFail else { throw MCPError.internalError("fixture output unavailable") }
         outputs.append(data)
         if !outputWaiters.isEmpty {
@@ -348,6 +498,18 @@ private actor InMemoryTransport: Transport {
     func push(_ data: Data) { continuation.yield(data) }
     func finishInput() { continuation.finish() }
     func failFutureWrites() { writesFail = true }
+    func blockNextWrite() { shouldBlockNextWrite = true }
+
+    func waitUntilWriteBlocked() async {
+        guard !writeIsBlocked else { return }
+        await withCheckedContinuation { writeBlockedWaiters.append($0) }
+    }
+
+    func releaseBlockedWrite() {
+        let waiters = writeReleaseWaiters
+        writeReleaseWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
 
     func nextOutput() async -> Data {
         if nextOutputIndex < outputs.count {
@@ -385,6 +547,11 @@ private actor ToolCallRecorder {
     func record(_ name: String) { names.append(name) }
 }
 
+private actor ValueCallRecorder {
+    private(set) var values: [Value] = []
+    func record(_ value: Value) { values.append(value) }
+}
+
 private actor CallGate {
     private var started: Set<String> = []
     private var released: Set<String> = []
@@ -416,6 +583,12 @@ private enum UnencodableMethod: MCPStdio.Method {
     typealias Result = UnencodableResult
 }
 
+private enum ValueEchoMethod: MCPStdio.Method {
+    static let name = "testing/value-echo"
+    typealias Parameters = Value
+    typealias Result = Value
+}
+
 private struct UnencodableResult: Hashable, Codable, Sendable {
     init() {}
     init(from decoder: Decoder) throws { self.init() }
@@ -435,7 +608,16 @@ private struct WireResponse: Codable, Equatable {
 
 private struct WireError: Codable, Equatable {
     let code: Int
-    private enum CodingKeys: String, CodingKey { case code }
+    let message: String?
+
+    init(code: Int, message: String? = nil) {
+        self.code = code
+        self.message = message
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.code == rhs.code }
+
+    private enum CodingKeys: String, CodingKey { case code, message }
 }
 
 private func initializeRequest(id: ID, version: String) -> Data {
