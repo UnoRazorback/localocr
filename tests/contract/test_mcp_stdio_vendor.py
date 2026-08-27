@@ -37,14 +37,20 @@ FORBIDDEN_SOURCE_CONTENT = (
     ),
     re.compile(r"\b(?:actor|class|struct|enum|protocol)\s+Client\b"),
 )
-MIGRATED_SWIFT_FILES = (
-    "Sources/LocalOCRMCP/MCPArgumentDecoder.swift",
-    "Sources/LocalOCRMCP/MCPServerRunner.swift",
-    "Sources/LocalOCRMCP/MCPToolCatalog.swift",
-    "Sources/LocalOCRMCP/MCPToolDispatcher.swift",
-    "tests/LocalOCRMCPTests/MCPArgumentDecoderTests.swift",
-    "tests/LocalOCRMCPTests/MCPServerRunnerTests.swift",
-    "tests/LocalOCRMCPTests/MCPToolDispatcherTests.swift",
+LOCALOCR_MCP_SWIFT_ROOTS = (
+    Path("Sources/LocalOCRMCP"),
+    Path("tests/LocalOCRMCPTests"),
+)
+LEGACY_MCP_IMPORT = re.compile(
+    r"(?m)^\s*(?:@testable\s+)?import\s+MCP(?:\.|\s|$)"
+)
+MCP_STDIO_IMPORT = re.compile(
+    r"(?m)^\s*(?:@testable\s+)?import\s+MCPStdio(?:\.|\s|$)"
+)
+MCP_STDIO_TYPE_USAGE = re.compile(
+    r"\b(?:Value|CallTool|ListTools|Tool|Server|Transport|StdioTransport|Initialize|"
+    r"InitializedNotification|CancelledNotification|MCPError|Ping|Metadata|ID)\b|"
+    r"\b(?:Message|Request|Response)\s*<"
 )
 
 
@@ -137,6 +143,22 @@ def _copied_tree(tmp_path: Path) -> Path:
     return copy
 
 
+def _validate_localocr_mcp_imports(root: Path) -> None:
+    swift_files = sorted(
+        path
+        for swift_root in LOCALOCR_MCP_SWIFT_ROOTS
+        for path in (root / swift_root).rglob("*.swift")
+    )
+    assert swift_files
+
+    for path in swift_files:
+        relative_path = path.relative_to(root).as_posix()
+        source = path.read_text()
+        assert LEGACY_MCP_IMPORT.search(source) is None, relative_path
+        if MCP_STDIO_TYPE_USAGE.search(source):
+            assert MCP_STDIO_IMPORT.search(source), relative_path
+
+
 def test_package_uses_local_mcp_stdio() -> None:
     """Catches a remote swift-sdk dependency returning before migration completes."""
     package = (ROOT / "Package.swift").read_text()
@@ -176,10 +198,27 @@ def test_localocr_mcp_targets_and_sources_use_only_mcp_stdio() -> None:
         for pin in resolved["pins"]
     )
 
-    for relative_path in MIGRATED_SWIFT_FILES:
-        source = (ROOT / relative_path).read_text()
-        assert re.search(r"(?m)^import MCPStdio$", source), relative_path
-        assert re.search(r"(?m)^import MCP$", source) is None, relative_path
+    _validate_localocr_mcp_imports(ROOT)
+
+
+def test_localocr_mcp_import_policy_discovers_new_nested_swift_files(tmp_path: Path) -> None:
+    """Catches newly added LocalOCR MCP source or test files escaping migration policy."""
+    copy = _copied_tree(tmp_path)
+    legacy = copy / "Sources" / "LocalOCRMCP" / "Nested" / "Legacy.swift"
+    legacy.parent.mkdir()
+    legacy.write_text("import MCP\npublic let legacy: Value = .null\n")
+    with pytest.raises(AssertionError):
+        _validate_localocr_mcp_imports(copy)
+
+    legacy.unlink()
+    missing_import = copy / "tests" / "LocalOCRMCPTests" / "Nested" / "ValueProbe.swift"
+    missing_import.parent.mkdir()
+    missing_import.write_text("import Testing\nlet probe: Value = .null\n")
+    with pytest.raises(AssertionError):
+        _validate_localocr_mcp_imports(copy)
+
+    missing_import.write_text("import MCPStdio\nimport Testing\nlet probe: Value = .null\n")
+    _validate_localocr_mcp_imports(copy)
 
 
 def test_manifest_is_closed_and_pinned() -> None:

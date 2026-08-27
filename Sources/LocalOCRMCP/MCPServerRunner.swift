@@ -150,11 +150,18 @@ private actor MCPServerLifecycleCoordinator {
 }
 
 private actor CancellationLatchedTransport: Transport {
+    private enum ConnectState {
+        case notStarted
+        case connecting
+        case settled
+    }
+
     nonisolated let logger: Logger
 
     private let transport: any Transport
     private var cancellationRequested = false
-    private var connectWasAttempted = false
+    private var connectState = ConnectState.notStarted
+    private var connectSettlementWaiters: [CheckedContinuation<Void, Never>] = []
     private var disconnectTask: Task<Void, Never>?
 
     init(_ transport: any Transport, logger: Logger) {
@@ -168,24 +175,31 @@ private actor CancellationLatchedTransport: Transport {
             throw CancellationError()
         }
 
-        connectWasAttempted = true
-        try await transport.connect()
+        connectState = .connecting
+        do {
+            try await transport.connect()
+        } catch {
+            connectDidSettle()
+            throw error
+        }
+        connectDidSettle()
 
         if cancellationRequested || Task.isCancelled {
             cancellationRequested = true
-            _ = beginDisconnectOnce()
+            await beginDisconnectOnce().value
             throw CancellationError()
         }
     }
 
     func requestCancellation() {
         cancellationRequested = true
-        if connectWasAttempted {
+        if case .settled = connectState {
             _ = beginDisconnectOnce()
         }
     }
 
     func disconnect() async {
+        await waitUntilConnectSettles()
         await beginDisconnectOnce().value
     }
 
@@ -228,5 +242,19 @@ private actor CancellationLatchedTransport: Transport {
         }
         disconnectTask = task
         return task
+    }
+
+    private func connectDidSettle() {
+        connectState = .settled
+        let waiters = connectSettlementWaiters
+        connectSettlementWaiters = []
+        waiters.forEach { $0.resume() }
+    }
+
+    private func waitUntilConnectSettles() async {
+        guard case .connecting = connectState else { return }
+        await withCheckedContinuation { continuation in
+            connectSettlementWaiters.append(continuation)
+        }
     }
 }

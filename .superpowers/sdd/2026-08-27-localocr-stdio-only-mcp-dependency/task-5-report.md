@@ -53,15 +53,34 @@ edge, any `MCP`/`swift-sdk` product edge in any target, a returned resolved SDK
 pin, wrong tool order, consent bypass, lost structured content, missing
 cancellation, non-clean EOF, lifecycle double cleanup, and diagnostic stdout.
 
+## Fix round 1
+
+- A deterministic suspended-connect regression test reproduced the reviewed
+  cancellation race: the prior latch could start and memoize `disconnect()`
+  while the underlying `connect()` was suspended, after which `connect()` could
+  resume open with no second cleanup. `CancellationLatchedTransport` now tracks
+  `notStarted`, `connecting`, and `settled` states. Cancellation records intent
+  while connecting; cancellation cleanup and any concurrent explicit
+  `disconnect()` wait for connect settlement, then share exactly one memoized
+  disconnect task. Existing pre-connect, start-error, open-connection, and
+  suspending-disconnect cleanup behavior remains covered.
+- The LocalOCR migration import contract no longer relies on a seven-file
+  allowlist. It recursively discovers every `.swift` file below both
+  `Sources/LocalOCRMCP` and `tests/LocalOCRMCPTests`, rejects normal, testable,
+  and scoped `MCP` imports, and requires `MCPStdio` in files that reference MCP
+  protocol types. Adversarial nested source and test fixtures prove that both a
+  newly introduced legacy import and newly introduced unimported MCP type use
+  fail the contract, while the migrated form passes.
+
 ## Verification
 
 - `.venv/bin/python -m pytest tests/contract/test_mcp_stdio_vendor.py -q`:
-  **39 passed**; five pre-existing SWIG deprecation warnings.
+  **40 passed**; five pre-existing SWIG deprecation warnings.
 - `swift test --filter ProtocolTypesTests`: **8 passed**.
 - `swift test --filter StdioTransportTests`: **18 passed**.
 - `swift test --filter ServerTests`: **22 passed**.
 - `swift test --filter MCPStdioTests`: **48 passed**.
-- `swift test --filter LocalOCRMCPTests`: **32 passed**.
+- `swift test --filter LocalOCRMCPTests`: **33 passed**.
 - `./scripts/build-native-tools.sh`: passed and produced a fresh shipping
   helper.
 - `.venv/bin/python -m pytest tests/contract/test_mcp_native_subprocess.py -q`:
@@ -83,7 +102,7 @@ cancellation, non-clean EOF, lifecycle double cleanup, and diagnostic stdout.
 Fresh `dist/native-tools/localocr-mcp`:
 
 - SHA-256:
-  `6a92929be9cca57175a11653b6b4b6e0b447d43b84cdde2959c614440cc483f6`
+  `bede28cf0a025934963b2aa9b8b422dd1d7a1c248795a70f958d95fbfe32fd3e`
 - `otool -L`: only approved Apple/system dependencies used by LocalOCR OCR and
   Local Intelligence (System, CoreFoundation/CoreGraphics/CoreText,
   CryptoKit, Foundation/FoundationModels weak, ImageIO, PDFKit, Vision, C++,

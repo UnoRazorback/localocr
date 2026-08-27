@@ -176,6 +176,38 @@ import Testing
             #expect(error is CancellationError)
         }
     }
+
+    @Test func cancellationDuringSuspendedConnectWaitsToDisconnectTheOpenedTransportOnce() async {
+        let cancellationCleanup = OneShotEvent()
+        let transport = SuspendingConnectTransport()
+        let runner = MCPServerRunner(dispatcher: RecordingDispatcher())
+        let runnerTask = Task {
+            try await runner.run(
+                transport: transport,
+                cancellationCleanupDidRun: {
+                    await cancellationCleanup.signal()
+                }
+            )
+        }
+
+        await transport.waitUntilConnectIsSuspended()
+        runnerTask.cancel()
+        await cancellationCleanup.wait()
+
+        #expect(await transport.disconnectStartedWhileConnecting(within: .milliseconds(250)) == false)
+        await transport.resumeConnect()
+
+        let result = await runnerTask.result
+        #expect(await transport.connectCount() == 1)
+        #expect(await transport.disconnectCount() == 1)
+        #expect(await transport.isConnected() == false)
+        switch result {
+        case .success:
+            Issue.record("A cancelled runner must finish with CancellationError")
+        case let .failure(error):
+            #expect(error is CancellationError)
+        }
+    }
 }
 
 private func initialize(_ transport: RunnerTestTransport) async throws -> Initialize.Result {
@@ -328,6 +360,61 @@ private actor FailingStartTransport: Transport {
     func disconnectCount() -> Int {
         recordedDisconnectCount
     }
+}
+
+private actor SuspendingConnectTransport: Transport {
+    nonisolated let logger = Logger(label: "localocr.runner-tests.suspending-connect")
+    private var recordedConnectCount = 0
+    private var recordedDisconnectCount = 0
+    private var connecting = false
+    private var connected = false
+    private var connectSuspensionWaiters: [CheckedContinuation<Void, Never>] = []
+    private var connectContinuation: CheckedContinuation<Void, Never>?
+
+    func connect() async {
+        recordedConnectCount += 1
+        connecting = true
+        let waiters = connectSuspensionWaiters
+        connectSuspensionWaiters = []
+        waiters.forEach { $0.resume() }
+        await withCheckedContinuation { connectContinuation = $0 }
+        connecting = false
+        connected = true
+    }
+
+    func disconnect() {
+        recordedDisconnectCount += 1
+        connected = false
+    }
+
+    func send(_ data: Data) async throws {}
+
+    func receive() -> AsyncThrowingStream<Data, any Error> {
+        AsyncThrowingStream { _ in }
+    }
+
+    func waitUntilConnectIsSuspended() async {
+        guard !connecting else { return }
+        await withCheckedContinuation { connectSuspensionWaiters.append($0) }
+    }
+
+    func disconnectStartedWhileConnecting(within duration: Duration) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: duration)
+        while recordedDisconnectCount == 0, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        return connecting && recordedDisconnectCount > 0
+    }
+
+    func resumeConnect() {
+        connectContinuation?.resume()
+        connectContinuation = nil
+    }
+
+    func connectCount() -> Int { recordedConnectCount }
+    func disconnectCount() -> Int { recordedDisconnectCount }
+    func isConnected() -> Bool { connected }
 }
 
 private actor OneShotEvent {
