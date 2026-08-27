@@ -3160,6 +3160,13 @@ def test_candidate_build_scripts_apply_local_intelligence_binary_policy() -> Non
     assert "validate_local_intelligence_candidate_binary" in native
     assert native.count("validate_local_intelligence_candidate_binary") >= 3
     assert "validate_local_intelligence_candidate_binary" in studio
+    source_network_validation = (
+        'validate_no_network_framework_dependency "$native_release_dir/$product"'
+    )
+    assert source_network_validation in native
+    assert native.index(source_network_validation) < native.rindex(
+        "replace_artifact_output_with_empty_directory"
+    )
     for script in (native, studio):
         assert "release_validate_binary_policy" in script
         assert "validate_no_network_framework_dependency" in script

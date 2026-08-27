@@ -292,6 +292,7 @@ validate_native_release_identity() {
 }
 
 for product in localocr localocr-mcp; do
+    validate_no_network_framework_dependency "$native_release_dir/$product"
     product_dsym="$native_release_dir/$product.dSYM"
     if [[ -e "$product_dsym" || -L "$product_dsym" ]]; then
         release_validate_dsym_matches_binary \
