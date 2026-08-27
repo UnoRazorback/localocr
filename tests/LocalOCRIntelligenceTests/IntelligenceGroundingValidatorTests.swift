@@ -21,6 +21,25 @@ import Testing
         #expect(citations == [citation])
     }
 
+    @Test func validatorDoesNotCompatibilityFoldDistinctGlyphs() {
+        let document = IntelligenceDocument(pages: [.init(number: 1, text: "Invoice ①")])
+
+        let citations = IntelligenceGroundingValidator.validCitations(
+            [.init(page: 1, quote: "Invoice 1")], in: document
+        )
+
+        #expect(citations.isEmpty)
+    }
+
+    @Test func validatorMatchesNonASCIIUnicodeCaseFolding() {
+        let document = IntelligenceDocument(pages: [.init(number: 1, text: "Straße payment")])
+        let citation = IntelligenceCitation(page: 1, quote: "STRASSE PAYMENT")
+
+        let citations = IntelligenceGroundingValidator.validCitations([citation], in: document)
+
+        #expect(citations == [citation])
+    }
+
     @Test func validatorClearsAllOptionalExtractionDataWhenEvidenceIsNotOnClaimedPage() {
         let document = IntelligenceDocument(pages: [
             .init(number: 1, text: "Invoice total $42.00"),

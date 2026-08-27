@@ -44,7 +44,7 @@ public enum IntelligenceGroundingValidator {
         var result = ""
         var previousWasWhitespace = false
 
-        for scalar in text.precomposedStringWithCompatibilityMapping.unicodeScalars {
+        for scalar in text.unicodeScalars {
             if CharacterSet.whitespacesAndNewlines.contains(scalar) {
                 if !result.isEmpty && !previousWasWhitespace {
                     result.append(" ")
@@ -56,6 +56,8 @@ public enum IntelligenceGroundingValidator {
             }
         }
 
-        return result.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return result
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
     }
 }

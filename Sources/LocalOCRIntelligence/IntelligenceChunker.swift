@@ -9,9 +9,9 @@ public struct IntelligenceChunk: Sendable, Equatable {
 }
 
 public enum IntelligenceChunker {
-    public static func chunks(document: IntelligenceDocument, characterBudget: Int) -> [IntelligenceChunk] {
+    public static func chunks(document: IntelligenceDocument, characterBudget: Int) throws -> [IntelligenceChunk] {
         guard characterBudget > 0 else {
-            return document.pages.map { IntelligenceChunk(page: $0.number, text: $0.text) }
+            throw IntelligenceError.contextOverflow
         }
 
         return document.pages.flatMap { page in
