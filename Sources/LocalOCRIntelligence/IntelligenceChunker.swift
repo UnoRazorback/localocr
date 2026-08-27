@@ -9,11 +9,23 @@ public struct IntelligenceChunk: Sendable, Equatable {
 }
 
 public enum IntelligenceChunker {
-    public static func chunks(document: IntelligenceDocument, characterBudget: Int) throws -> [IntelligenceChunk] {
+    /// Produces chunks that are no larger than `characterBudget` characters.
+    ///
+    /// - Precondition: `characterBudget` is greater than zero.
+    public static func chunks(document: IntelligenceDocument, characterBudget: Int) -> [IntelligenceChunk] {
+        precondition(characterBudget > 0, "characterBudget must be greater than zero")
+        return uncheckedChunks(document: document, characterBudget: characterBudget)
+    }
+
+    static func validatedChunks(document: IntelligenceDocument, characterBudget: Int) throws -> [IntelligenceChunk] {
         guard characterBudget > 0 else {
             throw IntelligenceError.contextOverflow
         }
 
+        return uncheckedChunks(document: document, characterBudget: characterBudget)
+    }
+
+    private static func uncheckedChunks(document: IntelligenceDocument, characterBudget: Int) -> [IntelligenceChunk] {
         return document.pages.flatMap { page in
             split(page.text, characterBudget: characterBudget).map {
                 IntelligenceChunk(page: page.number, text: $0)
