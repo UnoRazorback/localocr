@@ -77,6 +77,18 @@
       "local_sha256": "16b3e5d3ad58a14cf7c21f8150787f744b48fbbd39bbee0f2616809a4014d7ba"
     },
     {
+      "path": "Base/Transport.swift",
+      "origin": "Sources/MCP/Base/Transport.swift",
+      "upstream_sha256": "25d1e9389e78d88412cf88cc0dc303b36a5f7b69d5e0b357b46d5c4cc0259647",
+      "local_sha256": "d783216e494063e2273291bc15756188ce6607ba6f218b5b8adae5841951bab2"
+    },
+    {
+      "path": "Base/StdioTransport.swift",
+      "origin": "Sources/MCP/Base/Transports/StdioTransport.swift",
+      "upstream_sha256": "56b5d57eb8168f97a149bd68d3502a359cf2c42ecd7661b10241957f5e4b2995",
+      "local_sha256": "a0290eeea9c2f292e7e3bc3b47c589dbb406fe382cde493a2626aad7fb526b39"
+    },
+    {
       "path": "Server/Tools.swift",
       "origin": "Sources/MCP/Server/Tools.swift",
       "upstream_sha256": "79c4fc03714468c4a41c05544371ea7ffbf4517dc647db1b679abf8b71df7f0f",
@@ -115,6 +127,14 @@
     {
       "path": "Base/Cancellation.swift",
       "reason": "Relocates the cancellation notification into the audited Base directory and retains only its request ID and reason wire fields."
+    },
+    {
+      "path": "Base/Transport.swift",
+      "reason": "Retains the upstream actor-isolated Data transport surface while naming only the local newline-delimited byte contract."
+    },
+    {
+      "path": "Base/StdioTransport.swift",
+      "reason": "Hardens the upstream POSIX stdio transport with a one MiB input frame bound, CRLF normalization, bounded overflow draining, serialized complete writes, broken-pipe suppression, cancellation-aware retries, exact-once stream completion, idempotent disconnect, and content-free logging."
     },
     {
       "path": "Server/Tools.swift",
