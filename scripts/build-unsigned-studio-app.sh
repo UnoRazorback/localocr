@@ -21,6 +21,18 @@ studio_output_candidate=""
 studio_output_candidate_identity=""
 studio_output_root_identity=""
 
+validate_local_intelligence_candidate_binary() {
+    local binary="$1"
+    local minimum_macos
+
+    release_validate_binary_policy "$binary" true true || return 1
+    minimum_macos="$(release_binary_minimum_macos "$binary")" || return 1
+    [[ "$minimum_macos" == "$studio_minimum_os" ]] || {
+        echo "Local Intelligence Studio candidate must target macOS $studio_minimum_os exactly: found $minimum_macos" >&2
+        return 1
+    }
+}
+
 set_validated_build_root() {
     local candidate="${1:-}"
     local physical_candidate
@@ -196,7 +208,7 @@ validate_sanitized_studio_app_bundle() {
     local executable="$app_path/Contents/MacOS/LocalOCR Studio"
 
     validate_studio_app_bundle "$app_path" || return 1
-    release_validate_binary_policy "$executable" true true || return 1
+    validate_local_intelligence_candidate_binary "$executable" || return 1
 }
 
 validate_staged_app() {

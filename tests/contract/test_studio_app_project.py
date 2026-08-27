@@ -15,6 +15,14 @@ import pytest
 
 
 ROOT = Path(__file__).parents[2]
+PACKAGE_MANIFEST = ROOT / "Package.swift"
+INTELLIGENCE_PROVIDER = (
+    ROOT / "Sources" / "LocalOCRIntelligence" / "FoundationModelsIntelligenceProvider.swift"
+)
+INTELLIGENCE_GENERATED_TYPES = (
+    ROOT / "Sources" / "LocalOCRIntelligence" / "FoundationModelsGeneratedTypes.swift"
+)
+MCP_ENTRY_POINT = ROOT / "Sources" / "LocalOCRMCPExecutable" / "main.swift"
 ROOT_VIEW = ROOT / "Sources" / "LocalOCRStudioKit" / "LocalOCRStudioView.swift"
 RESULT_VIEW = ROOT / "Sources" / "LocalOCRStudioKit" / "StudioResultView.swift"
 PROJECT_SPEC = ROOT / "project.yml"
@@ -158,6 +166,45 @@ def test_project_source_of_truth_has_exact_release_settings() -> None:
     )
 
 
+def test_local_intelligence_is_linked_to_every_shipping_surface() -> None:
+    manifest = _read(PACKAGE_MANIFEST)
+
+    assert 'platforms: [.macOS(.v14)]' in manifest
+    for target in ("LocalOCRStudioKit", "LocalOCRCommandKit", "LocalOCRMCP"):
+        target_block = re.search(
+            rf'\.target\(\s*name: "{target}",(?P<body>.*?)\n\s*\),',
+            manifest,
+            re.DOTALL,
+        )
+        assert target_block, f"missing package target {target}"
+        assert '"LocalOCRIntelligence"' in target_block["body"]
+
+
+def test_foundation_models_symbols_are_compile_and_availability_guarded() -> None:
+    provider = _read(INTELLIGENCE_PROVIDER)
+    generated_types = _read(INTELLIGENCE_GENERATED_TYPES)
+    mcp_entry = _read(MCP_ENTRY_POINT)
+
+    for source in (provider, generated_types):
+        assert source.startswith("#if canImport(FoundationModels)") or (
+            "#if canImport(FoundationModels)\nimport FoundationModels" in source
+        )
+        assert "@available(macOS 26.0, *)" in source
+    assert "#if canImport(FoundationModels)" in mcp_entry
+    assert "if #available(macOS 26.0, *)" in mcp_entry
+
+
+def test_shipping_sources_do_not_import_network_frameworks() -> None:
+    shipping_sources = [
+        *ROOT.glob("App/**/*.swift"),
+        *ROOT.glob("Sources/**/*.swift"),
+    ]
+    network_import = re.compile(r"(?m)^\s*import\s+(?:CFNetwork|Network)\s*$")
+
+    assert shipping_sources
+    assert not [path for path in shipping_sources if network_import.search(_read(path))]
+
+
 def test_project_enables_hardening_without_network_or_debug_entitlements() -> None:
     project_sources = "\n".join(
         (
@@ -279,6 +326,7 @@ def test_unsigned_build_script_has_stable_toolchain_and_confined_paths() -> None
     assert "CODE_SIGNING_REQUIRED=NO" in script
     assert "ARCHS=arm64" in script
     assert "validate_release_bundle_metadata" in script
+    assert "validate_local_intelligence_candidate_binary" in script
     assert re.search(
         r'/usr/bin/lipo\s+"[$]executable"\s+-verify_arch\s+arm64',
         script,

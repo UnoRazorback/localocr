@@ -63,6 +63,19 @@ def _rpaths(otool_output: str) -> list[str]:
     return rpaths
 
 
+def _minimum_macos(otool_output: str) -> str:
+    lines = iter(otool_output.splitlines())
+    for line in lines:
+        if line.split() == ["cmd", "LC_BUILD_VERSION"]:
+            for build_line in lines:
+                fields = build_line.split()
+                if fields[:1] == ["minos"]:
+                    return fields[1]
+                if fields[:1] == ["cmd"]:
+                    break
+    raise AssertionError("LC_BUILD_VERSION minos was not found")
+
+
 def _assert_allowed_install_names(install_names: list[str]) -> None:
     unexpected = [
         install_name
@@ -100,6 +113,16 @@ async def _negotiated_server_version(binary: Path) -> str:
             return initialized.serverInfo.version
 
 
+async def _listed_tool_names(binary: Path) -> list[str]:
+    async with stdio_client(
+        StdioServerParameters(command=str(binary), args=[])
+    ) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            listed = await session.list_tools()
+            return [tool.name for tool in listed.tools]
+
+
 def test_release_artifacts_are_native_standalone_executables() -> None:
     cli = ARTIFACTS / "localocr"
     mcp = ARTIFACTS / "localocr-mcp"
@@ -120,6 +143,17 @@ def test_release_artifacts_are_native_standalone_executables() -> None:
 
     assert _run(str(cli), "--version").strip() == VERSION
     assert asyncio.run(_negotiated_server_version(mcp)) == VERSION
+    assert asyncio.run(_listed_tool_names(mcp)) == [
+        "get_pdf_page_count",
+        "inspect_pdf",
+        "ocr_pdf",
+        "ocr_pdf_batch",
+        "ocr_image",
+        "make_searchable_pdf",
+        "summarize_document",
+        "organize_document",
+        "extract_document_fields",
+    ]
 
 
 def test_native_smoke_script_handles_repository_paths_with_spaces() -> None:
@@ -138,6 +172,7 @@ def test_native_smoke_script_handles_repository_paths_with_spaces() -> None:
 
 def test_release_artifacts_expose_only_system_dylibs_and_safe_rpaths() -> None:
     for binary in (ARTIFACTS / "localocr", ARTIFACTS / "localocr-mcp"):
+        assert _minimum_macos(_run("otool", "-l", str(binary))) == "14.0"
         install_names = _install_names(_dependencies(binary))
         assert install_names
         _assert_allowed_install_names(install_names)

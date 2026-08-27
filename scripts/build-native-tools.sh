@@ -15,6 +15,18 @@ artifact_output_identity=""
 native_release_dir=""
 native_release_identity=""
 
+validate_local_intelligence_candidate_binary() {
+    local binary="$1"
+    local minimum_macos
+
+    release_validate_binary_policy "$binary" false true || return 1
+    minimum_macos="$(release_binary_minimum_macos "$binary")" || return 1
+    [[ "$minimum_macos" == "14.0" ]] || {
+        echo "Local Intelligence candidate binaries must target macOS 14.0 exactly: $binary targets $minimum_macos" >&2
+        return 1
+    }
+}
+
 validate_direct_release_artifact_dir() {
     local candidate="${1:-}"
     local allow_missing_parent="${2:-false}"
@@ -298,6 +310,8 @@ sanitize_copied_artifact() {
 
 sanitize_copied_artifact "$artifact_dir/localocr"
 sanitize_copied_artifact "$artifact_dir/localocr-mcp"
+validate_local_intelligence_candidate_binary "$artifact_dir/localocr"
+validate_local_intelligence_candidate_binary "$artifact_dir/localocr-mcp"
 validate_artifact_output_identity
 
 for product in localocr localocr-mcp; do

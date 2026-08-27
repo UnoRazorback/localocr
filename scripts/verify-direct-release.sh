@@ -24,15 +24,13 @@ validate_arm64_architecture() {
 
 validate_minimum_macos() {
     local version="${1:-}"
-    local major
 
     [[ "$version" =~ ^[0-9]+([.][0-9]+){1,2}$ ]] || {
         echo "invalid minimum macOS version: $version" >&2
         return 1
     }
-    major="${version%%.*}"
-    [[ "$major" -ge 14 ]] || {
-        echo "release binaries must require macOS 14 or later" >&2
+    [[ "$version" == "14.0" ]] || {
+        echo "Local Intelligence release binaries must target macOS 14.0 exactly" >&2
         return 1
     }
 }

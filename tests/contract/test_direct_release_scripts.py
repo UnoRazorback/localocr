@@ -3125,16 +3125,27 @@ exit 64
     assert not list(dist.glob(".localocr-cleanup.*"))
 
 
-@pytest.mark.parametrize("script", ("stage", "verify"))
-def test_release_scripts_require_arm64_and_macos_14_or_later(script: str) -> None:
-    _assert_script_test_accepts(script, "--test-architecture", "arm64")
+def test_verifier_requires_arm64_and_exact_macos_14_target() -> None:
+    _assert_script_test_accepts("verify", "--test-architecture", "arm64")
     for architecture in ("x86_64", "arm64 x86_64"):
-        _assert_script_test_rejects(script, "--test-architecture", architecture)
+        _assert_script_test_rejects("verify", "--test-architecture", architecture)
 
-    for minimum_version in ("14.0", "14.6", "15.0"):
-        _assert_script_test_accepts(script, "--test-minimum-macos", minimum_version)
-    for minimum_version in ("13.6", "10.15", ""):
-        _assert_script_test_rejects(script, "--test-minimum-macos", minimum_version)
+    _assert_script_test_accepts("verify", "--test-minimum-macos", "14.0")
+    for minimum_version in ("14.6", "15.0", "13.6", "10.15", ""):
+        _assert_script_test_rejects("verify", "--test-minimum-macos", minimum_version)
+
+
+def test_candidate_build_scripts_apply_local_intelligence_binary_policy() -> None:
+    native = (SCRIPTS / "build-native-tools.sh").read_text()
+    studio = BUILD_UNSIGNED_STUDIO_APP.read_text()
+
+    assert "validate_local_intelligence_candidate_binary" in native
+    assert native.count("validate_local_intelligence_candidate_binary") >= 3
+    assert "validate_local_intelligence_candidate_binary" in studio
+    for script in (native, studio):
+        assert "release_validate_binary_policy" in script
+        assert "-framework Network" not in script
+        assert "-framework CFNetwork" not in script
 
 
 def test_verifier_reads_complete_build_version_output_under_pipefail() -> None:
