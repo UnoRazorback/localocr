@@ -36,57 +36,15 @@ validate_minimum_macos() {
 }
 
 validate_canonical_system_install_name() {
-    local install_name="$1"
-    local relative_path
-    local component
-    local -a components
-
-    case "$install_name" in
-        /System/Library/?*)
-            relative_path="${install_name#/System/Library/}"
-            ;;
-        /usr/lib/?*)
-            relative_path="${install_name#/usr/lib/}"
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-    [[ "$install_name" != *//* && "$install_name" != */ ]] || return 1
-    IFS=/ read -r -a components <<< "$relative_path"
-    for component in "${components[@]}"; do
-        [[ -n "$component" && "$component" != "." && "$component" != ".." ]] || {
-            return 1
-        }
-    done
+    release_validate_canonical_system_install_name "$1"
 }
 
 validate_install_name() {
-    local install_name="${1:-}"
-
-    case "$install_name" in
-        /System/Library/Frameworks/CFNetwork.framework/CFNetwork|\
-        /System/Library/Frameworks/CFNetwork.framework/*/CFNetwork|\
-        /System/Library/Frameworks/Network.framework/Network|\
-        /System/Library/Frameworks/Network.framework/*/Network)
-            echo "network framework dependency is forbidden in local-only candidate: $install_name" >&2
-            return 1
-            ;;
-    esac
-    if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
-        return 0
-    fi
-    validate_canonical_system_install_name "$install_name" || {
-        echo "unapproved dynamic-library install name: ${install_name:-<empty>}" >&2
-        return 1
-    }
+    release_validate_local_only_install_name "${1:-}"
 }
 
 validate_rpath() {
-    [[ "${1:-}" == "/usr/lib/swift" ]] || {
-        echo "unapproved LC_RPATH: ${1:-<empty>}" >&2
-        return 1
-    }
+    release_validate_rpath_value "${1:-}" false
 }
 
 validate_no_debug_entitlement_text() {
@@ -145,66 +103,11 @@ verify_binary_architecture_and_target() {
 }
 
 verify_binary_dependencies() {
-    local binary="$1"
-    local dependency_output
-    local dependency_line
-    local install_name
-
-    dependency_output="$(/usr/bin/otool -L "$binary")"
-    while IFS= read -r dependency_line; do
-        [[ -n "$dependency_line" ]] || continue
-        install_name="$(
-            printf '%s\n' "$dependency_line" |
-                /usr/bin/awk '{ print $1 }'
-        )"
-        validate_install_name "$install_name"
-        if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
-            [[ "$dependency_line" == *", weak)" ]] || {
-                echo "libswiftCompatibilitySpan.dylib must be weak-linked" >&2
-                return 1
-            }
-        fi
-    done < <(
-        printf '%s\n' "$dependency_output" |
-            /usr/bin/awk 'NR > 1 { sub(/^[[:space:]]+/, ""); print }'
-    )
+    release_validate_binary_dependencies "$1"
 }
 
 verify_binary_rpaths() {
-    local binary="$1"
-    local load_commands
-    local rpath_output
-    local rpath
-
-    load_commands="$(/usr/bin/otool -l "$binary")"
-    rpath_output="$(
-        printf '%s\n' "$load_commands" |
-            /usr/bin/awk '
-                $1 == "cmd" {
-                    if (awaiting_path) {
-                        exit 65
-                    }
-                    awaiting_path = ($2 == "LC_RPATH")
-                    next
-                }
-                awaiting_path && $1 == "path" {
-                    print $2
-                    awaiting_path = 0
-                }
-                END {
-                    if (awaiting_path) {
-                        exit 65
-                    }
-                }
-            '
-    )" || {
-        echo "could not parse every LC_RPATH in: $binary" >&2
-        return 1
-    }
-    while IFS= read -r rpath; do
-        [[ -n "$rpath" ]] || continue
-        validate_rpath "$rpath"
-    done <<< "$rpath_output"
+    release_validate_binary_rpaths "$1" false
 }
 
 verify_no_private_paths() {
@@ -336,6 +239,7 @@ resolve_staged_main_executable() {
 verify_binary_policy() {
     verify_binary_architecture_and_target "$1"
     verify_binary_dependencies "$1"
+    release_validate_no_network_symbols "$1"
     verify_binary_rpaths "$1"
     verify_no_private_paths "$1"
 }

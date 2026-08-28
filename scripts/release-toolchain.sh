@@ -11,6 +11,7 @@ release_xcodebuild_path=""
 release_system_swift_rpath="/usr/lib/swift"
 release_removable_framework_rpath="@executable_path/../Frameworks"
 release_path_guard="$release_toolchain_script_dir/release-path-guard.swift"
+release_mcp_policy_validator="$release_toolchain_script_dir/validate-mcp-stdio-policy.py"
 release_symbols_root="$release_repo_root/dist/release-symbols"
 release_symbols_root_identity=""
 
@@ -126,6 +127,41 @@ release_validate_canonical_system_install_name() {
     done
 }
 
+release_is_forbidden_network_install_name() {
+    local install_name="$1"
+    local relative_path
+    local -a components
+
+    release_validate_canonical_system_install_name "$install_name" || return 1
+    case "$install_name" in
+        /System/Library/Frameworks/?*) ;;
+        *) return 1 ;;
+    esac
+    relative_path="${install_name#/System/Library/Frameworks/}"
+    IFS=/ read -r -a components <<< "$relative_path"
+    [[ "${#components[@]}" -ge 2 ]] || return 1
+    case "${components[0]}:${components[${#components[@]}-1]}" in
+        CFNetwork.framework:CFNetwork|Network.framework:Network) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+release_validate_local_only_install_name() {
+    local install_name="${1:-}"
+
+    if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
+        return 0
+    fi
+    release_validate_canonical_system_install_name "$install_name" || {
+        echo "unapproved dynamic-library install name: ${install_name:-<empty>}" >&2
+        return 1
+    }
+    if release_is_forbidden_network_install_name "$install_name"; then
+        echo "network framework dependency is forbidden in local-only candidate: $install_name" >&2
+        return 1
+    fi
+}
+
 release_validate_binary_dependencies() {
     local binary="$1"
     local dependency_output
@@ -149,14 +185,42 @@ release_validate_binary_dependencies() {
             }
             continue
         fi
-        release_validate_canonical_system_install_name "$install_name" || {
-            echo "unapproved dynamic-library install name: ${install_name:-<empty>}" >&2
-            return 1
-        }
+        release_validate_local_only_install_name "$install_name" || return 1
     done < <(
         printf '%s\n' "$dependency_output" |
             /usr/bin/awk 'NR > 1 { sub(/^[[:space:]]+/, ""); print }'
     )
+}
+
+release_validate_no_network_symbol_text() {
+    local symbol_text="$1"
+    local binary="${2:-binary}"
+    local grep_status
+
+    if /usr/bin/grep -E -q -- \
+        '(CFNetwork|NSURLSession|URLSession(Configuration|Task|DataTask|DownloadTask|UploadTask|StreamTask|WebSocketTask)?)' \
+        <<< "$symbol_text"
+    then
+        echo "network symbol is forbidden in local-only candidate: $binary" >&2
+        return 1
+    else
+        grep_status=$?
+        [[ "$grep_status" -eq 1 ]] || {
+            echo "could not inspect release binary network symbols: $binary" >&2
+            return 1
+        }
+    fi
+}
+
+release_validate_no_network_symbols() {
+    local binary="$1"
+    local symbols
+
+    symbols="$(/usr/bin/nm -u "$binary")" || {
+        echo "could not inspect release binary network symbols: $binary" >&2
+        return 1
+    }
+    release_validate_no_network_symbol_text "$symbols" "$binary"
 }
 
 release_binary_rpaths() {
@@ -188,6 +252,22 @@ release_binary_rpaths() {
         '
 }
 
+release_validate_rpath_value() {
+    local rpath="${1:-}"
+    local allow_framework_rpath="${2:-false}"
+
+    if [[
+        "$allow_framework_rpath" == true &&
+        "$rpath" == "$release_removable_framework_rpath"
+    ]]; then
+        return 0
+    fi
+    [[ "$rpath" == "$release_system_swift_rpath" ]] || {
+        echo "unapproved LC_RPATH: ${rpath:-<empty>}" >&2
+        return 1
+    }
+}
+
 release_validate_binary_rpaths() {
     local binary="$1"
     local allow_framework_rpath="${2:-false}"
@@ -200,16 +280,7 @@ release_validate_binary_rpaths() {
     }
     while IFS= read -r rpath; do
         [[ -n "$rpath" ]] || continue
-        if [[
-            "$allow_framework_rpath" == true &&
-            "$rpath" == "$release_removable_framework_rpath"
-        ]]; then
-            continue
-        fi
-        [[ "$rpath" == "$release_system_swift_rpath" ]] || {
-            echo "unapproved LC_RPATH: $rpath" >&2
-            return 1
-        }
+        release_validate_rpath_value "$rpath" "$allow_framework_rpath" || return 1
     done <<< "$rpaths"
 }
 
@@ -236,10 +307,32 @@ release_validate_binary_policy() {
 
     release_validate_binary_architecture_and_target "$binary" || return 1
     release_validate_binary_dependencies "$binary" || return 1
+    release_validate_no_network_symbols "$binary" || return 1
     release_validate_binary_rpaths "$binary" "$allow_framework_rpath" || return 1
     if [[ "$reject_private_path" == true ]]; then
         release_reject_private_user_path "$binary" || return 1
     fi
+}
+
+release_validate_mcp_source_policy() {
+    local repo_root="${1:-$release_repo_root}"
+
+    if [[ ! -e "$repo_root/Package.swift" ]]; then
+        if [[ -e "$repo_root/Sources" || -e "$repo_root/App" ]]; then
+            echo "MCP stdio source policy rejected: Package.swift is missing" >&2
+            return 1
+        fi
+        return 0
+    fi
+    [[ -f "$repo_root/Package.swift" && ! -L "$repo_root/Package.swift" ]] || {
+        echo "MCP stdio source policy rejected: Package.swift is invalid" >&2
+        return 1
+    }
+    [[ -f "$release_mcp_policy_validator" && ! -L "$release_mcp_policy_validator" ]] || {
+        echo "MCP stdio source policy rejected: canonical validator is missing or symlinked" >&2
+        return 1
+    }
+    /usr/bin/python3 "$release_mcp_policy_validator" --repo-root "$repo_root"
 }
 
 release_macho_arm64_uuid() {

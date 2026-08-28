@@ -119,6 +119,16 @@ def _script(name: str) -> str:
     return path.read_text()
 
 
+def _copy_release_policy_repo(tmp_path: Path) -> Path:
+    copy = tmp_path / "policy-repo"
+    shutil.copytree(
+        ROOT,
+        copy,
+        ignore=shutil.ignore_patterns(".build", ".git", ".venv", "dist"),
+    )
+    return copy
+
+
 def _run_script_test(
     script: str,
     mode: str,
@@ -642,8 +652,10 @@ def test_direct_release_scripts_enforce_immutable_policy() -> None:
     assert "stapler staple" in notarize_script
     assert "stapler validate" in verify_script
     assert "spctl --assess --type execute" in verify_script
-    assert "otool -L" in verify_script
-    assert "otool -l" in verify_script
+    assert "release_validate_no_network_symbols" in verify_script
+    assert "release_validate_binary_dependencies" in verify_script
+    assert "/usr/bin/otool -L" in toolchain_script
+    assert "/usr/bin/otool -l" in toolchain_script
 
     for helper in EXPECTED_HELPERS:
         assert f"Contents/Helpers/{helper}" in sign_script
@@ -1537,6 +1549,30 @@ def _binary_dependencies(binary: Path) -> tuple[str, ...]:
     )
 
 
+def _compile_forbidden_url_session_symbol_fixture(output: Path) -> None:
+    subprocess.run(
+        [
+            "/usr/bin/clang",
+            "-arch",
+            "arm64",
+            "-mmacosx-version-min=14.0",
+            "-x",
+            "c",
+            "-",
+            "-Wl,-undefined,dynamic_lookup",
+            "-o",
+            str(output),
+        ],
+        input=(
+            "extern void *NSURLSession;\n"
+            "int main(void) { return NSURLSession != 0; }\n"
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 def _snapshot_app_files(app: Path) -> dict[Path, tuple[int, str]]:
     return {
         path.relative_to(app): (
@@ -1605,7 +1641,7 @@ esac
         ("release_build", "CFBundleVersion mismatch"),
         ("executable_name", "CFBundleExecutable mismatch"),
         ("x86_64_main", "arm64 Mach-O executable"),
-        ("macos_13_main", "macOS 14 or later"),
+        ("macos_13_main", "macOS 14.0 exactly"),
         ("private_dependency", "unapproved dynamic-library install name"),
         ("private_rpath", "unapproved LC_RPATH"),
         ("unexpected_helper", "unexpected helper"),
@@ -3064,8 +3100,11 @@ def test_build_native_tools_rejects_a_post_validation_artifact_leaf_swap(
     _write_cleanup_pausing_path_guard(isolated_scripts / "release-path-guard.swift")
     source_fixture = tmp_path / "source" / "localocr"
     source_fixture.parent.mkdir()
-    source_fixture.write_bytes(b"native helper fixture")
-    source_fixture.chmod(0o755)
+    _compile_macos_fixture(
+        source_fixture,
+        architecture="arm64",
+        minimum_macos="14.0",
+    )
     swift_stub = stub_bin / "swift"
     swift_stub.write_text(
         """#!/usr/bin/env bash
@@ -3142,9 +3181,11 @@ def test_release_candidate_requires_arm64_and_exact_macos_14_target(script: str)
     (
         "/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork",
         "/System/Library/Frameworks/CFNetwork.framework/Versions/B/CFNetwork",
+        "/System/Library/Frameworks/CFNetwork.framework/Versions/Preview/CFNetwork",
         "/System/Library/Frameworks/CFNetwork.framework/CFNetwork",
         "/System/Library/Frameworks/Network.framework/Versions/A/Network",
         "/System/Library/Frameworks/Network.framework/Versions/Current/Network",
+        "/System/Library/Frameworks/Network.framework/Versions/42/Network",
         "/System/Library/Frameworks/Network.framework/Network",
     ),
 )
@@ -3155,6 +3196,34 @@ def test_release_candidate_rejects_network_frameworks(
     result = _run_script_test(script, "--test-install-name", install_name)
     assert result.returncode != 0, result.stdout
     assert "network framework dependency is forbidden" in result.stderr
+
+
+def test_shared_binary_policy_rejects_url_session_symbols(tmp_path: Path) -> None:
+    binary = tmp_path / "url-session-probe"
+    _compile_forbidden_url_session_symbol_fixture(binary)
+    assert "NSURLSession" in subprocess.run(
+        ["/usr/bin/nm", "-u", str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; release_validate_binary_policy "$2" false true',
+            "shared-network-symbol-policy",
+            str(RELEASE_SCRIPTS["toolchain"]),
+            str(binary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "network symbol is forbidden" in result.stderr
 
 
 def test_candidate_build_scripts_apply_local_intelligence_binary_policy() -> None:
@@ -3176,6 +3245,45 @@ def test_candidate_build_scripts_apply_local_intelligence_binary_policy() -> Non
         assert "validate_no_network_framework_dependency" in script
         assert "-framework Network" not in script
         assert "-framework CFNetwork" not in script
+
+
+def test_native_build_rejects_source_policy_drift_before_swift_build(
+    tmp_path: Path,
+) -> None:
+    copy = _copy_release_policy_repo(tmp_path)
+    vendored_source = copy / "Sources" / "MCPStdio" / "MCPStdio.swift"
+    vendored_source.write_text(vendored_source.read_text() + "\npublic let drift = true\n")
+    stub_directory = tmp_path / "stub-bin"
+    stub_directory.mkdir()
+    build_marker = tmp_path / "swift-build-was-called"
+    swift_stub = stub_directory / "swift"
+    swift_stub.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        ': > "${LOCALOCR_TEST_BUILD_MARKER:?}"\n'
+        "exit 91\n"
+    )
+    swift_stub.chmod(0o755)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{stub_directory}:/usr/bin:/bin",
+            "LOCALOCR_TEST_BUILD_MARKER": str(build_marker),
+        }
+    )
+
+    result = subprocess.run(
+        [str(copy / "scripts" / "build-native-tools.sh")],
+        cwd=copy,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "MCP stdio source policy rejected" in result.stderr
+    assert not build_marker.exists(), "Swift build began before source policy passed"
 
 
 def test_verifier_reads_complete_build_version_output_under_pipefail() -> None:

@@ -279,6 +279,45 @@ def test_shipping_sources_do_not_import_network_frameworks() -> None:
     assert not [path for path in shipping_sources if network_import.search(_read(path))]
 
 
+def test_unsigned_studio_build_rejects_source_policy_drift_before_xcodebuild(
+    tmp_path: Path,
+) -> None:
+    copy = tmp_path / "policy-repo"
+    shutil.copytree(
+        ROOT,
+        copy,
+        ignore=shutil.ignore_patterns(".build", ".git", ".venv", "dist"),
+    )
+    vendored_source = copy / "Sources" / "MCPStdio" / "MCPStdio.swift"
+    vendored_source.write_text(vendored_source.read_text() + "\npublic let drift = true\n")
+    build_script = copy / "scripts" / "build-unsigned-studio-app.sh"
+    xcode_marker = tmp_path / "xcodebuild-was-called"
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            (
+                'source "$1"\n'
+                'marker="$2"\n'
+                'select_release_developer_dir() { : > "$marker"; return 91; }\n'
+                "run_studio_build\n"
+            ),
+            "unsigned-source-policy",
+            str(build_script),
+            str(xcode_marker),
+        ],
+        cwd=copy,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "MCP stdio source policy rejected" in result.stderr
+    assert not xcode_marker.exists(), "Xcode build began before source policy passed"
+
+
 def test_project_enables_hardening_without_network_or_debug_entitlements() -> None:
     project_sources = "\n".join(
         (
@@ -349,6 +388,15 @@ def test_ui_fixtures_are_debug_only_and_require_a_test_session_marker() -> None:
         "empty",
         "result",
         "resultBusy",
+        "intelligenceAvailable",
+        "intelligenceRunning",
+        "intelligenceResults",
+        "intelligenceMacOSUnavailable",
+        "intelligenceDeviceIneligible",
+        "intelligenceDisabled",
+        "intelligenceNotReady",
+        "intelligenceUnsupportedLanguage",
+        "intelligenceError",
         "error",
         "batchReview",
         "batchProcessing",
@@ -964,6 +1012,7 @@ def _write_staged_app(
                 "/usr/bin/clang",
                 "-arch",
                 "arm64",
+                f"-mmacosx-version-min={minimum_os}",
                 "-x",
                 "c",
                 "-o",

@@ -7,6 +7,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ VENDOR = ROOT / "Sources" / "MCPStdio"
 MANIFEST = VENDOR / "Upstream" / "manifest.json"
 LICENSE = VENDOR / "Upstream" / "LICENSE"
 PROVENANCE = VENDOR / "Upstream" / "PROVENANCE.md"
+POLICY_VALIDATOR = ROOT / "scripts" / "validate-mcp-stdio-policy.py"
 UPSTREAM_COMMIT = "a0ae212ebf6eab5f754c3129608bc5557637e605"
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 FORBIDDEN_SOURCE_PATH = re.compile(
@@ -138,6 +140,15 @@ def _copied_tree(tmp_path: Path) -> Path:
     copy = tmp_path / "localocr"
     shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".build", ".git", ".venv"))
     return copy
+
+
+def _run_policy(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(POLICY_VALIDATOR), "--repo-root", str(root), *arguments],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _swift_parse_tree(source: str) -> str:
@@ -348,6 +359,112 @@ def test_swift_import_parser_is_available_and_fails_closed(monkeypatch: pytest.M
 def test_manifest_is_closed_and_pinned() -> None:
     """Catches a source added outside the reviewed, pinned manifest."""
     _validate_vendor(ROOT)
+
+
+def test_canonical_policy_accepts_the_reviewed_source_and_package_boundary() -> None:
+    result = _run_policy(ROOT)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "extra_file",
+        "missing_file",
+        "missing_license",
+        "missing_provenance",
+        "duplicate_adaptation",
+        "blank_adaptation_reason",
+    ),
+)
+def test_canonical_policy_rejects_closed_vendor_boundary_mutations(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    copy = _copied_tree(tmp_path)
+    vendor = copy / "Sources" / "MCPStdio"
+    manifest_path = vendor / "Upstream" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+
+    if mutation == "extra_file":
+        (vendor / "RemoteTransport.c").write_text("int remote_transport;\n")
+    elif mutation == "missing_file":
+        (vendor / manifest["files"][0]["path"]).unlink()
+    elif mutation == "missing_license":
+        (vendor / "Upstream" / "LICENSE").unlink()
+    elif mutation == "missing_provenance":
+        (vendor / "Upstream" / "PROVENANCE.md").unlink()
+    elif mutation == "duplicate_adaptation":
+        manifest["adaptations"].append(dict(manifest["adaptations"][0]))
+        manifest_path.write_text(json.dumps(manifest))
+    elif mutation == "blank_adaptation_reason":
+        manifest["adaptations"][0]["reason"] = "   "
+        manifest_path.write_text(json.dumps(manifest))
+    else:  # pragma: no cover - parametrization is closed above.
+        raise AssertionError(mutation)
+
+    result = _run_policy(copy, "--vendor-only")
+    assert result.returncode != 0, mutation
+    assert "MCP stdio source policy rejected" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import FoundationNetworking\n",
+        "let configuration = URLSessionConfiguration.ephemeral\n",
+        "let protocolClass: URLProtocol.Type? = nil\n",
+        "let task: URLSessionDataTask? = nil\n",
+        "let challenge: URLAuthenticationChallenge? = nil\n",
+    ),
+)
+def test_canonical_policy_rejects_network_api_tokens(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    copy = _copied_tree(tmp_path)
+    vendor = copy / "Sources" / "MCPStdio"
+    source_path = vendor / "NetworkProbe.swift"
+    source_path.write_text(source)
+    manifest_path = vendor / "Upstream" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"].append(
+        {
+            "path": source_path.name,
+            "local_only": True,
+            "local_sha256": _sha256(source_path),
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest))
+
+    result = _run_policy(copy, "--vendor-only")
+    assert result.returncode != 0, source
+    assert "MCP stdio source policy rejected" in result.stderr
+
+
+def test_canonical_policy_rejects_remote_mcp_sdk_forks_and_product_edges(
+    tmp_path: Path,
+) -> None:
+    copy = _copied_tree(tmp_path)
+    package_path = copy / "Package.swift"
+    package = package_path.read_text()
+    package = package.replace(
+        "    dependencies: [\n",
+        "    dependencies: [\n"
+        "        .package(url: \"https://example.invalid/vendor/mcp-fork\", exact: \"0.12.1\"),\n",
+        1,
+    )
+    package = package.replace(
+        '            name: "MCPStdio",\n            dependencies: [\n',
+        '            name: "MCPStdio",\n            dependencies: [\n'
+        '                .product(name: "MCP", package: "mcp-fork"),\n',
+        1,
+    )
+    package_path.write_text(package)
+
+    result = _run_policy(copy)
+    assert result.returncode != 0
+    assert "MCP stdio source policy rejected" in result.stderr
 
 
 def test_origin_inventory_is_pinned_and_hashed() -> None:

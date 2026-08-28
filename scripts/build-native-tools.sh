@@ -16,23 +16,8 @@ native_release_dir=""
 native_release_identity=""
 
 validate_no_network_framework_dependency() {
-    local binary="$1"
-    local dependency
-
-    while IFS= read -r dependency; do
-        case "$dependency" in
-            /System/Library/Frameworks/CFNetwork.framework/CFNetwork|\
-            /System/Library/Frameworks/CFNetwork.framework/*/CFNetwork|\
-            /System/Library/Frameworks/Network.framework/Network|\
-            /System/Library/Frameworks/Network.framework/*/Network)
-                echo "network framework dependency is forbidden in local-only candidate: $binary: $dependency" >&2
-                return 1
-                ;;
-        esac
-    done < <(
-        /usr/bin/otool -L "$binary" |
-            /usr/bin/awk 'NR > 1 { sub(/^[[:space:]]+/, ""); print $1 }'
-    )
+    release_validate_binary_dependencies "$1" || return 1
+    release_validate_no_network_symbols "$1"
 }
 
 validate_local_intelligence_candidate_binary() {
@@ -155,6 +140,7 @@ validate_artifact_output_path() {
     fi
 }
 
+release_validate_mcp_source_policy "$repo_root"
 validate_artifact_output_path
 artifact_parent="$(/usr/bin/dirname "$artifact_dir")"
 artifact_parent_identity="$(

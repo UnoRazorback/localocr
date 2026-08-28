@@ -22,23 +22,8 @@ studio_output_candidate_identity=""
 studio_output_root_identity=""
 
 validate_no_network_framework_dependency() {
-    local binary="$1"
-    local dependency
-
-    while IFS= read -r dependency; do
-        case "$dependency" in
-            /System/Library/Frameworks/CFNetwork.framework/CFNetwork|\
-            /System/Library/Frameworks/CFNetwork.framework/*/CFNetwork|\
-            /System/Library/Frameworks/Network.framework/Network|\
-            /System/Library/Frameworks/Network.framework/*/Network)
-                echo "network framework dependency is forbidden in local-only candidate: $binary: $dependency" >&2
-                return 1
-                ;;
-        esac
-    done < <(
-        /usr/bin/otool -L "$binary" |
-            /usr/bin/awk 'NR > 1 { sub(/^[[:space:]]+/, ""); print $1 }'
-    )
+    release_validate_binary_dependencies "$1" || return 1
+    release_validate_no_network_symbols "$1"
 }
 
 validate_local_intelligence_candidate_binary() {
@@ -430,6 +415,7 @@ run_studio_build() {
     local staging_root
     local temporary_build_root
 
+    release_validate_mcp_source_policy "$studio_repo_root"
     select_release_developer_dir
 
     temporary_build_root="$(/usr/bin/mktemp -d /tmp/localocr-studio-build.XXXXXX)"

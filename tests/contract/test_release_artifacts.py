@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -36,6 +37,9 @@ FORBIDDEN_RUNTIME_STRING_FRAGMENTS = (
     "/usr/local",
     str(ROOT),
     "/Users/",
+)
+FORBIDDEN_NETWORK_SYMBOL_PATTERN = re.compile(
+    r"(?:CFNetwork|NSURLSession|URLSession(?:Configuration|Task|DataTask|DownloadTask|UploadTask|StreamTask|WebSocketTask)?)"
 )
 
 
@@ -148,6 +152,13 @@ def _assert_no_forbidden_runtime_strings(strings_output: str, binary: Path) -> N
     )
 
 
+def _assert_no_forbidden_network_symbols(symbols_output: str, binary: Path) -> None:
+    matches = sorted(set(FORBIDDEN_NETWORK_SYMBOL_PATTERN.findall(symbols_output)))
+    assert not matches, (
+        f"release artifact contains forbidden network symbols: {binary}: {matches}"
+    )
+
+
 async def _negotiated_server_version(binary: Path) -> str:
     async with stdio_client(
         StdioServerParameters(command=str(binary), args=[])
@@ -220,6 +231,7 @@ def test_release_artifacts_expose_only_system_dylibs_and_safe_rpaths() -> None:
         install_names = _install_names(_dependencies(binary))
         assert install_names
         _assert_allowed_install_names(install_names)
+        _assert_no_forbidden_network_symbols(_run("nm", "-u", str(binary)), binary)
 
         rpaths = _rpaths(_run("otool", "-l", str(binary)))
         _assert_allowed_rpaths(rpaths)
@@ -274,7 +286,11 @@ Load command 21
     else:
         raise AssertionError("malicious dylib paths were accepted")
 
-    for network_library in KNOWN_FORBIDDEN_NETWORK_INSTALL_NAMES:
+    arbitrary_network_versions = {
+        "/System/Library/Frameworks/CFNetwork.framework/Versions/Preview/CFNetwork",
+        "/System/Library/Frameworks/Network.framework/Versions/42/Network",
+    }
+    for network_library in KNOWN_FORBIDDEN_NETWORK_INSTALL_NAMES | arbitrary_network_versions:
         try:
             _assert_allowed_install_names([network_library])
         except AssertionError as error:
@@ -289,6 +305,28 @@ Load command 21
         assert "/tmp/evil" in str(error)
     else:
         raise AssertionError("malicious RPATHs were accepted")
+
+
+def test_release_artifact_policy_rejects_url_session_symbols() -> None:
+    malicious_symbols = "\n".join(
+        (
+            "_OBJC_CLASS_$_NSURLSession",
+            "_$s10Foundation10URLSessionC13ConfigurationV",
+            "_NSURLSessionDataTask",
+        )
+    )
+
+    try:
+        _assert_no_forbidden_network_symbols(
+            malicious_symbols,
+            ARTIFACTS / "malicious-symbols",
+        )
+    except AssertionError as error:
+        message = str(error)
+        assert "NSURLSession" in message
+        assert "URLSession" in message
+    else:
+        raise AssertionError("URL-session symbols were accepted")
 
 
 def test_release_artifact_policy_rejects_malicious_embedded_runtime_strings() -> None:
