@@ -1,199 +1,177 @@
-# Local Intelligence Candidate Acceptance
+# Local Intelligence and Stdio-Only MCP Candidate Acceptance
 
 ## Decision
 
-**NOT ACCEPTED — automated build/UI and manual acceptance gates remain open.**
+**NOT ACCEPTED — the fresh Studio UI/build gate, complete Python matrix, and
+physical/manual acceptance gates remain open.**
 
-This is implementation-readiness evidence only. It does not authorize or claim
-Developer ID signing, notarization, stapling, Gatekeeper acceptance, packaging,
+The stdio-only MCP implementation passed its exact-commit Swift suite, fresh
+native build, native smoke, source policy, and read-only native binary
+inspection. The mandatory Studio UI runner failed closed because macOS reported
+`System authentication is running` and `Authentication canceled`. The unsigned
+builder reproduced that result and preserved the prior app. The full Python
+suite then exhausted the remaining disk space while repeatedly exercising the
+blocked fresh-app fixture; its final result is recorded as failed, not weakened
+or reclassified.
+
+This document is implementation evidence only. It does not authorize or claim
+merge, signing, notarization, stapling, Gatekeeper acceptance, packaging,
 downloaded-package testing, second-Mac acceptance, installation, publication,
-or a release version/tag.
+tagging, or campaign changes.
 
 ## Candidate identity
 
-- Candidate commit: `c5474f84e2ca36952caef20241c3ad7d8eab7533`
+- Source candidate commit: `3b50ef3afb8ba7dd72505c2a37ae64a52d634763`
 - Branch: `feature/local-intelligence-mcp-faq`
-- Evidence date: 2026-08-27
-- Exact focused-check window recorded below: 2026-08-27T19:10:11Z through
-  2026-08-27T19:10:13Z
-- Working tree at the start of the exact-commit check: clean
+- Baseline merge commit: `c2ff3259e190ef5adf037c091a04b34830014131`
+- Evidence date: 2026-08-27 Central / 2026-08-28 UTC
+- Working tree at the start of review and verification: clean
+- Evidence commit: recorded separately after this file is committed
+
+No source fix was made during Task 8, so all automated and artifact results
+below refer to the same source commit. The later documentation commit is not a
+replacement candidate identity.
 
 ## Test environment
 
-- Mac: MacBook Air (Mac17,3), Apple M5, 24 GB RAM
-- Host OS: macOS 27.0, build 26A5421a
+- Mac: MacBook Air (`Mac17,3`), Apple M5, 24 GB RAM
+- Host OS: macOS 27.0, build `26A5421a`
 - Developer Mode: enabled
-- Xcode: stable `/Applications/Xcode.app`, Xcode 26.6 (17F113)
-- macOS SDK: 26.5 (25F70)
-- Swift: Apple Swift 6.3.3 (swiftlang-6.3.3.1.3, clang-2100.1.1.101)
+- Xcode: stable `/Applications/Xcode.app`, Xcode 26.6 (`17F113`)
 - Required deployment target: macOS 14.0, arm64
 
 The macOS 27 host run is development evidence, not a claim that an unpublished
-macOS beta is supported for end users. Runtime Foundation Models acceptance
-still requires an eligible macOS 26-or-later Mac with Apple Intelligence and
-the on-device model available.
+macOS beta is supported for end users. Live Foundation Models acceptance still
+requires an eligible Mac with Apple Intelligence and the on-device model
+available.
 
-## Contract changes and TDD evidence
+## Exact final-diff review
 
-The candidate adds release contracts for:
-
-- `LocalOCRIntelligence` linkage from Studio, CLI, and MCP shipping targets;
-- exact macOS 14 package, app, CLI, and MCP deployment targets;
-- compile-time and runtime availability guards around Foundation Models;
-- absence of Network/CFNetwork imports and network/debug entitlements in
-  LocalOCR shipping sources and app configuration;
-- exact nine-tool MCP catalog order through a real stdio client session;
-- both required helpers in the staged app contract; and
-- only approved system install names and `/usr/lib/swift` RPATHs, with no
-  absolute Xcode, Homebrew, user, checkout, or worktree path.
-
-The initial repository `python3` command could not start because the selected
-Homebrew Python 3.14 environment did not contain pytest. The repository virtual
-environment was used instead. A focused RED run exposed the absent exact-target
-and candidate-policy enforcement. One first-draft source assertion also failed
-with a test-only `NameError`; that assertion was corrected before GREEN and is
-not counted as product evidence.
-
-The earlier `114518b` and `fe86960` focused runs were development history only.
-They are superseded and are not evidence for this candidate commit.
-
-Exact-commit pure/static verification for `c5474f8`:
+The review covered the complete diff from `c2ff325` through `3b50ef3`: 108
+files, 19,853 insertions, and 572 deletions. It inspected the closed vendor
+manifest and provenance, transport bounds, server lifecycle and request IDs,
+stdout/logging behavior, consent ordering, protocol compatibility, licensing,
+build scripts, and binary policy.
 
 ```text
-START 2026-08-27T19:10:11Z
-COMMIT c5474f84e2ca36952caef20241c3ad7d8eab7533
-git status --short
-Result: clean, no output
+git diff "$(git merge-base HEAD c2ff3259e190ef5adf037c091a04b34830014131)"...HEAD --check
+Result: PASS
 
-bash -n scripts/build-native-tools.sh scripts/build-unsigned-studio-app.sh \
-  scripts/stage-direct-release.sh scripts/verify-direct-release.sh
-Result: pass
-
-.venv/bin/python -m pytest -q \
-  tests/contract/test_direct_release_scripts.py::test_release_candidate_requires_arm64_and_exact_macos_14_target \
-  tests/contract/test_direct_release_scripts.py::test_release_candidate_rejects_network_frameworks \
-  tests/contract/test_direct_release_scripts.py::test_candidate_build_scripts_apply_local_intelligence_binary_policy \
-  tests/contract/test_direct_release_scripts.py::test_verifier_allows_only_system_install_names_and_compatibility_span \
-  tests/contract/test_studio_app_project.py::test_foundation_models_symbols_are_compile_and_availability_guarded \
-  tests/contract/test_studio_app_project.py::test_foundation_models_guard_contract_rejects_appended_unguarded_symbols \
-  tests/contract/test_release_artifacts.py::test_release_artifact_policy_rejects_malicious_load_paths_and_rpaths
-Result: 19 passed, 0 failed, 5 existing dependency deprecation warnings
-
-git diff --check
-Result: pass, no output
-END 2026-08-27T19:10:13Z
+.venv/bin/python scripts/validate-mcp-stdio-policy.py --repo-root .
+Result: MCP stdio source policy: PASS
 ```
 
-This exact run includes the pre-publication ordering assertion added at
-`06698bb`: unsanitized native products must pass the network dependency check
-before artifact-directory replacement. It also covers direct and versioned
-CFNetwork/Network paths, including non-`A` and `Current` versions.
+The forbidden-token search found only the manifest exclusion list, the pinned
+upstream origin inventory, and explanatory provenance text. No shipping Swift
+file, shipping target, or source filename contained an HTTP, client, OAuth,
+EventSource, URLSession, socket, CFNetwork, or Network transport surface.
+MCPStdio logs content-free lifecycle and byte-count metadata only; no payload,
+document text, filename, path, prompt, or model output is logged.
 
-An older diagnostic stdio run observed these nine tools, in order:
-`get_pdf_page_count`, `inspect_pdf`, `ocr_pdf`, `ocr_pdf_batch`, `ocr_image`,
-`make_searchable_pdf`, `summarize_document`, `organize_document`, and
-`extract_document_fields`. Because that helper predates `c5474f8`, the listing
-is diagnostic only and is not exact-candidate acceptance evidence.
+## Exact-commit automated matrix
 
-The artifact-policy test was then run separately against the existing
-`localocr-mcp` and failed, as required, because both forbidden frameworks are
-still linked. That failure is the current acceptance blocker and is not
-suppressed or reclassified as success.
-
-## Complete automated matrix
-
-| Gate | Result at exact candidate commit | Evidence |
+| Gate | Result | Evidence |
 |---|---|---|
-| Clean start | PASS | `git status --short` produced no output before the focused check. |
-| Script syntax | PASS | All four candidate scripts passed `bash -n` at `c5474f8`. |
-| Focused pure/static contracts | PASS | The fully listed exact-commit command passed 19 tests, including pre-publication enforcement. This is not the full release contract suite. |
-| `swift test` | NOT RUN | A pre-existing whole-suite process and a focused contract process already held build/UI resources. No additional build was started. |
-| Direct `xcodebuild ... test` | NOT RUN | The existing Xcode UI-test child had not completed. It was not terminated, signaled, or restarted. This result is not counted. |
-| `./scripts/build-native-tools.sh` | NOT RUN | Deferred to avoid overlapping the existing test/build trees. |
-| `./scripts/build-unsigned-studio-app.sh` | NOT RUN | Deferred for the same resource conflict. |
-| `./scripts/smoke-native-tools.sh` | NOT RUN | No exact-commit candidate artifacts were built. |
-| Full `.venv/bin/python -m pytest -q` | NOT RUN | The pre-existing run remained active and was not counted as pass or failure. |
-| Final clean status | OPEN | This evidence file and its report commit necessarily follow the clean candidate commit. |
+| Clean start | PASS | `git status --short` produced no output at `3b50ef3`. |
+| Full Swift package suite | PASS | `swift test`: 449 tests in 37 suites passed. The prior consent-store baseline flake did not recur. |
+| Studio scheme test | BLOCKED / FAIL-CLOSED | The plan command omitted the space in the tracked project filename and failed before testing. The corrected command, `xcodebuild -project 'LocalOCR Studio.xcodeproj' -scheme 'LocalOCR Studio' -destination 'platform=macOS,arch=arm64' test`, reached UI testing and failed because macOS authentication was already running. |
+| Fresh native build | PASS | `./scripts/build-native-tools.sh` passed the canonical source policy before and after the stable-Xcode Swift builds and atomically published both helpers. |
+| Fresh unsigned Studio build | BLOCKED / FAIL-CLOSED | `./scripts/build-unsigned-studio-app.sh` independently reached the UI runner and received the same authentication failure. The prior unsigned app was preserved and is not fresh evidence. |
+| Native smoke | PASS | `./scripts/smoke-native-tools.sh` passed against the first fresh native pair before the full Python run. It verified executable shape, dependencies, stdio initialization, exact nine-tool listing, protocol stdout purity, native OCR fixtures, source immutability, and cleanup. |
+| Full Python suite, first attempt | ENVIRONMENT SETUP FAILURE | Collection stopped because the migrated virtual environment had a malformed editable `.pth` path. The repository was reinstalled as a local wheel into the same `.venv` with `uv pip install --python .venv/bin/python --reinstall --no-deps .`; import then resolved from that environment. No source or dependency version changed. |
+| Full Python suite after environment repair | FAIL | Exact command result: 389 passed, 1 skipped, 4 failed, 83 errors in 489.93 seconds. The fresh-app fixture reproduced the authentication blocker; repeated Xcode fixture work then filled the APFS data volume, and later failures/errors were `ENOSPC` cascades. This is not a passing complete matrix. |
+| Source diff check | PASS before evidence edit | The complete source-candidate diff passed `git diff --check`. The evidence commit is checked separately. |
 
-No UI test was deleted, weakened, or bypassed. The waiting processes were not
-modified.
+At the storage failure, `/` reported only 78 MiB available. Normal Xcode and
+Swift clean operations could not start, and APFS could not unlink or truncate
+the exact Task 8 build outputs. With explicit owner authorization, the parent
+workflow later ran `tmutil thinlocalsnapshots / 15000000000 4`; two local
+snapshots were removed and 14 GiB became available. No source or user file was
+removed. The expensive matrix was not rerun merely to overwrite the honest
+failed result.
 
-## Artifact hashes and dependency inspection
+## Fresh native artifact evidence
 
-At 2026-08-27T18:58:06Z, pre-existing local artifacts had these hashes:
+The full Python run rebuilt the native pair again before storage exhaustion.
+The following current files are exact-source-commit artifacts. They were
+inspected read-only after the failed Python run.
 
-```text
-1b183af9d9affa9b679bcde9e580a91e354d38564ad2d057e1f2ed0d6fa08f0b  dist/native-tools/localocr
-c71b217a74e2e98c0d18ba98b5d1e2fbb03b1cf0ea26bd66c8dcd80cc3e1b5f8  dist/native-tools/localocr-mcp
-142787b539c67d1bf397f053c034cfb9a45a713b7c89c24fe26d7dd933757740  dist/unsigned-app/LocalOCR Studio.app/Contents/MacOS/LocalOCR Studio
-```
+| Artifact | Size | Local mtime | SHA-256 |
+|---|---:|---|---|
+| `dist/native-tools/localocr` | 2,764,264 bytes | 2026-08-27 21:14:24 -0500 | `8a3663490c6ae96bed477a0ff2761a6e2ebcf7682f27ef64bc7b155eb35b5a5c` |
+| `dist/native-tools/localocr-mcp` | 2,815,640 bytes | 2026-08-27 21:14:29 -0500 | `e24b3588d71e8f7bbda14a4e4e1952c6949cfa0c56832790fa9501f29d78c398` |
 
-Their modification times predate candidate commit `c5474f8`; therefore these
-are diagnostic hashes only and **not accepted exact-commit candidate artifact
-hashes**.
+Both helpers are arm64 Mach-O executables with exactly one macOS
+`LC_BUILD_VERSION`, platform `1`, minimum OS `14.0`, and only
+`/usr/lib/swift` as `LC_RPATH`. Every install name shown by `otool -L` is under
+`/System/Library` or `/usr/lib`. `localocr-mcp` no longer links CFNetwork or
+Network and has no `_nw_*`, `NSURLSession`, `NSURLConnection`, CFNetwork, or
+Network symbol hit. Neither helper contains an Xcode, user-home, Homebrew,
+`/usr/local`, DerivedData, `.build`, `.worktrees`, or `.venv` path hit.
 
-The required `otool -L` and `otool -l` inspection found:
+Foundation Models is a weak Apple system-framework dependency in both helpers;
+Vision OCR remains authoritative, and intelligence results remain separately
+labeled local output.
 
-- both native helpers report `LC_BUILD_VERSION minos 14.0`;
-- every install name is an Apple/system path under `/System/Library` or
-  `/usr/lib`, plus the accepted weak
-  `@rpath/libswiftCompatibilitySpan.dylib` in `localocr-mcp`;
-- the only reported RPATH is `/usr/lib/swift`; and
-- no `/Applications/Xcode`, `/Users`, Homebrew, `/usr/local`, SwiftPM checkout,
-  `.build`, or worktree path appeared.
+## Rejected preserved Studio artifact
 
-System location alone is insufficient for the local-only policy. The
-`localocr-mcp` artifact is rejected because it links CFNetwork and Network.
-Read-only source and symbol inspection traced this to the upstream
-`mcp-swift-sdk` `MCP` product: that single target compiles
-`NetworkTransport.swift`, `HTTPClientTransport.swift`, and OAuth/URLSession
-sources alongside `StdioTransport.swift`. The resulting executable has
-undefined `Network.NWConnection` and `NSURLSession` symbols and load commands
-for both frameworks even though LocalOCR uses only stdio.
+The builder preserved this prior app after the mandatory UI gate failed:
 
-The parent package cannot exclude individual source files from a remote
-dependency product. Resolving this requires a separately testable stdio-only
-MCP target/fork or replacing the dependency with a minimal local stdio protocol
-implementation. That architecture change cannot be accepted without a clean
-build and full MCP compatibility suite, both unavailable while the existing UI
-build process remains active. Candidate build, stage, and verify scripts now
-fail closed on either framework instead of documenting the linkage away. The
-native build checks unsanitized SwiftPM products before replacing an existing
-artifact directory, then checks the sanitized copies again before success.
+| Artifact | Local mtime | SHA-256 | Acceptance use |
+|---|---|---|---|
+| `dist/unsigned-app/LocalOCR Studio.app/Contents/MacOS/LocalOCR Studio` | 2026-08-27 06:35:46 -0500 | `142787b539c67d1bf397f053c034cfb9a45a713b7c89c24fe26d7dd933757740` | REJECTED as stale candidate evidence |
 
-## Manual local candidate matrix
+That preserved app predates `3b50ef3` and contains no bundled `localocr` or
+`localocr-mcp` helpers. No Studio or bundled-helper hash is claimed for the
+candidate. Contract tests may inspect a preserved app only when explicitly
+labeled reused; this task did not use it as fresh acceptance proof.
 
-No personal documents were used. No exact-commit app artifact was available,
-so the manual matrix was not partially inferred from older builds.
+## Synthetic and manual candidate matrix
 
-| Manual gate using synthetic/project fixtures | Result |
+The results below distinguish deterministic automated evidence from physical
+interaction and live-model evidence.
+
+| Gate | Result | Evidence boundary |
+|---|---|---|
+| OCR behavior when intelligence is unavailable | AUTOMATED PASS | Swift service, unavailable-provider, CLI/MCP mapping, and Studio view-model contracts passed inside the 449-test run. No physical app interaction was performed. |
+| Summarize, organize, and extract | AUTOMATED PASS WITH TEST PROVIDERS | Foundation Models provider contracts, grounding, Studio view-model, CLI, and MCP dispatcher tests passed. This is not a live on-device model accuracy result. |
+| Evidence grounding | AUTOMATED PASS | Grounding validator and provider contract suites passed with synthetic fixtures. |
+| Process Another clears results/intelligence state | AUTOMATED PASS | Studio lifecycle and intelligence view-model contracts passed. UI interaction remains blocked. |
+| Batch remains OCR-only | AUTOMATED PASS | Batch view/coordinator contracts and Studio lifecycle tests passed. UI interaction remains blocked. |
+| Help and agent-connection guidance | AUTOMATED PASS | Agent guide model and CLI help contracts passed in Swift. Python documentation contracts were partly exercised, but the complete Python matrix failed overall. |
+| Consent in Studio, CLI, and MCP | AUTOMATED PASS | Consent-store, CLI, MCP dispatcher/runner, and Studio model contracts passed in Swift. No physical accept/revoke interaction was performed. |
+| Exact nine MCP tools | AUTOMATED PASS | Native smoke initialized the real stdio helper and observed the exact catalog. |
+| Cancellation and request correlation | AUTOMATED PASS | MCPStdio transport/server and LocalOCRMCP runner/dispatcher suites passed in Swift; no agent-client manual cancellation was performed. |
+| Raw source immutability | AUTOMATED PASS | Searchable-PDF/service contracts and native smoke hash checks passed with project fixtures. |
+| No runtime LocalOCR network connection | NOT RUN | Source, symbol, dependency, entitlement, and path inspection passed, but no live runtime connection observation was completed. |
+| Live Foundation Models availability/quality | NOT RUN | No eligible live-model acceptance was inferred from test providers. |
+| Physical/manual Studio matrix | NOT RUN | The UI test runner could not initialize while system authentication was active. |
+
+No personal document was used for this acceptance attempt.
+
+## Release and distribution gates
+
+| Gate | Result |
 |---|---|
-| OCR while Apple Intelligence is off or unavailable | NOT RUN |
-| Studio summarize, organize, and field extraction when available | NOT RUN |
-| Page/evidence grounding review | NOT RUN |
-| Process Another clears result and intelligence state | NOT RUN |
-| Batch remains OCR-only with no intelligence actions | NOT RUN |
-| Help path and client snippets | NOT RUN |
-| Consent accept/revoke through Studio, CLI, and MCP | NOT RUN |
-| All nine MCP tools through a configured agent client | NOT RUN manually; exact catalog listing passed automatically |
-| Cancellation | NOT RUN |
-| Raw source-file hash unchanged | NOT RUN |
-| No network connection attributable to LocalOCR | NOT RUN |
+| Implementation at source candidate | COMPLETE, independently reviewed before Task 8 |
+| Exact automated candidate acceptance | NOT COMPLETE |
+| Physical/manual candidate acceptance | NOT RUN |
+| Developer ID signing | NOT RUN |
+| Notarization and stapling | NOT RUN |
+| Gatekeeper assessment | NOT RUN |
+| Downloaded-package verification | NOT RUN |
+| Second-Mac acceptance | NOT RUN |
+| Installation | NOT RUN |
+| Merge, tag, push, publication, distribution, campaign mutation | NOT PERFORMED |
 
-## Known limitations and remaining acceptance work
+## Remaining acceptance work
 
-1. Remove CFNetwork and Network from the shipped MCP helper using a tested
-   stdio-only MCP dependency boundary. Until then, builds must fail closed.
-2. Re-run the complete automated matrix from a clean exact commit after the
-   existing Xcode/UI processes finish and an unlocked console is available.
-3. Build fresh native and unsigned-app artifacts from that same commit; replace
-   the diagnostic hashes above with exact-candidate hashes and repeat all
-   dependency/RPATH scans.
-4. Complete every synthetic-document manual gate on an eligible machine.
-5. Investigate runtime network activity directly; static entitlements, imports,
-   and dependency paths do not substitute for observation.
-6. Live Foundation Models accuracy, grounding, availability, and cancellation
-   need manual acceptance. Automated fixture results are not live-model proof.
-7. Developer ID signing, notarization, stapling, Gatekeeper, downloaded-package,
-   second-Mac, installation, version selection, tagging, and publication remain
-   separate owner-authorized gates.
+1. Complete the macOS system-authentication condition through normal owner/UI
+   interaction, without bypassing or manipulating it.
+2. From one clean exact source commit, rerun the corrected Studio scheme test,
+   unsigned Studio builder, native build/smoke, and full Python suite without
+   the reuse variable.
+3. Hash and inspect the fresh Studio executable and both bundled helpers.
+4. Complete the physical synthetic-document matrix, live Foundation Models
+   availability/quality checks, and runtime network observation.
+5. Obtain separate owner authorization before any merge or distribution step.
