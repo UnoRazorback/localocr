@@ -144,7 +144,13 @@ public enum CallTool: Method {
         }
 
         public init<Output: Codable>(content: [Tool.Content] = [], structuredContent: Output, isError: Bool? = nil, _meta: Metadata? = nil) throws {
-            try self.init(content: content, structuredContent: Value(structuredContent), isError: isError, _meta: _meta)
+            let value = try Value(structuredContent)
+            self.init(
+                content: content,
+                structuredContent: Optional<Value>.some(value),
+                isError: isError,
+                _meta: _meta
+            )
         }
     }
 }

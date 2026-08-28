@@ -122,7 +122,11 @@ public struct MCPToolDispatcher: Sendable {
         let data = canonicalJSON(response)
         let text = String(decoding: data, as: UTF8.self)
         do {
-            let structuredContent = try JSONDecoder().decode(Value.self, from: data)
+            let json = try JSONSerialization.jsonObject(
+                with: data,
+                options: [.fragmentsAllowed]
+            )
+            let structuredContent = try literalJSONValue(json)
             return CallTool.Result(
                 content: [.text(text: text, annotations: nil, _meta: nil)],
                 structuredContent: Optional.some(structuredContent)
@@ -130,6 +134,35 @@ public struct MCPToolDispatcher: Sendable {
         } catch {
             return errorResult(code: "processing_failed", message: "Unable to encode the OCR response.")
         }
+    }
+
+    private func literalJSONValue(_ json: Any) throws -> Value {
+        if json is NSNull {
+            return .null
+        }
+        if let string = json as? String {
+            return .string(string)
+        }
+        if let number = json as? NSNumber {
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return .bool(number.boolValue)
+            }
+            let double = number.doubleValue
+            if double.rounded(.towardZero) == double,
+               double >= Double(Int.min),
+               double <= Double(Int.max)
+            {
+                return .int(number.intValue)
+            }
+            return .double(double)
+        }
+        if let array = json as? [Any] {
+            return .array(try array.map(literalJSONValue))
+        }
+        if let object = json as? [String: Any] {
+            return .object(try object.mapValues(literalJSONValue))
+        }
+        throw LiteralJSONValueError.unsupportedType
     }
 
     private func errorResult(code: String, message: String) -> CallTool.Result {
@@ -231,6 +264,10 @@ public struct MCPToolDispatcher: Sendable {
 
 private enum MCPIntelligenceDispatchError: Error {
     case generationFailed
+}
+
+private enum LiteralJSONValueError: Error {
+    case unsupportedType
 }
 
 private struct ExtractDocumentFieldsResponse: Encodable {

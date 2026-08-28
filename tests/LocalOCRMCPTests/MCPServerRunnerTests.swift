@@ -208,6 +208,24 @@ import Testing
             #expect(error is CancellationError)
         }
     }
+
+    @Test func productionRunnerTerminatesWhenItsEightFrameAdapterDropsFloodedInput() async {
+        let transport = FloodingBackpressureTransport(frameCount: 64)
+        let runner = MCPServerRunner(dispatcher: RecordingDispatcher())
+        let runnerTask = Task {
+            try await runner.run(transport: transport)
+        }
+
+        let disconnected = await transport.waitUntilDisconnected(within: .seconds(1))
+        if !disconnected {
+            await transport.forceRelease()
+            runnerTask.cancel()
+        }
+        _ = await runnerTask.result
+
+        #expect(disconnected)
+        #expect(await transport.disconnectCount() == 1)
+    }
 }
 
 private func initialize(_ transport: RunnerTestTransport) async throws -> Initialize.Result {
@@ -415,6 +433,64 @@ private actor SuspendingConnectTransport: Transport {
     func connectCount() -> Int { recordedConnectCount }
     func disconnectCount() -> Int { recordedDisconnectCount }
     func isConnected() -> Bool { connected }
+}
+
+private actor FloodingBackpressureTransport: Transport {
+    nonisolated let logger = Logger(label: "localocr.runner-tests.flooding-backpressure")
+    private let input: AsyncThrowingStream<Data, any Error>
+    private var connected = false
+    private var recordedDisconnectCount = 0
+    private var sendContinuation: CheckedContinuation<Void, any Error>?
+
+    init(frameCount: Int) {
+        let request = try! JSONEncoder().encode(ListTools.request(id: 1, .init()))
+        input = AsyncThrowingStream { continuation in
+            for _ in 0..<frameCount {
+                continuation.yield(request)
+            }
+        }
+    }
+
+    func connect() {
+        connected = true
+    }
+
+    func disconnect() {
+        guard connected else { return }
+        connected = false
+        recordedDisconnectCount += 1
+        sendContinuation?.resume(throwing: RunnerProbeError.disconnected)
+        sendContinuation = nil
+    }
+
+    func send(_ data: Data) async throws {
+        _ = data
+        guard connected else { throw RunnerProbeError.disconnected }
+        try await withCheckedThrowingContinuation { continuation in
+            sendContinuation = continuation
+        }
+    }
+
+    func receive() -> AsyncThrowingStream<Data, any Error> {
+        input
+    }
+
+    func waitUntilDisconnected(within duration: Duration) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: duration)
+        while connected, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        return !connected
+    }
+
+    func forceRelease() {
+        sendContinuation?.resume(throwing: RunnerProbeError.disconnected)
+        sendContinuation = nil
+        connected = false
+    }
+
+    func disconnectCount() -> Int { recordedDisconnectCount }
 }
 
 private actor OneShotEvent {

@@ -139,7 +139,18 @@ def _validate_vendor(root: Path) -> None:
 
 def _copied_tree(tmp_path: Path) -> Path:
     copy = tmp_path / "localocr"
-    shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".build", ".git", ".venv"))
+    shutil.copytree(
+        ROOT,
+        copy,
+        ignore=shutil.ignore_patterns(
+            ".build",
+            ".git",
+            ".pytest_cache",
+            ".swiftpm",
+            ".venv",
+            "dist",
+        ),
+    )
     return copy
 
 
@@ -549,7 +560,7 @@ def test_canonical_policy_freezes_target_dependencies_and_build_settings(
     result = _run_policy(copy)
 
     assert result.returncode != 0
-    assert "target policy changed" in result.stderr
+    assert "package product or target records changed" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -568,6 +579,8 @@ def test_canonical_policy_freezes_complete_package_dependency_records(
             "XcodeDefault.xctoolchain",
             "swift",
             "package",
+            "--scratch-path",
+            str(tmp_path / "package-dump-scratch"),
             "dump-package",
         ],
         cwd=ROOT,
@@ -600,6 +613,78 @@ def test_canonical_policy_freezes_complete_package_dependency_records(
 
     assert result.returncode != 0, mutation
     assert "package dependency records changed" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "product_target",
+        "target_path",
+        "target_path_normalization",
+        "target_resource",
+        "target_package_access",
+        "target_exclusion",
+    ),
+)
+def test_canonical_policy_freezes_complete_product_target_and_source_root_records(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    copy = _copied_tree(tmp_path)
+    dump_result = subprocess.run(
+        [
+            "/usr/bin/xcrun",
+            "--toolchain",
+            "XcodeDefault.xctoolchain",
+            "swift",
+            "package",
+            "--scratch-path",
+            str(tmp_path / "package-dump-scratch"),
+            "dump-package",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
+        },
+    )
+    package_dump = json.loads(dump_result.stdout)
+    target = next(
+        item for item in package_dump["targets"] if item["name"] == "MCPStdio"
+    )
+    if mutation == "product_target":
+        package_dump["products"][-1]["targets"] = ["LocalOCRCLIExecutable"]
+    elif mutation == "target_path":
+        target["path"] = "Sources/LocalOCRMCP"
+    elif mutation == "target_path_normalization":
+        target["path"] = "Sources/MCPStdio/../LocalOCRMCP"
+    elif mutation == "target_resource":
+        target["resources"] = [{"path": "Upstream", "rule": {"copy": {}}}]
+    elif mutation == "target_package_access":
+        target["packageAccess"] = False
+    elif mutation == "target_exclusion":
+        target["exclude"] = ["Upstream", "Base"]
+    else:  # pragma: no cover - parametrization is closed above.
+        raise AssertionError(mutation)
+
+    result = _run_policy_with_package_dump(copy, tmp_path, package_dump)
+
+    assert result.returncode != 0, mutation
+    assert "package product or target records changed" in result.stderr
+
+
+def test_canonical_policy_freezes_each_target_source_inventory(tmp_path: Path) -> None:
+    copy = _copied_tree(tmp_path)
+    injected = copy / "Sources" / "LocalOCRMCP" / "Injected.swift"
+    injected.write_text("public let silentlyInjectedShippingSource = true\n")
+
+    result = _run_policy(copy)
+
+    assert result.returncode != 0
+    assert "target source inventory changed" in result.stderr
 
 
 def test_canonical_policy_freezes_resolved_identity_version_revision_state(

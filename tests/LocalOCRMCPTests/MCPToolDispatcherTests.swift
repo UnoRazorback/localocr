@@ -366,6 +366,32 @@ import Testing
         #expect(await consent.statusReadCount() == 3)
     }
 
+    @Test func structuredOCRAndIntelligenceResultsPreserveLiteralDataURIStrings() async {
+        let literal = "data:text/plain,hello%20world"
+        let service = FakeOCRService(pdfText: literal)
+        let intelligence = FakeIntelligenceProvider(summaryText: literal)
+        let dispatcher = makeDispatcher(
+            service: service,
+            intelligence: intelligence,
+            currentDirectory: currentDirectory
+        )
+
+        let ocr = await dispatcher.callTool(
+            name: "ocr_pdf",
+            arguments: ["file_path": "literal.pdf"]
+        )
+        let summary = await dispatcher.callTool(
+            name: "summarize_document",
+            arguments: ["file_path": "literal.pdf"]
+        )
+
+        #expect(ocr.structuredContent?.objectValue?["pages"]?.arrayValue?.first?
+            .objectValue?["text"] == .string(literal))
+        #expect(summary.structuredContent?.objectValue?["text"] == .string(literal))
+        #expect(text(in: ocr)?.contains(#""text":"data:text/plain,hello%20world""#) == true)
+        #expect(text(in: summary)?.contains(#""text":"data:text/plain,hello%20world""#) == true)
+    }
+
     @Test func revokingConsentBetweenCallsImmediatelyBlocksTheNextCall() async {
         let service = FakeOCRService()
         let consent = FakeConsentStore(.current(currentConsentReceipt))
@@ -501,6 +527,7 @@ private func errorMessage(in result: CallTool.Result) -> String? {
 }
 
 private actor FakeOCRService: LocalOCRServing {
+    private let pdfText: String
     private var pdfRequest: PDFOCRRequest?
     private var batchRequest: BatchOCRRequest?
     private var searchablePDFRequest: SearchablePDFRequest?
@@ -509,6 +536,10 @@ private actor FakeOCRService: LocalOCRServing {
     private var recognizedImageURL: URL?
     private var failure: LocalOCRError?
     private var callCount = 0
+
+    init(pdfText: String = "found text") {
+        self.pdfText = pdfText
+    }
 
     func setFailure(_ failure: LocalOCRError?) {
         self.failure = failure
@@ -573,7 +604,7 @@ private actor FakeOCRService: LocalOCRServing {
         PDFOCRResponse(
             sourcePath: path,
             sourceSHA256: "abc",
-            pages: [OCRPageResponse(page: 1, text: "found text", method: .existingText, lines: nil)],
+            pages: [OCRPageResponse(page: 1, text: pdfText, method: .existingText, lines: nil)],
             failedPages: [2],
             emptyOCRPages: [],
             rotatedOCRPages: []
@@ -608,6 +639,11 @@ private actor FakeIntelligenceProvider: DocumentIntelligenceProviding {
 
     private var calls: [Operation] = []
     private var failure: (any Error & Sendable)?
+    private let summaryText: String
+
+    init(summaryText: String = "A short summary.") {
+        self.summaryText = summaryText
+    }
 
     var availability: IntelligenceAvailability { .available }
 
@@ -622,7 +658,7 @@ private actor FakeIntelligenceProvider: DocumentIntelligenceProviding {
         calls.append(.summarize)
         try throwIfConfigured()
         return IntelligenceSummary(
-            text: "A short summary.",
+            text: summaryText,
             citations: [.init(page: 1, quote: "Invoice total")]
         )
     }

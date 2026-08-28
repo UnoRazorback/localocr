@@ -92,7 +92,7 @@
       "path": "Server/Tools.swift",
       "origin": "Sources/MCP/Server/Tools.swift",
       "upstream_sha256": "79c4fc03714468c4a41c05544371ea7ffbf4517dc647db1b679abf8b71df7f0f",
-      "local_sha256": "824cd722848c98e0c6e9fa7898ffc48108a430f481c436f151118f89f592c3b1"
+      "local_sha256": "3f3ffb5f5a575dcda13d1918755e84d68e6b177935e2925b727d0c4cf4bc6872"
     },
     {
       "path": "Server/Server.swift",
@@ -149,7 +149,7 @@
     },
     {
       "path": "Server/Tools.swift",
-      "reason": "Retains LocalOCR's tool definitions, optional-annotation decoding, schemas, text content, list, and call messages while removing icons, resources, media, and resource-link content types."
+      "reason": "Retains LocalOCR's tool definitions, optional-annotation decoding, schemas, text content, list, and call messages while removing icons, resources, media, and resource-link content types, and routes generic structured results explicitly through the Value overload to avoid recursive initializer selection."
     },
     {
       "path": "Server/Server.swift",

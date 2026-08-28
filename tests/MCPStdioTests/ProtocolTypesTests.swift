@@ -80,6 +80,20 @@ import Testing
         #expect(try decoder.decode(Response<CallTool>.self, from: encoder.encode(result)) == result)
     }
 
+    @Test func genericStructuredResultInitializerUsesTheValueOverloadWithoutRecursion() throws {
+        let result = try CallTool.Result(
+            structuredContent: GenericStructuredOutput(message: "completed", count: 2)
+        )
+
+        #expect(result.structuredContent == .object([
+            "count": .int(2),
+            "message": .string("completed"),
+        ]))
+        let encoded = try JSONEncoder().encode(result)
+        let decoded = try JSONDecoder().decode(CallTool.Result.self, from: encoded)
+        #expect(decoded == result)
+    }
+
     @Test func toolDecodingDefaultsOmittedAnnotationsToEmpty() throws {
         let data = Data(#"{"name":"inspect_pdf","description":"Inspects a local PDF.","inputSchema":{"type":"object"}}"#.utf8)
         let tool = try JSONDecoder().decode(Tool.self, from: data)
@@ -120,4 +134,9 @@ import Testing
         #expect(try decoder.decode(MCPError.self, from: structuredData) == .invalidParams("file_path is required"))
         #expect(try decoder.decode(MCPError.self, from: messageOnly) == .internalError("worker failed"))
     }
+}
+
+private struct GenericStructuredOutput: Codable {
+    let message: String
+    let count: Int
 }

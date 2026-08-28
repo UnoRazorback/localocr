@@ -174,6 +174,9 @@ EXPECTED_TARGET_SETTINGS = [
         "tool": "swift",
     }
 ]
+REVIEWED_PACKAGE_PRODUCTS_SHA256 = "841cea785136ea50ce2a2e745d08a391f3a01d030ffe78c93c386345b7aeae8f"
+REVIEWED_PACKAGE_TARGETS_SHA256 = "4d4f789d81e1d8c11ff61fe4ae1501702045bc3611f38928ea4623b6c0798212"
+REVIEWED_TARGET_SOURCE_INVENTORY_SHA256 = "06ff46889e1308981df651c02c2b9d52a53cb3f80540ba1446c3e031cfd1c9a7"
 EXPECTED_RESOLVED_ORIGIN_HASH = "e70a6db1047b5f47cbfc6632ad66bb3063a23696616bd25aca75b3d59d4e6505"
 EXPECTED_RESOLVED_PINS = {
     "swift-argument-parser": {
@@ -235,6 +238,98 @@ def load_json(path: Path) -> Any:
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def canonical_json_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def normalized_package_relative_path(value: object, *, subject: str) -> Path:
+    require(isinstance(value, str) and value, f"{subject} is missing")
+    path = Path(value)
+    require(
+        value == path.as_posix()
+        and not path.is_absolute()
+        and all(component not in {"", ".", ".."} for component in path.parts),
+        f"{subject} is not a normalized package-relative path: {value!r}",
+    )
+    return path
+
+
+def target_source_inventory(
+    repo_root: Path,
+    targets: list[object],
+) -> list[dict[str, object]]:
+    inventory: list[dict[str, object]] = []
+    for target in targets:
+        require(isinstance(target, dict), "invalid Swift target record")
+        name = target.get("name")
+        target_type = target.get("type")
+        require(isinstance(name, str) and name, "Swift target name is missing")
+        require(isinstance(target_type, str), f"Swift target type is missing: {name}")
+        default_root = f"tests/{name}" if target_type == "test" else f"Sources/{name}"
+        root_value = target.get("path", default_root)
+        source_root_relative = normalized_package_relative_path(
+            root_value,
+            subject=f"target source root for {name}",
+        )
+        source_root = repo_root / source_root_relative
+        require(
+            source_root.is_dir() and not source_root.is_symlink(),
+            f"target source root is missing or symlinked: {name}",
+        )
+        physical_source_root = source_root.resolve(strict=True)
+        require(
+            physical_source_root == source_root
+            and physical_source_root.is_relative_to(repo_root),
+            f"target source root escaped the repository: {name}",
+        )
+
+        excluded_roots = [
+            normalized_package_relative_path(
+                value,
+                subject=f"target exclusion for {name}",
+            )
+            for value in target.get("exclude", [])
+        ]
+        resources = target.get("resources", [])
+        require(isinstance(resources, list), f"target resources are invalid: {name}")
+        resource_roots: list[Path] = []
+        for resource in resources:
+            require(isinstance(resource, dict), f"target resource is invalid: {name}")
+            resource_roots.append(
+                normalized_package_relative_path(
+                    resource.get("path"),
+                    subject=f"target resource path for {name}",
+                )
+            )
+
+        non_source_roots = excluded_roots + resource_roots
+        sources: list[str] = []
+        for candidate in sorted(source_root.rglob("*")):
+            require(
+                not candidate.is_symlink(),
+                f"symlink is forbidden in target source root: {candidate}",
+            )
+            relative = candidate.relative_to(source_root)
+            if any(relative == root or root in relative.parents for root in non_source_roots):
+                continue
+            if candidate.is_file() and candidate.suffix == ".swift":
+                sources.append(relative.as_posix())
+        require(sources, f"target source inventory is empty: {name}")
+        inventory.append(
+            {
+                "name": name,
+                "source_root": source_root_relative.as_posix(),
+                "sources": sources,
+            }
+        )
+    return inventory
 
 
 def mask_swift_comments_strings_and_escaped_identifiers(source: str) -> str:
@@ -613,8 +708,24 @@ def validate_package_policy(repo_root: Path) -> None:
         "package dependency records changed",
     )
 
+    products = package.get("products")
+    require(
+        isinstance(products, list)
+        and canonical_json_sha256(products) == REVIEWED_PACKAGE_PRODUCTS_SHA256,
+        "package product or target records changed: products",
+    )
+
     targets = package.get("targets")
     require(isinstance(targets, list), "Swift package targets are missing")
+    require(
+        canonical_json_sha256(targets) == REVIEWED_PACKAGE_TARGETS_SHA256,
+        "package product or target records changed: targets",
+    )
+    require(
+        canonical_json_sha256(target_source_inventory(repo_root, targets))
+        == REVIEWED_TARGET_SOURCE_INVENTORY_SHA256,
+        "target source inventory changed",
+    )
     target_by_name = {
         target.get("name"): target for target in targets if isinstance(target, dict)
     }

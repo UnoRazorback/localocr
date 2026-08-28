@@ -3418,6 +3418,85 @@ def test_shared_binary_policy_rejects_nw_symbols(tmp_path: Path) -> None:
     assert "network symbol is forbidden" in result.stderr
 
 
+@pytest.mark.parametrize("policy", ("release", "download"))
+@pytest.mark.parametrize("mutation", ("dependency", "rpath"))
+def test_binary_policy_parsers_reject_complete_whitespace_and_traversal_paths(
+    tmp_path: Path,
+    policy: str,
+    mutation: str,
+) -> None:
+    binary = tmp_path / f"{policy}-{mutation}-path-probe"
+    _compile_macos_fixture(
+        binary,
+        architecture="arm64",
+        minimum_macos="14.0",
+    )
+    if mutation == "dependency":
+        malicious_path = "/usr/lib/libSystem B.dylib/../evil.dylib"
+        command = [
+            "/usr/bin/install_name_tool",
+            "-change",
+            "/usr/lib/libSystem.B.dylib",
+            malicious_path,
+            str(binary),
+        ]
+        gate = "download_verify_binary_dependencies"
+    else:
+        malicious_path = "/usr/lib/swift /../evil"
+        command = [
+            "/usr/bin/install_name_tool",
+            "-add_rpath",
+            malicious_path,
+            str(binary),
+        ]
+        gate = "download_verify_binary_rpaths"
+    mutation_result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert mutation_result.returncode == 0, mutation_result.stderr
+
+    if policy == "release":
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                'source "$1"; release_validate_binary_policy "$2" false true',
+                "complete-release-path-policy",
+                str(RELEASE_SCRIPTS["toolchain"]),
+                str(binary),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    else:
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                'source "$1"; download_otool=/usr/bin/otool; "$2" "$3"',
+                "complete-download-path-policy",
+                str(RELEASE_SCRIPTS["download"]),
+                gate,
+                str(binary),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    assert result.returncode != 0, (
+        policy,
+        mutation,
+        malicious_path,
+        result.stdout,
+        result.stderr,
+    )
+
+
 def test_shared_binary_policy_rejects_non_macos_build_platform(
     tmp_path: Path,
 ) -> None:

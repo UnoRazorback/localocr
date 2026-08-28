@@ -209,12 +209,33 @@ private actor CancellationLatchedTransport: Transport {
 
     func receive() -> AsyncThrowingStream<Data, any Error> {
         let transport = transport
-        return AsyncThrowingStream { continuation in
+        return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(8)) { continuation in
             let forwardingTask = Task {
                 do {
                     let stream = await transport.receive()
                     for try await data in stream {
-                        continuation.yield(data)
+                        switch continuation.yield(data) {
+                        case .enqueued:
+                            break
+                        case .dropped:
+                            await self.disconnect()
+                            continuation.finish(
+                                throwing: MCPError.internalError(
+                                    "MCP input capacity exceeded"
+                                )
+                            )
+                            return
+                        case .terminated:
+                            return
+                        @unknown default:
+                            await self.disconnect()
+                            continuation.finish(
+                                throwing: MCPError.internalError(
+                                    "MCP input forwarding failed"
+                                )
+                            )
+                            return
+                        }
                     }
                     continuation.finish()
                 } catch {

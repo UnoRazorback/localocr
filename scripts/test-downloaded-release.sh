@@ -417,7 +417,12 @@ download_verify_binary_dependencies() {
     dependency_output="$("$download_otool" -L "$binary")" || return
     while IFS= read -r dependency_line; do
         [[ -n "$dependency_line" ]] || continue
-        install_name="$(printf '%s\n' "$dependency_line" | /usr/bin/awk '{ print $1 }')"
+        if [[ "$dependency_line" =~ ^(.+)\ \(compatibility\ version\ [^,\(\)[:space:]]+,\ current\ version\ [^,\(\)[:space:]]+(,\ weak)?\)$ ]]; then
+            install_name="${BASH_REMATCH[1]}"
+        else
+            echo "malformed dynamic-library dependency record" >&2
+            return 1
+        fi
         validate_install_name "$install_name" || return
         if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
             [[ "$dependency_line" == *", weak)" ]] || {
@@ -450,7 +455,16 @@ download_verify_binary_rpaths() {
                     next
                 }
                 awaiting_path && $1 == "path" {
-                    print $2
+                    line = $0
+                    sub(/^[[:space:]]*path[[:space:]]+/, "", line)
+                    if (!match(line, /[[:space:]]+[(]offset[[:space:]]+[0-9]+[)]$/)) {
+                        exit 65
+                    }
+                    path = substr(line, 1, RSTART - 1)
+                    if (path == "") {
+                        exit 65
+                    }
+                    print path
                     awaiting_path = 0
                 }
                 END {
