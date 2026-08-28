@@ -7,6 +7,7 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 artifact_dir="$repo_root/dist/native-tools"
 cli="$artifact_dir/localocr"
 mcp="$artifact_dir/localocr-mcp"
+mcp_exchange="$script_dir/mcp-smoke-exchange.py"
 fixture="$repo_root/tests/LocalOCRCoreTests/Fixtures/mixed.pdf"
 system_swift_rpath="/usr/lib/swift"
 compatibility_span="@rpath/libswiftCompatibilitySpan.dylib"
@@ -266,15 +267,24 @@ initialize_request='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"pro
 initialized_notification='{"jsonrpc":"2.0","method":"notifications/initialized"}'
 list_tools_request='{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 blocked_call_request="{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"get_pdf_page_count\",\"arguments\":{\"file_path\":\"$test_home_root/missing.pdf\"}}}"
-# Keep stdin open briefly so the stdio transport can finish the response before EOF.
-initialize_response="$({
+# Keep stdin open until every expected response arrives or the bounded exchange times out.
+initialize_response="$(
     printf '%s\n' \
         "$initialize_request" \
         "$initialized_notification" \
         "$list_tools_request" \
-        "$blocked_call_request"
-    sleep 1
-} | CFFIXED_USER_HOME="$test_home_root" HOME="$test_home_root" LOCALOCR_CACHE_DIR="$test_home_root/cache" "$mcp" 2>"$stderr_file")"
+        "$blocked_call_request" |
+        CFFIXED_USER_HOME="$test_home_root" \
+        HOME="$test_home_root" \
+        LOCALOCR_CACHE_DIR="$test_home_root/cache" \
+        "$mcp_exchange" \
+            --timeout 10 \
+            --expect-id 1 \
+            --expect-id 2 \
+            --expect-id 3 \
+            -- "$mcp" \
+            2>"$stderr_file"
+)"
 require_json_lines "$initialize_response"
 require_single_response "$initialize_response" 1
 require_single_response "$initialize_response" 2
@@ -350,14 +360,23 @@ done
 : > "$stderr_file"
 compatibility_page_count_request="{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"get_pdf_page_count\",\"arguments\":{\"file_path\":\"$fixture\"}}}"
 compatibility_inspect_request="{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\",\"params\":{\"name\":\"inspect_pdf\",\"arguments\":{\"file_path\":\"$fixture\"}}}"
-compatibility_response="$({
+compatibility_response="$(
     printf '%s\n' \
         "$initialize_request" \
         "$initialized_notification" \
         "$compatibility_page_count_request" \
-        "$compatibility_inspect_request"
-    sleep 2
-} | CFFIXED_USER_HOME="$test_home_root" HOME="$test_home_root" LOCALOCR_CACHE_DIR="$test_home_root/cache" "$mcp" 2>"$stderr_file")"
+        "$compatibility_inspect_request" |
+        CFFIXED_USER_HOME="$test_home_root" \
+        HOME="$test_home_root" \
+        LOCALOCR_CACHE_DIR="$test_home_root/cache" \
+        "$mcp_exchange" \
+            --timeout 10 \
+            --expect-id 1 \
+            --expect-id 11 \
+            --expect-id 12 \
+            -- "$mcp" \
+            2>"$stderr_file"
+)"
 require_json_lines "$compatibility_response"
 require_single_response "$compatibility_response" 1
 require_single_response "$compatibility_response" 11

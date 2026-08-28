@@ -15,6 +15,7 @@ from mcp.client.stdio import stdio_client
 ROOT = Path(__file__).parents[2]
 ARTIFACTS = ROOT / "dist" / "native-tools"
 SMOKE_SCRIPT = ROOT / "scripts" / "smoke-native-tools.sh"
+MCP_SMOKE_EXCHANGE = ROOT / "scripts" / "mcp-smoke-exchange.py"
 VERSION = "0.3.0"
 SYSTEM_LIBRARY_PREFIXES = ("/System/Library/", "/usr/lib/")
 COMPATIBILITY_SPAN_INSTALL_NAME = "@rpath/libswiftCompatibilitySpan.dylib"
@@ -223,6 +224,40 @@ def test_native_smoke_script_handles_repository_paths_with_spaces() -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_mcp_smoke_exchange_keeps_stdin_open_for_delayed_response(tmp_path: Path) -> None:
+    delayed_server = tmp_path / "delayed-mcp"
+    delayed_server.write_text(
+        """#!/bin/bash
+set -euo pipefail
+IFS= read -r _
+/bin/sleep 1.2
+printf '{"jsonrpc":"2.0","id":1,"result":{}}\\n'
+IFS= read -r _ || true
+"""
+    )
+    delayed_server.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(MCP_SMOKE_EXCHANGE),
+            "--timeout",
+            "3",
+            "--expect-id",
+            "1",
+            "--",
+            str(delayed_server),
+        ],
+        input='{"jsonrpc":"2.0","id":1,"method":"initialize"}\n',
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == '{"jsonrpc":"2.0","id":1,"result":{}}\n'
+    assert result.stderr == ""
 
 
 def test_release_artifacts_expose_only_system_dylibs_and_safe_rpaths() -> None:
