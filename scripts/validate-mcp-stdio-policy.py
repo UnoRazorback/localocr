@@ -17,13 +17,20 @@ from typing import Any
 UPSTREAM_COMMIT = "a0ae212ebf6eab5f754c3129608bc5557637e605"
 UPSTREAM_REPOSITORY = "https://github.com/modelcontextprotocol/swift-sdk"
 UPSTREAM_RELEASE = "0.12.1"
+REVIEWED_LICENSE_SHA256 = "0382b0057770ca05e9c350a50aa3b1c1fea84da0bc81d723bf00b9aa841be58a"
+REVIEWED_ORIGIN_INVENTORY_SHA256 = "dafbceaccc07c3b5a2dfe69f6386bc00ed68ffbb40a42391e90f45790c71f2fc"
+REVIEWED_LOCAL_ONLY_PATHS = {"MCPStdio.swift", "Server/RequestRegistry.swift"}
+XCODE_DEVELOPER_DIR = Path("/Applications/Xcode.app/Contents/Developer")
+XCODE_SWIFTC = (
+    XCODE_DEVELOPER_DIR
+    / "Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+)
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 FORBIDDEN_VENDOR_PATH = re.compile(
     r"(?:^|/)(?:[^/]*Client[^/]*|Authorization|"
     r"[^/]*(?:HTTP|OAuth|EventSource|Network|Socket|WebSocket)[^/]*)(?:/|\.swift$)"
 )
 FORBIDDEN_NETWORK_SOURCE = (
-    re.compile(r"(?m)^\s*import\s+(?:CFNetwork|Network|FoundationNetworking)\b"),
     re.compile(
         r"\b(?:URLSession(?:Configuration|Task|DataTask|DownloadTask|UploadTask|"
         r"StreamTask|WebSocketTask)?|URLRequest|URLResponse|HTTPURLResponse|"
@@ -46,10 +53,10 @@ FORBIDDEN_VENDOR_CLIENT_DECLARATION = (
 )
 FORBIDDEN_SHIPPING_NETWORK_SOURCE = (
     FORBIDDEN_NETWORK_SOURCE[0],
-    FORBIDDEN_NETWORK_SOURCE[1],
+    FORBIDDEN_NETWORK_SOURCE[6],
     FORBIDDEN_NETWORK_SOURCE[7],
-    FORBIDDEN_NETWORK_SOURCE[8],
 )
+FORBIDDEN_SWIFT_IMPORTS = {"CFNetwork", "Network", "FoundationNetworking"}
 APPROVED_REMOTE_PACKAGES = {
     "swift-argument-parser": "https://github.com/apple/swift-argument-parser",
     "swift-system": "https://github.com/apple/swift-system.git",
@@ -59,6 +66,102 @@ APPROVED_MCP_STDIO_PRODUCTS = {
     ("SystemPackage", "swift-system"),
     ("Logging", "swift-log"),
 }
+EXPECTED_TARGET_DEPENDENCIES = {
+    "LocalOCRCore": (),
+    "LocalOCRService": (("target", "LocalOCRCore"),),
+    "LocalOCRIntelligence": (("target", "LocalOCRService"),),
+    "LocalOCRStudioKit": (
+        ("target", "LocalOCRIntelligence"),
+        ("target", "LocalOCRService"),
+        ("target", "LocalOCRCore"),
+    ),
+    "LocalOCRCommandKit": (
+        ("target", "LocalOCRIntelligence"),
+        ("target", "LocalOCRService"),
+        ("product", "ArgumentParser", "swift-argument-parser"),
+    ),
+    "MCPStdio": (
+        ("product", "SystemPackage", "swift-system"),
+        ("product", "Logging", "swift-log"),
+    ),
+    "LocalOCRMCP": (
+        ("target", "LocalOCRIntelligence"),
+        ("target", "LocalOCRService"),
+        ("target", "MCPStdio"),
+    ),
+    "LocalOCRCLIExecutable": (("target", "LocalOCRCommandKit"),),
+    "LocalOCRMCPExecutable": (("target", "LocalOCRMCP"),),
+    "LocalOCRCoreTests": (("target", "LocalOCRCore"),),
+    "LocalOCRServiceTests": (("target", "LocalOCRService"),),
+    "LocalOCRStudioKitTests": (
+        ("target", "LocalOCRStudioKit"),
+        ("target", "LocalOCRService"),
+        ("target", "LocalOCRCore"),
+    ),
+    "LocalOCRCommandKitTests": (("target", "LocalOCRCommandKit"),),
+    "LocalOCRMCPTests": (
+        ("target", "LocalOCRMCP"),
+        ("target", "LocalOCRService"),
+        ("target", "LocalOCRCore"),
+        ("target", "MCPStdio"),
+    ),
+    "MCPStdioTests": (("target", "MCPStdio"),),
+    "LocalOCRIntelligenceTests": (
+        ("target", "LocalOCRIntelligence"),
+        ("target", "LocalOCRService"),
+        ("target", "LocalOCRCore"),
+    ),
+}
+EXPECTED_TARGET_TYPES = {
+    name: (
+        "executable"
+        if name in {"LocalOCRCLIExecutable", "LocalOCRMCPExecutable"}
+        else "test"
+        if name.endswith("Tests")
+        else "regular"
+    )
+    for name in EXPECTED_TARGET_DEPENDENCIES
+}
+EXPECTED_TARGET_SETTINGS = [
+    {
+        "kind": {"enableUpcomingFeature": {"_0": "StrictConcurrency"}},
+        "tool": "swift",
+    }
+]
+EXPECTED_RESOLVED_ORIGIN_HASH = "e70a6db1047b5f47cbfc6632ad66bb3063a23696616bd25aca75b3d59d4e6505"
+EXPECTED_RESOLVED_PINS = {
+    "swift-argument-parser": {
+        "identity": "swift-argument-parser",
+        "kind": "remoteSourceControl",
+        "location": "https://github.com/apple/swift-argument-parser",
+        "state": {
+            "revision": "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+            "version": "1.8.2",
+        },
+    },
+    "swift-log": {
+        "identity": "swift-log",
+        "kind": "remoteSourceControl",
+        "location": "https://github.com/apple/swift-log.git",
+        "state": {
+            "revision": "a878e7f8f46cfc0e1125e565b5c08e7d5272dc9a",
+            "version": "1.14.0",
+        },
+    },
+    "swift-system": {
+        "identity": "swift-system",
+        "kind": "remoteSourceControl",
+        "location": "https://github.com/apple/swift-system.git",
+        "state": {
+            "revision": "50688cacbd41d547e9eb9f7a213542340b7c442b",
+            "version": "1.7.5",
+        },
+    },
+}
+SWIFT_IMPORT_PATTERN = re.compile(
+    r"\bimport\b\s*(?:(?:typealias|struct|class|enum|protocol|let|var|func)\s+)?"
+    r"([A-Za-z_][A-Za-z0-9_]*)"
+)
 REQUIRED_UPSTREAM_RECORDS = {
     "LICENSE",
     "PROVENANCE.md",
@@ -88,6 +191,112 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def mask_swift_comments_strings_and_escaped_identifiers(source: str) -> str:
+    masked = list(source)
+    index = 0
+    length = len(source)
+    while index < length:
+        if source.startswith("//", index):
+            end = source.find("\n", index + 2)
+            end = length if end == -1 else end
+        elif source.startswith("/*", index):
+            depth = 1
+            cursor = index + 2
+            while cursor < length and depth:
+                if source.startswith("/*", cursor):
+                    depth += 1
+                    cursor += 2
+                elif source.startswith("*/", cursor):
+                    depth -= 1
+                    cursor += 2
+                else:
+                    cursor += 1
+            end = cursor
+        elif source[index] == "`":
+            closing = source.find("`", index + 1)
+            end = length if closing == -1 else closing + 1
+        else:
+            hash_count = 0
+            while index + hash_count < length and source[index + hash_count] == "#":
+                hash_count += 1
+            quote_start = index + hash_count
+            if quote_start >= length or source[quote_start] != '"':
+                index += 1
+                continue
+            quote_count = 3 if source.startswith('"""', quote_start) else 1
+            closing = ('"' * quote_count) + ('#' * hash_count)
+            cursor = quote_start + quote_count
+            while cursor < length:
+                found = source.find(closing, cursor)
+                if found == -1:
+                    cursor = length
+                    break
+                if hash_count or found == 0 or source[found - 1] != "\\":
+                    cursor = found + len(closing)
+                    break
+                cursor = found + 1
+            end = cursor
+        for position in range(index, end):
+            if masked[position] != "\n":
+                masked[position] = " "
+        index = max(end, index + 1)
+    return "".join(masked)
+
+
+def validate_swift_parse_and_imports(source_paths: list[Path]) -> None:
+    require(source_paths, "shipping Swift source set is empty")
+    require(
+        XCODE_SWIFTC.exists()
+        and XCODE_SWIFTC.resolve(strict=True).is_file()
+        and XCODE_SWIFTC.resolve(strict=True).is_relative_to(XCODE_DEVELOPER_DIR),
+        f"stable Xcode Swift parser is unavailable: {XCODE_SWIFTC}",
+    )
+    swift_environment = os.environ.copy()
+    swift_environment["DEVELOPER_DIR"] = str(XCODE_DEVELOPER_DIR)
+    swift_environment.pop("SDKROOT", None)
+    for source_path in source_paths:
+        require(
+            source_path.is_file() and not source_path.is_symlink(),
+            f"shipping source must be a physical file: {source_path}",
+        )
+        result = subprocess.run(
+            [
+                str(XCODE_SWIFTC),
+                "-frontend",
+                "-parse",
+                "-enable-bare-slash-regex",
+                str(source_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=swift_environment,
+        )
+        require(
+            result.returncode == 0,
+            f"Swift parser rejected shipping source {source_path}: "
+            f"{result.stderr.strip()}",
+        )
+        masked_source = mask_swift_comments_strings_and_escaped_identifiers(
+            source_path.read_text()
+        )
+        import_nodes = re.findall(r"\bimport\b", masked_source)
+        imported_modules = SWIFT_IMPORT_PATTERN.findall(masked_source)
+        require(
+            len(imported_modules) == len(import_nodes),
+            f"Swift import parser returned an unrecognized declaration: {source_path}",
+        )
+        forbidden_imports = sorted(
+            module
+            for module in imported_modules
+            if module.split(".", 1)[0] in FORBIDDEN_SWIFT_IMPORTS
+        )
+        require(
+            not forbidden_imports,
+            f"forbidden Swift import in {source_path}: {forbidden_imports}",
+        )
+
+
 def is_sha256(value: object) -> bool:
     return isinstance(value, str) and SHA256_PATTERN.fullmatch(value) is not None
 
@@ -105,6 +314,10 @@ def normalized_relative_swift_path(value: object) -> bool:
 
 def validate_origin_inventory(vendor: Path) -> dict[str, str]:
     inventory_path = vendor / "Upstream" / "origin-inventory.json"
+    require(
+        sha256(inventory_path) == REVIEWED_ORIGIN_INVENTORY_SHA256,
+        "reviewed origin inventory digest changed",
+    )
     inventory = load_json(inventory_path)
     require(
         isinstance(inventory, dict)
@@ -210,6 +423,7 @@ def validate_vendor(repo_root: Path) -> None:
 
     entries: dict[str, dict[str, object]] = {}
     required_adaptations: set[str] = set()
+    local_only_paths: set[str] = set()
     for entry in files:
         require(isinstance(entry, dict), "vendor file entry must be an object")
         path = entry.get("path")
@@ -227,6 +441,7 @@ def validate_vendor(repo_root: Path) -> None:
                 and entry["local_only"] is True,
                 f"invalid local-only source entry: {path}",
             )
+            local_only_paths.add(path)
         else:
             require(
                 set(entry) == {"path", "origin", "upstream_sha256", "local_sha256"},
@@ -244,6 +459,11 @@ def validate_vendor(repo_root: Path) -> None:
             if entry["local_sha256"] != entry["upstream_sha256"]:
                 required_adaptations.add(path)
         entries[path] = entry
+
+    require(
+        local_only_paths == REVIEWED_LOCAL_ONLY_PATHS,
+        f"local-only source path set changed: {sorted(local_only_paths)}",
+    )
 
     require(
         required_adaptations <= set(adaptations_by_path),
@@ -268,11 +488,16 @@ def validate_vendor(repo_root: Path) -> None:
 
     license_path = vendor / "Upstream" / "LICENSE"
     provenance_path = vendor / "Upstream" / "PROVENANCE.md"
-    require(license_path.stat().st_size > 0, "upstream license is empty")
+    require(
+        sha256(license_path) == REVIEWED_LICENSE_SHA256,
+        "reviewed license digest changed",
+    )
     provenance = provenance_path.read_text()
     for required_text in (UPSTREAM_REPOSITORY, UPSTREAM_RELEASE, UPSTREAM_COMMIT, "MCPStdio"):
         require(required_text in provenance, f"provenance is missing {required_text!r}")
 
+    vendored_sources = [vendor / path for path in sorted(entries)]
+    validate_swift_parse_and_imports(vendored_sources)
     for relative_path in entries:
         require(FORBIDDEN_VENDOR_PATH.search(relative_path) is None, f"forbidden vendored path: {relative_path}")
         source = (vendor / relative_path).read_text()
@@ -296,6 +521,32 @@ def package_dependency_identity(entry: object) -> tuple[str, str]:
     return identity, url
 
 
+def normalized_target_dependency(entry: object) -> tuple[str, ...]:
+    require(isinstance(entry, dict) and len(entry) == 1, "invalid target dependency")
+    if "byName" in entry:
+        value = entry["byName"]
+        require(
+            isinstance(value, list)
+            and len(value) == 2
+            and isinstance(value[0], str)
+            and value[1] is None,
+            "conditional or malformed target dependency is forbidden",
+        )
+        return ("target", value[0])
+    if "product" in entry:
+        value = entry["product"]
+        require(
+            isinstance(value, list)
+            and len(value) == 4
+            and isinstance(value[0], str)
+            and isinstance(value[1], str)
+            and value[2:] == [None, None],
+            "conditional or malformed package product dependency is forbidden",
+        )
+        return ("product", value[0], value[1])
+    raise PolicyError(f"unsupported target dependency kind: {sorted(entry)}")
+
+
 def validate_package_policy(repo_root: Path) -> None:
     package_path = repo_root / "Package.swift"
     resolved_path = repo_root / "Package.resolved"
@@ -306,7 +557,14 @@ def validate_package_policy(repo_root: Path) -> None:
     swift_environment["DEVELOPER_DIR"] = "/Applications/Xcode.app/Contents/Developer"
     swift_environment.pop("SDKROOT", None)
     result = subprocess.run(
-        ["/usr/bin/xcrun", "swift", "package", "dump-package"],
+        [
+            "/usr/bin/xcrun",
+            "--toolchain",
+            "XcodeDefault.xctoolchain",
+            "swift",
+            "package",
+            "dump-package",
+        ],
         cwd=repo_root,
         check=False,
         capture_output=True,
@@ -330,7 +588,28 @@ def validate_package_policy(repo_root: Path) -> None:
     target_by_name = {
         target.get("name"): target for target in targets if isinstance(target, dict)
     }
-    require("MCPStdio" in target_by_name, "MCPStdio target is missing")
+    require(
+        set(target_by_name) == set(EXPECTED_TARGET_DEPENDENCIES),
+        f"target policy changed: {sorted(target_by_name)}",
+    )
+    for target_name, expected_dependencies in EXPECTED_TARGET_DEPENDENCIES.items():
+        target = target_by_name[target_name]
+        actual_dependencies = tuple(
+            normalized_target_dependency(dependency)
+            for dependency in target.get("dependencies", [])
+        )
+        require(
+            actual_dependencies == expected_dependencies,
+            f"target policy changed: dependencies for {target_name}: {actual_dependencies}",
+        )
+        require(
+            target.get("type") == EXPECTED_TARGET_TYPES[target_name],
+            f"target policy changed: type for {target_name}",
+        )
+        require(
+            target.get("settings") == EXPECTED_TARGET_SETTINGS,
+            f"target policy changed: build settings for {target_name}",
+        )
     require(target_by_name["MCPStdio"].get("exclude") == ["Upstream"], "MCPStdio must exclude Upstream records")
 
     mcp_product_edges: list[tuple[str, str]] = []
@@ -356,23 +635,27 @@ def validate_package_policy(repo_root: Path) -> None:
     )
 
     resolved = load_json(resolved_path)
-    require(isinstance(resolved, dict) and resolved.get("version") == 3, "Package.resolved schema changed")
+    require(
+        isinstance(resolved, dict)
+        and set(resolved) == {"originHash", "pins", "version"}
+        and resolved.get("version") == 3
+        and resolved.get("originHash") == EXPECTED_RESOLVED_ORIGIN_HASH,
+        "Package.resolved schema or origin hash changed",
+    )
     pins = resolved.get("pins")
     require(isinstance(pins, list), "Package.resolved pins are missing")
-    resolved_pairs = {
-        (pin.get("identity"), pin.get("location"))
-        for pin in pins
-        if isinstance(pin, dict)
-    }
+    require(all(isinstance(pin, dict) for pin in pins), "Package.resolved pin is invalid")
+    resolved_by_identity = {pin.get("identity"): pin for pin in pins}
     require(
-        resolved_pairs == set(APPROVED_REMOTE_PACKAGES.items()),
-        f"resolved package dependency set changed: {sorted(resolved_pairs)}",
+        len(resolved_by_identity) == len(pins)
+        and resolved_by_identity == EXPECTED_RESOLVED_PINS,
+        f"resolved package pin state changed: {sorted(resolved_by_identity)}",
     )
 
     shipping_sources = sorted((repo_root / "App").glob("**/*.swift")) + sorted(
         (repo_root / "Sources").glob("**/*.swift")
     )
-    require(shipping_sources, "shipping Swift source set is empty")
+    validate_swift_parse_and_imports(shipping_sources)
     for source_path in shipping_sources:
         require(not source_path.is_symlink(), f"shipping source must not be symlinked: {source_path}")
         source = source_path.read_text()

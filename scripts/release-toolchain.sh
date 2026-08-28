@@ -48,19 +48,89 @@ release_cleanup_anchored_directory() {
     [[ ! -e "./$directory_name" && ! -L "./$directory_name" ]]
 }
 
+release_build_version_records_from_text() {
+    /usr/bin/awk '
+        function emit_record() {
+            if (platform_count != 1 || minos_count != 1) {
+                malformed = 1
+            }
+            record_count++
+            if (records != "") {
+                records = records ORS
+            }
+            records = records platform "\t" minos
+            platform = ""
+            minos = ""
+            platform_count = 0
+            minos_count = 0
+        }
+        $1 == "cmd" {
+            if (in_build_version) {
+                emit_record()
+            }
+            in_build_version = ($2 == "LC_BUILD_VERSION")
+            next
+        }
+        in_build_version && $1 == "platform" {
+            platform = $2
+            platform_count++
+            next
+        }
+        in_build_version && $1 == "minos" {
+            minos = $2
+            minos_count++
+            next
+        }
+        END {
+            if (in_build_version) {
+                emit_record()
+            }
+            if (malformed) {
+                exit 65
+            }
+            printf "%s", records
+        }
+    '
+}
+
+release_parse_build_version_text() {
+    local load_commands="${1:-}"
+    local records
+    local record_count
+
+    records="$(
+        printf '%s\n' "$load_commands" |
+            release_build_version_records_from_text
+    )" || {
+        echo "LC_BUILD_VERSION record is malformed" >&2
+        return 1
+    }
+    record_count="$(
+        printf '%s\n' "$records" |
+            /usr/bin/awk 'NF { count++ } END { print count + 0 }'
+    )"
+    [[ "$record_count" -eq 1 ]] || {
+        echo "release binary must contain exactly one LC_BUILD_VERSION" >&2
+        return 1
+    }
+    printf '%s\n' "$records"
+}
+
+release_binary_build_version() {
+    local load_commands
+
+    load_commands="$(/usr/bin/otool -l "$1")" || {
+        echo "could not inspect release binary build version: $1" >&2
+        return 1
+    }
+    release_parse_build_version_text "$load_commands"
+}
+
 release_binary_minimum_macos() {
-    /usr/bin/otool -l "$1" |
-        /usr/bin/awk '
-            $1 == "cmd" && $2 == "LC_BUILD_VERSION" {
-                in_build_version = 1
-                next
-            }
-            in_build_version && $1 == "minos" && !printed {
-                print $2
-                printed = 1
-                in_build_version = 0
-            }
-        '
+    local build_version
+
+    build_version="$(release_binary_build_version "$1")" || return 1
+    printf '%s\n' "${build_version#*$'\t'}"
 }
 
 release_validate_binary_architecture_and_target() {
@@ -68,7 +138,8 @@ release_validate_binary_architecture_and_target() {
     local file_description
     local architectures
     local minimum_macos
-    local minimum_major
+    local build_version
+    local platform
 
     file_description="$(/usr/bin/file -b "$binary")" || {
         echo "could not inspect copied release binary: $binary" >&2
@@ -86,17 +157,22 @@ release_validate_binary_architecture_and_target() {
         echo "release binaries must contain only the arm64 architecture" >&2
         return 1
     }
-    minimum_macos="$(release_binary_minimum_macos "$binary")" || {
+    build_version="$(release_binary_build_version "$binary")" || {
         echo "could not inspect copied release binary minimum macOS: $binary" >&2
+        return 1
+    }
+    platform="${build_version%%$'\t'*}"
+    minimum_macos="${build_version#*$'\t'}"
+    [[ "$platform" == "1" ]] || {
+        echo "LC_BUILD_VERSION platform must be macOS: $binary" >&2
         return 1
     }
     [[ "$minimum_macos" =~ ^[0-9]+([.][0-9]+){1,2}$ ]] || {
         echo "invalid minimum macOS version: $minimum_macos" >&2
         return 1
     }
-    minimum_major="${minimum_macos%%.*}"
-    [[ "$minimum_major" -ge 14 ]] || {
-        echo "release binaries must require macOS 14 or later" >&2
+    [[ "$minimum_macos" == "14.0" ]] || {
+        echo "Local Intelligence release binaries must target macOS 14.0 exactly" >&2
         return 1
     }
 }
@@ -139,11 +215,12 @@ release_is_forbidden_network_install_name() {
     esac
     relative_path="${install_name#/System/Library/Frameworks/}"
     IFS=/ read -r -a components <<< "$relative_path"
-    [[ "${#components[@]}" -ge 2 ]] || return 1
-    case "${components[0]}:${components[${#components[@]}-1]}" in
-        CFNetwork.framework:CFNetwork|Network.framework:Network) return 0 ;;
-        *) return 1 ;;
-    esac
+    for component in "${components[@]}"; do
+        case "$component" in
+            CFNetwork.framework|Network.framework) return 0 ;;
+        esac
+    done
+    return 1
 }
 
 release_validate_local_only_install_name() {
@@ -198,7 +275,7 @@ release_validate_no_network_symbol_text() {
     local grep_status
 
     if /usr/bin/grep -E -q -- \
-        '(CFNetwork|NSURLSession|URLSession(Configuration|Task|DataTask|DownloadTask|UploadTask|StreamTask|WebSocketTask)?)' \
+        '(CFNetwork|NSURLSession|URLSession(Configuration|Task|DataTask|DownloadTask|UploadTask|StreamTask|WebSocketTask)?|_nw_[A-Za-z0-9_]+)' \
         <<< "$symbol_text"
     then
         echo "network symbol is forbidden in local-only candidate: $binary" >&2
@@ -284,20 +361,107 @@ release_validate_binary_rpaths() {
     done <<< "$rpaths"
 }
 
-release_reject_private_user_path() {
-    local binary="$1"
+release_validate_no_private_or_build_path_text() {
+    local strings_output="$1"
+    local subject="${2:-release input}"
+    local repo_root="${3:-$release_repo_root}"
+    local forbidden
     local grep_status
 
-    if /usr/bin/grep -a -F -q -- "/Users/" "$binary"; then
-        echo "release binary contains a private /Users/ path: $binary" >&2
+    if /usr/bin/grep -F -q -- "/Users/" <<< "$strings_output"; then
+        echo "private /Users/ path marker found in $subject" >&2
         return 1
     else
         grep_status=$?
         [[ "$grep_status" -eq 1 ]] || {
-            echo "could not inspect release binary for private paths: $binary" >&2
+            echo "could not inspect release input for private or build paths: $subject" >&2
             return 1
         }
     fi
+    if /usr/bin/grep -E -q -- \
+        '(/tmp/|(^|/)DerivedData(/|$)|(^|/)[.]build(/|$)|(^|/)worktrees(/|$)|(^|/)checkout(/|$))' \
+        <<< "$strings_output"
+    then
+        echo "private or build path marker found in $subject" >&2
+        return 1
+    else
+        grep_status=$?
+        [[ "$grep_status" -eq 1 ]] || {
+            echo "could not inspect release input for private or build paths: $subject" >&2
+            return 1
+        }
+    fi
+    for forbidden in \
+        "/Applications/Xcode" \
+        "/opt/homebrew/" \
+        "/usr/local/" \
+        "/.venv/" \
+        "$repo_root"
+    do
+        [[ -n "$forbidden" && "$forbidden" != "/" ]] || continue
+        if /usr/bin/grep -F -i -q -- "$forbidden" <<< "$strings_output"; then
+            echo "private or build path marker found in $subject: $forbidden" >&2
+            return 1
+        else
+            grep_status=$?
+            [[ "$grep_status" -eq 1 ]] || {
+                echo "could not inspect release input for private or build paths: $subject" >&2
+                return 1
+            }
+        fi
+    done
+}
+
+release_reject_private_or_build_path() {
+    local input_path="$1"
+    local repo_root="${2:-$release_repo_root}"
+    local forbidden
+    local grep_status
+    local strings_output
+
+    if /usr/bin/grep -a -F -q -- "/Users/" "$input_path"; then
+        echo "private /Users/ path marker found in $input_path" >&2
+        return 1
+    else
+        grep_status=$?
+        [[ "$grep_status" -eq 1 ]] || return 1
+    fi
+    if /usr/bin/grep -a -E -q -- \
+        '(/tmp/|/DerivedData/|/[.]build/|/worktrees/|/checkout/)' \
+        "$input_path"
+    then
+        echo "private or build path marker found in $input_path" >&2
+        return 1
+    else
+        grep_status=$?
+        [[ "$grep_status" -eq 1 ]] || return 1
+    fi
+    for forbidden in \
+        "/Applications/Xcode" \
+        "/opt/homebrew/" \
+        "/usr/local/" \
+        "/.venv/" \
+        "$repo_root"
+    do
+        [[ -n "$forbidden" && "$forbidden" != "/" ]] || continue
+        if /usr/bin/grep -a -F -i -q -- "$forbidden" "$input_path"; then
+            echo "private or build path marker found in $input_path: $forbidden" >&2
+            return 1
+        else
+            grep_status=$?
+            [[ "$grep_status" -eq 1 ]] || return 1
+        fi
+    done
+    strings_output="$(/usr/bin/strings -a "$input_path")" || {
+        echo "could not inspect release input for private or build paths: $input_path" >&2
+        return 1
+    }
+    release_validate_no_private_or_build_path_text \
+        "$strings_output" "$input_path" "$repo_root"
+}
+
+release_reject_private_user_path() {
+    release_reject_private_or_build_path "$1" "${2:-$release_repo_root}"
 }
 
 release_validate_binary_policy() {

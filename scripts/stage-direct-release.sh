@@ -14,6 +14,11 @@ native_tools_dir="$release_root/native-tools"
 plist_buddy="/usr/libexec/PlistBuddy"
 physical_unsigned_app=""
 expected_main_executable_name="LocalOCR Studio"
+canonical_release_root=""
+release_candidate=""
+release_candidate_identity=""
+release_dist_identity=""
+release_target_identity="missing"
 
 validate_arm64_architecture() {
     [[ "${1:-}" == "arm64" ]] || {
@@ -121,6 +126,124 @@ clean_release_root() {
     /bin/rm -rf -- "$release_root"
 }
 
+validate_release_candidate_path() {
+    local candidate="${1:-}"
+    local dist_root="$stage_repo_root/dist"
+
+    case "$candidate" in
+        "$dist_root"/.direct-release.candidate.*) ;;
+        *) return 1 ;;
+    esac
+    [[ "$(/usr/bin/dirname "$candidate")" == "$dist_root" ]] || return 1
+    [[ -d "$candidate" && ! -L "$candidate" ]] || return 1
+    [[ "$(cd "$candidate" && pwd -P)" == "$candidate" ]]
+}
+
+cleanup_release_candidate() {
+    local candidate_name
+
+    [[ -n "$release_candidate" ]] || return 0
+    if [[ ! -e "$release_candidate" && ! -L "$release_candidate" ]]; then
+        release_candidate=""
+        release_candidate_identity=""
+        return 0
+    fi
+    validate_release_candidate_path "$release_candidate" || return 1
+    candidate_name="$(/usr/bin/basename "$release_candidate")"
+    (
+        cd "$stage_repo_root/dist" || exit 1
+        [[ "$(/usr/bin/stat -f '%d:%i' .)" == "$release_dist_identity" ]] || {
+            echo "release dist identity changed before candidate cleanup" >&2
+            exit 1
+        }
+        release_cleanup_anchored_directory \
+            "$candidate_name" \
+            "$release_candidate_identity" \
+            "$release_dist_identity"
+    ) || return 1
+    release_candidate=""
+    release_candidate_identity=""
+}
+
+prepare_release_candidate() {
+    local dist_root="$stage_repo_root/dist"
+
+    canonical_release_root="$release_root"
+    [[ -d "$dist_root" && ! -L "$dist_root" ]] || {
+        echo "release dist parent must be a physical directory" >&2
+        return 1
+    }
+    release_dist_identity="$(
+        /usr/bin/swift "$release_path_guard" token-directory "$dist_root"
+    )" || return 1
+    if [[ -e "$canonical_release_root" || -L "$canonical_release_root" ]]; then
+        [[ -d "$canonical_release_root" && ! -L "$canonical_release_root" ]] || {
+            echo "existing direct release must be a physical directory" >&2
+            return 1
+        }
+        release_target_identity="$(
+            /usr/bin/swift "$release_path_guard" \
+                token-directory "$canonical_release_root"
+        )" || return 1
+    fi
+    release_candidate="$(
+        /usr/bin/mktemp -d "$dist_root/.direct-release.candidate.XXXXXX"
+    )" || return 1
+    validate_release_candidate_path "$release_candidate" || return 1
+    release_candidate_identity="$(
+        /usr/bin/swift "$release_path_guard" \
+            token-directory "$release_candidate"
+    )" || return 1
+    release_root="$release_candidate"
+    evidence_dir="$release_root/evidence"
+    staged_app="$release_root/staged/LocalOCR Studio.app"
+    native_tools_dir="$release_root/native-tools"
+}
+
+publish_release_candidate() {
+    local candidate_name
+    local publication_result
+
+    validate_release_candidate_path "$release_candidate" || return 1
+    candidate_name="$(/usr/bin/basename "$release_candidate")"
+    publication_result="$(
+        release_publish_directory_atomically \
+            "$release_candidate" \
+            "$canonical_release_root" \
+            "$release_dist_identity" \
+            "$release_candidate_identity" \
+            "$release_target_identity"
+    )" || {
+        echo "could not atomically publish validated direct release" >&2
+        return 1
+    }
+    case "$publication_result" in
+        moved)
+            [[ "$release_target_identity" == "missing" ]] || return 1
+            ;;
+        exchanged)
+            [[ "$release_target_identity" != "missing" ]] || return 1
+            (
+                cd "$stage_repo_root/dist" || exit 1
+                release_cleanup_anchored_directory \
+                    "$candidate_name" \
+                    "$release_target_identity" \
+                    "$release_dist_identity"
+            ) || return 1
+            ;;
+        *)
+            echo "unexpected direct-release publication result" >&2
+            return 1
+            ;;
+    esac
+    release_candidate=""
+    release_candidate_identity=""
+    release_root="$canonical_release_root"
+    evidence_dir="$release_root/evidence"
+    staged_app="$release_root/staged/LocalOCR Studio.app"
+    native_tools_dir="$release_root/native-tools"
+}
+
 resolve_main_executable() {
     local app_path="${1:-}"
     local executable_name="${2:-}"
@@ -182,18 +305,7 @@ require_expected_plist_value() {
 }
 
 binary_minimum_macos() {
-    /usr/bin/otool -l "$1" |
-        /usr/bin/awk '
-            $1 == "cmd" && $2 == "LC_BUILD_VERSION" {
-                in_build_version = 1
-                next
-            }
-            in_build_version && $1 == "minos" && !printed {
-                print $2
-                printed = 1
-                in_build_version = 0
-            }
-        '
+    release_binary_minimum_macos "$1"
 }
 
 validate_canonical_system_install_name() {
@@ -210,23 +322,11 @@ validate_rpath() {
 
 validate_release_binary() {
     local binary="$1"
-    local file_description
-    local architectures
-    local minimum_macos
-
     [[ -f "$binary" && ! -L "$binary" ]] || {
         echo "release binary is missing or symlinked: $binary" >&2
         return 1
     }
-    file_description="$(/usr/bin/file -b "$binary")"
-    [[ "$file_description" == *"Mach-O 64-bit executable arm64"* ]] || {
-        echo "release binary is not an arm64 Mach-O executable: $binary" >&2
-        return 1
-    }
-    architectures="$(/usr/bin/lipo -archs "$binary")"
-    validate_arm64_architecture "$architectures"
-    minimum_macos="$(binary_minimum_macos "$binary")"
-    validate_minimum_macos "$minimum_macos"
+    release_validate_binary_architecture_and_target "$binary"
 }
 
 validate_binary_dependencies() {
@@ -294,16 +394,8 @@ reject_private_user_paths() {
             ! -path "$app_path/Contents/Helpers/*" \
             -print0 |
             while IFS= read -r -d '' candidate; do
-                if /usr/bin/grep -a -F -q -- "/Users/" "$candidate"; then
-                    echo "app resource contains a private /Users/ path: $candidate" >&2
-                    exit 1
-                else
-                    grep_status=$?
-                    [[ "$grep_status" -eq 1 ]] || {
-                        echo "could not inspect app resources for private paths: $candidate" >&2
-                        exit 1
-                    }
-                fi
+                release_reject_private_or_build_path \
+                    "$candidate" "$stage_repo_root" || exit 1
             done
         scan_statuses="${PIPESTATUS[*]}"
     } || :
@@ -488,7 +580,9 @@ stage_direct_release() {
     validate_nested_code_allowlist "$physical_unsigned_app"
     reject_private_user_paths "$physical_unsigned_app"
 
-    clean_release_root
+    release_validate_mcp_source_policy "$stage_repo_root"
+    prepare_release_candidate
+    trap 'cleanup_release_candidate || true' EXIT
     /bin/mkdir -p "$evidence_dir"
 
     configure_release_developer_dir
@@ -555,6 +649,8 @@ stage_direct_release() {
     validate_nested_code_allowlist "$staged_app" true
     reject_private_user_paths "$staged_app"
     record_staged_pre_signing_hashes
+    publish_release_candidate
+    trap - EXIT
 }
 
 case "${1:-}" in

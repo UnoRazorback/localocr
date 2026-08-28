@@ -67,39 +67,16 @@ validate_no_debug_entitlement_text() {
 }
 
 binary_minimum_macos() {
-    /usr/bin/otool -l "$1" |
-        /usr/bin/awk '
-            $1 == "cmd" && $2 == "LC_BUILD_VERSION" {
-                in_build_version = 1
-                next
-            }
-            in_build_version && $1 == "minos" && !printed {
-                print $2
-                printed = 1
-                in_build_version = 0
-            }
-        '
+    release_binary_minimum_macos "$1"
 }
 
 verify_binary_architecture_and_target() {
     local binary="$1"
-    local file_description
-    local architectures
-    local minimum_macos
-
     [[ -f "$binary" && ! -L "$binary" ]] || {
         echo "release binary is missing or symlinked: $binary" >&2
         return 1
     }
-    file_description="$(/usr/bin/file -b "$binary")"
-    [[ "$file_description" == *"Mach-O"* ]] || {
-        echo "release binary is not Mach-O: $binary" >&2
-        return 1
-    }
-    architectures="$(/usr/bin/lipo -archs "$binary")"
-    validate_arm64_architecture "$architectures"
-    minimum_macos="$(binary_minimum_macos "$binary")"
-    validate_minimum_macos "$minimum_macos"
+    release_validate_binary_architecture_and_target "$binary"
 }
 
 verify_binary_dependencies() {
@@ -111,29 +88,7 @@ verify_binary_rpaths() {
 }
 
 verify_no_private_paths() {
-    local binary="$1"
-    local strings_output
-    local forbidden
-
-    release_reject_private_user_path "$binary"
-    strings_output="$(/usr/bin/strings -a "$binary")"
-    for forbidden in \
-        "/Applications/Xcode" \
-        "/Users/" \
-        "$verify_repo_root" \
-        "/opt/homebrew" \
-        "/usr/local" \
-        ".venv" \
-        "python" \
-        "pyobjc" \
-        "pymupdf" \
-        "ruby"
-    do
-        if /usr/bin/grep -F -i -q -- "$forbidden" <<< "$strings_output"; then
-            echo "private or non-native build path marker found in $binary: $forbidden" >&2
-            return 1
-        fi
-    done
+    release_reject_private_or_build_path "$1" "$verify_repo_root"
 }
 
 verify_signature() {

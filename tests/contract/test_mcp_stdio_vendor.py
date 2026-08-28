@@ -151,6 +151,14 @@ def _run_policy(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]
     )
 
 
+def _refresh_manifest_local_hash(root: Path, relative_path: str) -> None:
+    manifest_path = root / "Sources" / "MCPStdio" / "Upstream" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    entry = next(item for item in manifest["files"] if item["path"] == relative_path)
+    entry["local_sha256"] = _sha256(root / "Sources" / "MCPStdio" / relative_path)
+    manifest_path.write_text(json.dumps(manifest))
+
+
 def _swift_parse_tree(source: str) -> str:
     try:
         result = subprocess.run(
@@ -364,6 +372,169 @@ def test_manifest_is_closed_and_pinned() -> None:
 def test_canonical_policy_accepts_the_reviewed_source_and_package_boundary() -> None:
     result = _run_policy(ROOT)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_canonical_policy_freezes_reviewed_local_only_paths(
+    tmp_path: Path,
+) -> None:
+    copy = _copied_tree(tmp_path)
+    vendor = copy / "Sources" / "MCPStdio"
+    source_path = vendor / "ExtraLocal.swift"
+    source_path.write_text("public let extraLocalSource = true\n")
+    manifest_path = vendor / "Upstream" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"].append(
+        {
+            "path": source_path.name,
+            "local_only": True,
+            "local_sha256": _sha256(source_path),
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest))
+
+    result = _run_policy(copy, "--vendor-only")
+
+    assert result.returncode != 0
+    assert "local-only source path set changed" in result.stderr
+
+
+def test_canonical_policy_rejects_origin_inventory_and_manifest_self_attestation(
+    tmp_path: Path,
+) -> None:
+    copy = _copied_tree(tmp_path)
+    upstream = copy / "Sources" / "MCPStdio" / "Upstream"
+    inventory_path = upstream / "origin-inventory.json"
+    inventory = json.loads(inventory_path.read_text())
+    origin = "Sources/MCP/Base/ID.swift"
+    next(item for item in inventory["files"] if item["path"] == origin)[
+        "sha256"
+    ] = "0" * 64
+    inventory_path.write_text(json.dumps(inventory))
+    manifest_path = upstream / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    next(item for item in manifest["files"] if item.get("origin") == origin)[
+        "upstream_sha256"
+    ] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest))
+
+    result = _run_policy(copy, "--vendor-only")
+
+    assert result.returncode != 0
+    assert "reviewed origin inventory digest changed" in result.stderr
+
+
+def test_canonical_policy_rejects_license_content_self_attestation(
+    tmp_path: Path,
+) -> None:
+    copy = _copied_tree(tmp_path)
+    license_path = copy / "Sources" / "MCPStdio" / "Upstream" / "LICENSE"
+    license_path.write_text(license_path.read_text() + "\nself-attested replacement\n")
+
+    result = _run_policy(copy, "--vendor-only")
+
+    assert result.returncode != 0
+    assert "reviewed license digest changed" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "import_declaration",
+    (
+        "@_implementationOnly import\nNetwork\n",
+        "@preconcurrency import\nFoundationNetworking\n",
+    ),
+)
+def test_canonical_policy_uses_swift_parser_for_attributed_multiline_imports(
+    tmp_path: Path,
+    import_declaration: str,
+) -> None:
+    copy = _copied_tree(tmp_path)
+    source_path = copy / "Sources" / "MCPStdio" / "MCPStdio.swift"
+    source_path.write_text(import_declaration + source_path.read_text())
+    _refresh_manifest_local_hash(copy, "MCPStdio.swift")
+
+    result = _run_policy(copy, "--vendor-only")
+
+    assert result.returncode != 0
+    assert "forbidden Swift import" in result.stderr
+
+
+def test_canonical_policy_fails_closed_when_swift_source_does_not_parse(
+    tmp_path: Path,
+) -> None:
+    copy = _copied_tree(tmp_path)
+    source_path = copy / "Sources" / "MCPStdio" / "MCPStdio.swift"
+    source_path.write_text(source_path.read_text() + "\npublic struct Unclosed {\n")
+    _refresh_manifest_local_hash(copy, "MCPStdio.swift")
+
+    result = _run_policy(copy, "--vendor-only")
+
+    assert result.returncode != 0
+    assert "Swift parser rejected shipping source" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("local_dependency", "linked_framework", "unsafe_swift_flags"),
+)
+def test_canonical_policy_freezes_target_dependencies_and_build_settings(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    copy = _copied_tree(tmp_path)
+    package_path = copy / "Package.swift"
+    package = package_path.read_text()
+    original = '''        .target(
+            name: "MCPStdio",
+            dependencies: [
+                .product(name: "SystemPackage", package: "swift-system"),
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            exclude: ["Upstream"],
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),'''
+    if mutation == "local_dependency":
+        replacement = original.replace(
+            "            dependencies: [\n",
+            '            dependencies: [\n                "LocalOCRCore",\n',
+        )
+    elif mutation == "linked_framework":
+        replacement = original.replace(
+            '            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]\n',
+            '            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")],\n'
+            '            linkerSettings: [.linkedFramework("Network")]\n',
+        )
+    elif mutation == "unsafe_swift_flags":
+        replacement = original.replace(
+            '.enableUpcomingFeature("StrictConcurrency")',
+            '.enableUpcomingFeature("StrictConcurrency"), .unsafeFlags(["-DREMOTE_MCP"])',
+        )
+    else:  # pragma: no cover - parametrization is closed above.
+        raise AssertionError(mutation)
+    assert original in package
+    package_path.write_text(package.replace(original, replacement, 1))
+
+    result = _run_policy(copy)
+
+    assert result.returncode != 0
+    assert "target policy changed" in result.stderr
+
+
+def test_canonical_policy_freezes_resolved_identity_version_revision_state(
+    tmp_path: Path,
+) -> None:
+    copy = _copied_tree(tmp_path)
+    resolved_path = copy / "Package.resolved"
+    resolved = json.loads(resolved_path.read_text())
+    resolved["pins"][0]["state"] = {
+        "revision": "0" * 40,
+        "version": "99.0.0",
+    }
+    resolved_path.write_text(json.dumps(resolved))
+
+    result = _run_policy(copy)
+
+    assert result.returncode != 0
+    assert "resolved package pin state changed" in result.stderr
 
 
 @pytest.mark.parametrize(

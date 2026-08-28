@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import plistlib
 import re
@@ -1300,6 +1301,53 @@ def _compile_macos_fixture(
     assert result.returncode == 0, result.stderr
 
 
+def _compile_ios_fixture(output: Path) -> None:
+    source = output.parent / "ios-fixture-main.c"
+    source.write_text("int main(void) { return 0; }\n")
+    result = subprocess.run(
+        [
+            "/usr/bin/xcrun",
+            "--sdk",
+            "iphoneos",
+            "clang",
+            "-arch",
+            "arm64",
+            "-miphoneos-version-min=14.0",
+            str(source),
+            "-o",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _compile_macos_embedded_marker_fixture(output: Path, marker: str) -> None:
+    source = output.parent / "marker-fixture.c"
+    source.write_text(
+        "__attribute__((used)) static const char marker[] = "
+        f"{json.dumps(marker)}; int main(void) {{ return marker[0] == 0; }}\n"
+    )
+    result = subprocess.run(
+        [
+            "/usr/bin/xcrun",
+            "clang",
+            "-arch",
+            "arm64",
+            "-mmacosx-version-min=14.0",
+            str(source),
+            "-o",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def _compile_macos_debug_path_fixture(
     output: Path,
     source_text: str = "int main(void) { return 0; }\n",
@@ -1429,6 +1477,31 @@ def _write_cleanup_pausing_path_guard(destination: Path) -> None:
         close(descriptor)
         guard result == payload.utf8.count else {
             throw GuardError.system("write cleanup test rendezvous", errno)
+        }
+        raise(SIGSTOP)
+    }
+'''
+    destination.write_text(source.replace(injection_point, pause + injection_point))
+
+
+def _write_publish_pausing_path_guard(destination: Path) -> None:
+    source = RELEASE_PATH_GUARD.read_text()
+    injection_point = "    switch expectedTarget {\n"
+    assert source.count(injection_point) == 1
+    pause = r'''    if let fifoPath = ProcessInfo.processInfo.environment[
+        "LOCALOCR_TEST_PUBLISH_READY_FIFO"
+    ] {
+        let descriptor = open(fifoPath, O_WRONLY | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw GuardError.system("open publish test rendezvous", errno)
+        }
+        let payload = "\(getpid())\n"
+        let result = payload.withCString { pointer in
+            Darwin.write(descriptor, pointer, strlen(pointer))
+        }
+        close(descriptor)
+        guard result == payload.utf8.count else {
+            throw GuardError.system("write publish test rendezvous", errno)
         }
         raise(SIGSTOP)
     }
@@ -1566,6 +1639,30 @@ def _compile_forbidden_url_session_symbol_fixture(output: Path) -> None:
         input=(
             "extern void *NSURLSession;\n"
             "int main(void) { return NSURLSession != 0; }\n"
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _compile_forbidden_nw_symbol_fixture(output: Path) -> None:
+    subprocess.run(
+        [
+            "/usr/bin/clang",
+            "-arch",
+            "arm64",
+            "-mmacosx-version-min=14.0",
+            "-x",
+            "c",
+            "-",
+            "-Wl,-undefined,dynamic_lookup",
+            "-o",
+            str(output),
+        ],
+        input=(
+            "extern void *nw_connection_create;\n"
+            "int main(void) { return nw_connection_create != 0; }\n"
         ),
         check=True,
         capture_output=True,
@@ -3097,7 +3194,7 @@ def test_build_native_tools_rejects_a_post_validation_artifact_leaf_swap(
     (replacement / "outside-link").symlink_to(outside, target_is_directory=True)
     shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
     shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
-    _write_cleanup_pausing_path_guard(isolated_scripts / "release-path-guard.swift")
+    _write_publish_pausing_path_guard(isolated_scripts / "release-path-guard.swift")
     source_fixture = tmp_path / "source" / "localocr"
     source_fixture.parent.mkdir()
     _compile_macos_fixture(
@@ -3120,7 +3217,7 @@ exit 64
 """
     )
     swift_stub.chmod(0o755)
-    ready_fifo = tmp_path / "native-cleanup-ready.fifo"
+    ready_fifo = tmp_path / "native-publish-ready.fifo"
     os.mkfifo(ready_fifo)
     ready_descriptor = os.open(ready_fifo, os.O_RDWR | os.O_NONBLOCK)
     env = os.environ.copy()
@@ -3128,7 +3225,7 @@ exit 64
         {
             "PATH": f"{stub_bin}:/usr/bin:/bin",
             "LOCALOCR_TEST_SOURCE_BINARY": str(source_fixture),
-            "LOCALOCR_TEST_CLEANUP_READY_FIFO": str(ready_fifo),
+            "LOCALOCR_TEST_PUBLISH_READY_FIFO": str(ready_fifo),
         }
     )
     process = subprocess.Popen(
@@ -3198,6 +3295,24 @@ def test_release_candidate_rejects_network_frameworks(
     assert "network framework dependency is forbidden" in result.stderr
 
 
+@pytest.mark.parametrize("script", ("stage", "verify"))
+@pytest.mark.parametrize(
+    "install_name",
+    (
+        "/System/Library/Frameworks/Wrapper.framework/Versions/A/"
+        "CFNetwork.framework/Versions/Preview/Other",
+        "/System/Library/Frameworks/Network.framework/Versions/42/Support/Helper",
+    ),
+)
+def test_release_candidate_rejects_network_framework_components_anywhere(
+    script: str,
+    install_name: str,
+) -> None:
+    result = _run_script_test(script, "--test-install-name", install_name)
+    assert result.returncode != 0, result.stdout
+    assert "network framework dependency is forbidden" in result.stderr
+
+
 def test_shared_binary_policy_rejects_url_session_symbols(tmp_path: Path) -> None:
     binary = tmp_path / "url-session-probe"
     _compile_forbidden_url_session_symbol_fixture(binary)
@@ -3226,6 +3341,300 @@ def test_shared_binary_policy_rejects_url_session_symbols(tmp_path: Path) -> Non
     assert "network symbol is forbidden" in result.stderr
 
 
+def test_shared_binary_policy_rejects_nw_symbols(tmp_path: Path) -> None:
+    binary = tmp_path / "nw-symbol-probe"
+    _compile_forbidden_nw_symbol_fixture(binary)
+    symbols = subprocess.run(
+        ["/usr/bin/nm", "-u", str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "_nw_connection_create" in symbols
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; release_validate_binary_policy "$2" false true',
+            "shared-nw-symbol-policy",
+            str(RELEASE_SCRIPTS["toolchain"]),
+            str(binary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "network symbol is forbidden" in result.stderr
+
+
+def test_shared_binary_policy_rejects_non_macos_build_platform(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "ios-platform-probe"
+    _compile_ios_fixture(binary)
+    load_commands = subprocess.run(
+        ["/usr/bin/otool", "-l", str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert re.search(r"(?m)^\s*platform 2$", load_commands)
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; release_validate_binary_policy "$2" false true',
+            "shared-platform-policy",
+            str(RELEASE_SCRIPTS["toolchain"]),
+            str(binary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "LC_BUILD_VERSION platform must be macOS" in result.stderr
+
+
+def test_shared_build_version_parser_rejects_multiple_records() -> None:
+    duplicate_records = """
+Load command 1
+      cmd LC_BUILD_VERSION
+ platform 1
+    minos 14.0
+      sdk 26.0
+Load command 2
+      cmd LC_BUILD_VERSION
+ platform 1
+    minos 14.0
+      sdk 26.0
+"""
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; release_parse_build_version_text "$2"',
+            "shared-build-version-policy",
+            str(RELEASE_SCRIPTS["toolchain"]),
+            duplicate_records,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "exactly one LC_BUILD_VERSION" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "marker",
+    (
+        "/tmp/localocr-build/object.o",
+        "/private/var/project/DerivedData/Build/Product",
+        "/private/var/project/.build/release/localocr",
+        "/private/var/worktrees/localocr/checkout/Sources/File.swift",
+    ),
+)
+def test_shared_binary_policy_rejects_private_and_build_path_markers(
+    tmp_path: Path,
+    marker: str,
+) -> None:
+    binary = tmp_path / "path-marker-probe"
+    _compile_macos_embedded_marker_fixture(binary, marker)
+    assert marker in subprocess.run(
+        ["/usr/bin/strings", "-a", str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; release_validate_binary_policy "$2" false true',
+            "shared-private-path-policy",
+            str(RELEASE_SCRIPTS["toolchain"]),
+            str(binary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "private or build path marker" in result.stderr
+
+
+def test_shared_binary_policy_allows_legitimate_system_paths(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "system-path-probe"
+    _compile_macos_embedded_marker_fixture(
+        binary,
+        "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+    )
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; release_validate_binary_policy "$2" false true',
+            "shared-system-path-policy",
+            str(RELEASE_SCRIPTS["toolchain"]),
+            str(binary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_stage_source_preflight_preserves_known_good_direct_release(
+    tmp_path: Path,
+    real_unsigned_studio_app: Path,
+) -> None:
+    copy = _copy_release_policy_repo(tmp_path)
+    known_good = copy / "dist" / "direct-release" / "known-good.txt"
+    known_good.parent.mkdir(parents=True)
+    known_good.write_text("preserve known-good direct release")
+    source_path = copy / "Sources" / "MCPStdio" / "MCPStdio.swift"
+    source_path.write_text(source_path.read_text() + "\npublic let drift = true\n")
+    environment = _real_app_stage_environment(real_unsigned_studio_app)
+
+    result = subprocess.run(
+        [str(copy / "scripts" / "stage-direct-release.sh")],
+        cwd=copy,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "MCP stdio source policy rejected" in result.stderr
+    assert known_good.read_text() == "preserve known-good direct release"
+
+
+def test_stage_candidate_policy_failure_preserves_known_good_direct_release(
+    tmp_path: Path,
+    real_unsigned_studio_app: Path,
+) -> None:
+    copy = _copy_release_policy_repo(tmp_path)
+    known_good = copy / "dist" / "direct-release" / "known-good.txt"
+    known_good.parent.mkdir(parents=True)
+    known_good.write_text("preserve validated direct release")
+    source_fixture = tmp_path / "source" / "localocr"
+    source_fixture.parent.mkdir()
+    _compile_macos_embedded_marker_fixture(
+        source_fixture,
+        "/tmp/forbidden-stage-native-build/object.o",
+    )
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    swift_stub = stub_bin / "swift"
+    swift_stub.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "package" && "$2" == "clean" ]]; then exit 0; fi
+if [[ "$1" == "build" ]]; then
+    product="${!#}"
+    mkdir -p .build/release
+    cp "${LOCALOCR_TEST_SOURCE_BINARY:?}" ".build/release/$product"
+    exit 0
+fi
+exit 64
+"""
+    )
+    swift_stub.chmod(0o755)
+    environment = _real_app_stage_environment(real_unsigned_studio_app)
+    environment.update(
+        {
+            "PATH": f"{stub_bin}:/usr/bin:/bin",
+            "LOCALOCR_TEST_SOURCE_BINARY": str(source_fixture),
+        }
+    )
+
+    result = subprocess.run(
+        [str(copy / "scripts" / "stage-direct-release.sh")],
+        cwd=copy,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "private or build path marker" in result.stderr
+    assert known_good.read_text() == "preserve validated direct release"
+    assert not list((copy / "dist").glob(".direct-release.candidate.*"))
+
+
+def test_native_candidate_policy_failure_preserves_known_good_artifacts(
+    tmp_path: Path,
+) -> None:
+    isolated_repo = tmp_path / "repo"
+    isolated_scripts = isolated_repo / "scripts"
+    artifacts = isolated_repo / "dist" / "native-tools"
+    stub_bin = tmp_path / "bin"
+    isolated_scripts.mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    stub_bin.mkdir()
+    known_good = artifacts / "known-good.txt"
+    known_good.write_text("preserve known-good native artifacts")
+    shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
+    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
+    shutil.copy2(RELEASE_PATH_GUARD, isolated_scripts)
+    source_fixture = tmp_path / "source" / "localocr"
+    source_fixture.parent.mkdir()
+    _compile_macos_embedded_marker_fixture(
+        source_fixture,
+        "/tmp/forbidden-native-build-root/object.o",
+    )
+    swift_stub = stub_bin / "swift"
+    swift_stub.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "package" && "$2" == "clean" ]]; then exit 0; fi
+if [[ "$1" == "build" ]]; then
+    product="${!#}"
+    mkdir -p .build/release
+    cp "${LOCALOCR_TEST_SOURCE_BINARY:?}" ".build/release/$product"
+    exit 0
+fi
+exit 64
+"""
+    )
+    swift_stub.chmod(0o755)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{stub_bin}:/usr/bin:/bin",
+            "LOCALOCR_TEST_SOURCE_BINARY": str(source_fixture),
+        }
+    )
+
+    result = subprocess.run(
+        [str(isolated_scripts / "build-native-tools.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "private or build path marker" in result.stderr
+    assert known_good.read_text() == "preserve known-good native artifacts"
+
+
 def test_candidate_build_scripts_apply_local_intelligence_binary_policy() -> None:
     native = (SCRIPTS / "build-native-tools.sh").read_text()
     studio = BUILD_UNSIGNED_STUDIO_APP.read_text()
@@ -3237,8 +3646,16 @@ def test_candidate_build_scripts_apply_local_intelligence_binary_policy() -> Non
         'validate_no_network_framework_dependency "$native_release_dir/$product"'
     )
     assert source_network_validation in native
-    assert native.index(source_network_validation) < native.rindex(
-        "replace_artifact_output_with_empty_directory"
+    source_preflight = 'release_validate_mcp_source_policy "$repo_root"'
+    candidate_creation = "\ncreate_artifact_candidate\n"
+    assert source_preflight in native
+    assert candidate_creation in native
+    assert native.index(source_preflight) < native.index(candidate_creation)
+    assert native.index(source_network_validation) < native.index(
+        candidate_creation
+    )
+    assert native.rindex("validate_local_intelligence_candidate_binary") < native.rindex(
+        "publish_artifact_candidate"
     )
     for script in (native, studio):
         assert "release_validate_binary_policy" in script
