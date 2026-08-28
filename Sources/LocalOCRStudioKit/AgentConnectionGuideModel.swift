@@ -53,9 +53,9 @@ public final class AgentConnectionGuideModel {
     summarize_document, organize_document, and extract_document_fields require Apple Foundation Models: macOS 26 or later, an eligible Mac, Apple Intelligence enabled, the on-device model ready, and a currently supported Apple Intelligence language. The six OCR and PDF tools remain available when Local Intelligence is unavailable.
     """
     public let safeExamplePrompts = [
-        "Inspect /Users/Shared/LocalOCR Test Files/test-invoice.pdf and report only its page count and whether it already has searchable text.",
-        "OCR /Users/Shared/LocalOCR Test Files/test-scan.png and return only the recognized text.",
-        "Summarize /Users/Shared/LocalOCR Test Files/test-letter.pdf in three factual bullets using Local Intelligence.",
+        "Inspect /path/to/test-invoice.pdf and report only its page count and whether it already has searchable text.",
+        "OCR /path/to/test-scan.png and return only the recognized text.",
+        "Summarize /path/to/test-letter.pdf in three factual bullets using Local Intelligence.",
     ]
     public var disclosure: String { Self.externalDataDisclosure }
     public var externalProviderRiskAcknowledgment: String {

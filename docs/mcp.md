@@ -348,9 +348,9 @@ documentation and your account settings before using sensitive material.
 Use a fictional, non-sensitive fixture in a folder the client can read, and
 request a narrow result. For example:
 
-- “Inspect `/Users/Shared/LocalOCR Test Files/test-invoice.pdf` and report only its page count and whether it already has searchable text.”
-- “OCR `/Users/Shared/LocalOCR Test Files/test-scan.png` and return only the recognized text.”
-- “Summarize `/Users/Shared/LocalOCR Test Files/test-letter.pdf` in three factual bullets using Local Intelligence.”
+- “Inspect `/path/to/test-invoice.pdf` and report only its page count and whether it already has searchable text.”
+- “OCR `/path/to/test-scan.png` and return only the recognized text.”
+- “Summarize `/path/to/test-letter.pdf` in three factual bullets using Local Intelligence.”
 
 Keep the original document. OCR and model outputs can contain recognition or
 interpretation errors, and beta output contracts may change. The read-only
