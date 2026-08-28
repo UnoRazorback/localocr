@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -148,6 +149,38 @@ def _run_policy(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]
         check=False,
         capture_output=True,
         text=True,
+    )
+
+
+def _run_policy_with_package_dump(
+    root: Path,
+    tmp_path: Path,
+    package_dump: dict[str, object],
+) -> subprocess.CompletedProcess[str]:
+    validator = tmp_path / "validate-mcp-stdio-policy.py"
+    xcrun_stub = tmp_path / "xcrun"
+    dump_path = tmp_path / "package-dump.json"
+    validator_text = POLICY_VALIDATOR.read_text()
+    xcrun_literal = json.dumps(str(xcrun_stub))
+    assert '"/usr/bin/xcrun"' in validator_text
+    validator.write_text(
+        validator_text.replace('"/usr/bin/xcrun"', xcrun_literal, 1)
+    )
+    dump_path.write_text(json.dumps(package_dump))
+    xcrun_stub.write_text(
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        '/bin/cat "${LOCALOCR_TEST_PACKAGE_DUMP:?}"\n'
+    )
+    xcrun_stub.chmod(0o755)
+    environment = os.environ.copy()
+    environment["LOCALOCR_TEST_PACKAGE_DUMP"] = str(dump_path)
+    return subprocess.run(
+        [sys.executable, str(validator), "--repo-root", str(root)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
     )
 
 
@@ -517,6 +550,56 @@ def test_canonical_policy_freezes_target_dependencies_and_build_settings(
 
     assert result.returncode != 0
     assert "target policy changed" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("branch", "revision", "range", "trait", "product_filter"),
+)
+def test_canonical_policy_freezes_complete_package_dependency_records(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    copy = _copied_tree(tmp_path)
+    dump_result = subprocess.run(
+        [
+            "/usr/bin/xcrun",
+            "--toolchain",
+            "XcodeDefault.xctoolchain",
+            "swift",
+            "package",
+            "dump-package",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
+        },
+    )
+    package_dump = json.loads(dump_result.stdout)
+    dependency = package_dump["dependencies"][0]["sourceControl"][0]
+    if mutation == "branch":
+        dependency["requirement"] = {"branch": ["release-policy-drift"]}
+    elif mutation == "revision":
+        dependency["requirement"] = {"revision": ["0" * 40]}
+    elif mutation == "range":
+        dependency["requirement"] = {
+            "range": [{"lowerBound": "1.0.0", "upperBound": "3.0.0"}]
+        }
+    elif mutation == "trait":
+        dependency["traits"] = [{"name": "Networking"}]
+    elif mutation == "product_filter":
+        dependency["productFilter"] = {"specific": ["ArgumentParser"]}
+    else:  # pragma: no cover - parametrization is closed above.
+        raise AssertionError(mutation)
+
+    result = _run_policy_with_package_dump(copy, tmp_path, package_dump)
+
+    assert result.returncode != 0, mutation
+    assert "package dependency records changed" in result.stderr
 
 
 def test_canonical_policy_freezes_resolved_identity_version_revision_state(

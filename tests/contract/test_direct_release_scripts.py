@@ -130,6 +130,47 @@ def _copy_release_policy_repo(tmp_path: Path) -> Path:
     return copy
 
 
+def _install_stable_swift_fixture(repo: Path, swift_fixture: Path) -> Path:
+    developer_dir = repo / ".test-stable-xcode" / "Contents" / "Developer"
+    stable_swift = (
+        developer_dir
+        / "Toolchains"
+        / "XcodeDefault.xctoolchain"
+        / "usr"
+        / "bin"
+        / "swift"
+    )
+    stable_swift.parent.mkdir(parents=True)
+    shutil.copy2(swift_fixture, stable_swift)
+    stable_swift.chmod(0o755)
+    xcrun_fixture = developer_dir / "usr" / "bin" / "xcrun"
+    xcrun_fixture.parent.mkdir(parents=True)
+    xcrun_fixture.write_text(
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        'tool="${1:-}"\n'
+        "shift\n"
+        "unset DEVELOPER_DIR\n"
+        'exec /usr/bin/xcrun "$tool" "$@"\n'
+    )
+    xcrun_fixture.chmod(0o755)
+    xcodebuild_fixture = developer_dir / "usr" / "bin" / "xcodebuild"
+    xcodebuild_fixture.write_text(
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        "unset DEVELOPER_DIR\n"
+        'exec /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild "$@"\n'
+    )
+    xcodebuild_fixture.chmod(0o755)
+    toolchain = repo / "scripts" / "release-toolchain.sh"
+    source = toolchain.read_text()
+    original = 'release_developer_dir="/Applications/Xcode.app/Contents/Developer"'
+    replacement = f'release_developer_dir={shlex.quote(str(developer_dir))}'
+    assert original in source
+    toolchain.write_text(source.replace(original, replacement, 1))
+    return stable_swift
+
+
 def _run_script_test(
     script: str,
     mode: str,
@@ -2797,6 +2838,7 @@ exit 64
     )
     swift_stub.chmod(0o755)
 
+    _install_stable_swift_fixture(isolated_repo, swift_stub)
     default_output = isolated_repo / "dist" / "native-tools"
     explicit_output = direct_release_root / "native-tools"
     expected_output = explicit_output if use_explicit_artifact_dir else default_output
@@ -2891,6 +2933,7 @@ exit 64
 """
     )
     swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(isolated_repo, swift_stub)
     output = direct_release_root / "native-tools"
     env = os.environ.copy()
     env.update(
@@ -2961,6 +3004,7 @@ exit 64
 """
     )
     swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(isolated_repo, swift_stub)
     env = os.environ.copy()
     env.update(
         {
@@ -3024,6 +3068,7 @@ exit 64
 """
     )
     swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(isolated_repo, swift_stub)
     env = os.environ.copy()
     env.update(
         {
@@ -3084,6 +3129,7 @@ exit 64
 """
     )
     swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(isolated_repo, swift_stub)
     env = os.environ.copy()
     env["PATH"] = f"{stub_bin}:/usr/bin:/bin"
     env["LOCALOCR_TEST_SOURCE_BINARY"] = str(source_fixture)
@@ -3145,6 +3191,7 @@ exit 64
 """
     )
     swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(isolated_repo, swift_stub)
     env = os.environ.copy()
     env.update(
         {
@@ -3217,6 +3264,7 @@ exit 64
 """
     )
     swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(isolated_repo, swift_stub)
     ready_fifo = tmp_path / "native-publish-ready.fifo"
     os.mkfifo(ready_fifo)
     ready_descriptor = os.open(ready_fifo, os.O_RDWR | os.O_NONBLOCK)
@@ -3555,6 +3603,7 @@ exit 64
 """
     )
     swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(copy, swift_stub)
     environment = _real_app_stage_environment(real_unsigned_studio_app)
     environment.update(
         {
@@ -3614,6 +3663,7 @@ exit 64
 """
     )
     swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(isolated_repo, swift_stub)
     environment = os.environ.copy()
     environment.update(
         {
@@ -3681,6 +3731,7 @@ def test_native_build_rejects_source_policy_drift_before_swift_build(
         "exit 91\n"
     )
     swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(copy, swift_stub)
     environment = os.environ.copy()
     environment.update(
         {
@@ -3701,6 +3752,109 @@ def test_native_build_rejects_source_policy_drift_before_swift_build(
     assert result.returncode != 0
     assert "MCP stdio source policy rejected" in result.stderr
     assert not build_marker.exists(), "Swift build began before source policy passed"
+
+
+def test_native_build_uses_stable_xcode_swift_when_path_is_shadowed(
+    tmp_path: Path,
+) -> None:
+    stub_directory = tmp_path / "shadow-bin"
+    stub_directory.mkdir()
+    shim_marker = tmp_path / "path-swift-was-invoked"
+    swift_shim = stub_directory / "swift"
+    swift_shim.write_text(
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        ': > "${LOCALOCR_TEST_PATH_SWIFT_MARKER:?}"\n'
+        "exit 97\n"
+    )
+    swift_shim.chmod(0o755)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{stub_directory}:/usr/bin:/bin",
+            "LOCALOCR_TEST_PATH_SWIFT_MARKER": str(shim_marker),
+        }
+    )
+
+    result = subprocess.run(
+        [str(SCRIPTS / "build-native-tools.sh")],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=300,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not shim_marker.exists(), "native build selected swift from PATH"
+
+
+def test_native_build_rejects_post_build_pin_drift_before_atomic_publication(
+    tmp_path: Path,
+) -> None:
+    copy = _copy_release_policy_repo(tmp_path)
+    artifacts = copy / "dist" / "native-tools"
+    artifacts.mkdir(parents=True)
+    known_good = artifacts / "known-good.txt"
+    known_good.write_text("preserve resolved native artifacts")
+    source_fixture = tmp_path / "source" / "localocr"
+    source_fixture.parent.mkdir()
+    _compile_macos_fixture(
+        source_fixture,
+        architecture="arm64",
+        minimum_macos="14.0",
+    )
+    stub_directory = tmp_path / "stub-bin"
+    stub_directory.mkdir()
+    swift_stub = stub_directory / "swift"
+    swift_stub.write_text(
+        """#!/bin/bash
+set -euo pipefail
+if [[ "$1" == "package" && "$2" == "clean" ]]; then exit 0; fi
+if [[ "$1" == "build" ]]; then
+    case " $* " in
+        *" --disable-automatic-resolution "*) ;;
+        *) echo "build did not require immutable package resolution" >&2; exit 92 ;;
+    esac
+    product="${!#}"
+    mkdir -p .build/release
+    cp "${LOCALOCR_TEST_SOURCE_BINARY:?}" ".build/release/$product"
+    if [[ "$product" == "localocr-mcp" ]]; then
+        /usr/bin/sed -i '' \
+            's/6a52f3251125d74daf04fcbd5e6f08a75d074382/0000000000000000000000000000000000000000/' \
+            "${LOCALOCR_TEST_RESOLVED_PATH:?}"
+    fi
+    exit 0
+fi
+echo "unexpected stable Swift invocation: $*" >&2
+exit 64
+"""
+    )
+    swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(copy, swift_stub)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{stub_directory}:/usr/bin:/bin",
+            "LOCALOCR_TEST_SOURCE_BINARY": str(source_fixture),
+            "LOCALOCR_TEST_RESOLVED_PATH": str(copy / "Package.resolved"),
+        }
+    )
+
+    result = subprocess.run(
+        [str(copy / "scripts" / "build-native-tools.sh")],
+        cwd=copy,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "resolved package pin state changed" in result.stderr
+    assert known_good.read_text() == "preserve resolved native artifacts"
+    assert not list((copy / "dist").glob(".native-tools.candidate.*"))
 
 
 def test_verifier_reads_complete_build_version_output_under_pipefail() -> None:

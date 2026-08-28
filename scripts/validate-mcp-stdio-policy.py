@@ -57,11 +57,57 @@ FORBIDDEN_SHIPPING_NETWORK_SOURCE = (
     FORBIDDEN_NETWORK_SOURCE[7],
 )
 FORBIDDEN_SWIFT_IMPORTS = {"CFNetwork", "Network", "FoundationNetworking"}
-APPROVED_REMOTE_PACKAGES = {
-    "swift-argument-parser": "https://github.com/apple/swift-argument-parser",
-    "swift-system": "https://github.com/apple/swift-system.git",
-    "swift-log": "https://github.com/apple/swift-log.git",
-}
+EXPECTED_PACKAGE_DEPENDENCIES = [
+    {
+        "sourceControl": [
+            {
+                "identity": "swift-argument-parser",
+                "location": {
+                    "remote": [
+                        {"urlString": "https://github.com/apple/swift-argument-parser"}
+                    ]
+                },
+                "productFilter": None,
+                "requirement": {"exact": ["1.8.2"]},
+                "traits": [{"name": "default"}],
+            }
+        ]
+    },
+    {
+        "sourceControl": [
+            {
+                "identity": "swift-system",
+                "location": {
+                    "remote": [
+                        {"urlString": "https://github.com/apple/swift-system.git"}
+                    ]
+                },
+                "productFilter": None,
+                "requirement": {
+                    "range": [{"lowerBound": "1.0.0", "upperBound": "2.0.0"}]
+                },
+                "traits": [{"name": "default"}],
+            }
+        ]
+    },
+    {
+        "sourceControl": [
+            {
+                "identity": "swift-log",
+                "location": {
+                    "remote": [
+                        {"urlString": "https://github.com/apple/swift-log.git"}
+                    ]
+                },
+                "productFilter": None,
+                "requirement": {
+                    "range": [{"lowerBound": "1.5.0", "upperBound": "2.0.0"}]
+                },
+                "traits": [{"name": "default"}],
+            }
+        ]
+    },
+]
 APPROVED_MCP_STDIO_PRODUCTS = {
     ("SystemPackage", "swift-system"),
     ("Logging", "swift-log"),
@@ -505,22 +551,6 @@ def validate_vendor(repo_root: Path) -> None:
             require(pattern.search(source) is None, f"forbidden source API in {relative_path}: {pattern.pattern}")
 
 
-def package_dependency_identity(entry: object) -> tuple[str, str]:
-    require(isinstance(entry, dict) and set(entry) == {"sourceControl"}, "non-source-control package dependency is forbidden")
-    source_control = entry["sourceControl"]
-    require(isinstance(source_control, list) and len(source_control) == 1, "invalid source-control dependency")
-    record = source_control[0]
-    require(isinstance(record, dict), "invalid source-control dependency record")
-    identity = record.get("identity")
-    location = record.get("location")
-    require(isinstance(identity, str) and isinstance(location, dict), "package identity/location is missing")
-    remote = location.get("remote")
-    require(isinstance(remote, list) and len(remote) == 1, "package dependency must use one remote URL")
-    url = remote[0].get("urlString") if isinstance(remote[0], dict) else None
-    require(isinstance(url, str), "package dependency remote URL is missing")
-    return identity, url
-
-
 def normalized_target_dependency(entry: object) -> tuple[str, ...]:
     require(isinstance(entry, dict) and len(entry) == 1, "invalid target dependency")
     if "byName" in entry:
@@ -577,10 +607,10 @@ def validate_package_policy(repo_root: Path) -> None:
     except json.JSONDecodeError as error:
         raise PolicyError(f"Swift package dump was not JSON: {error}") from error
 
-    dependency_pairs = {package_dependency_identity(entry) for entry in package.get("dependencies", [])}
+    dependencies = package.get("dependencies")
     require(
-        dependency_pairs == set(APPROVED_REMOTE_PACKAGES.items()),
-        f"remote package dependency set changed: {sorted(dependency_pairs)}",
+        dependencies == EXPECTED_PACKAGE_DEPENDENCIES,
+        "package dependency records changed",
     )
 
     targets = package.get("targets")

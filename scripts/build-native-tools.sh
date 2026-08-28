@@ -156,6 +156,7 @@ validate_artifact_output_path() {
 }
 
 release_validate_mcp_source_policy "$repo_root"
+select_release_swift_toolchain
 validate_artifact_output_path
 artifact_parent="$(/usr/bin/dirname "$artifact_dir")"
 artifact_parent_identity="$(
@@ -308,9 +309,16 @@ publish_artifact_candidate() {
 }
 
 cd "$repo_root"
-swift package clean
-swift build -c release --product localocr
-swift build -c release --product localocr-mcp
+"$release_xcode_swift_path" package clean
+"$release_xcode_swift_path" build \
+    --disable-automatic-resolution \
+    -c release \
+    --product localocr
+"$release_xcode_swift_path" build \
+    --disable-automatic-resolution \
+    -c release \
+    --product localocr-mcp
+release_validate_mcp_source_policy "$repo_root"
 
 [[ -d "$repo_root/.build" && ! -L "$repo_root/.build" ]] || {
     echo "SwiftPM build root is missing or symlinked" >&2

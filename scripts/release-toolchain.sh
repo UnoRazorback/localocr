@@ -5,6 +5,8 @@ set -euo pipefail
 release_toolchain_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 release_repo_root="$(cd "$release_toolchain_script_dir/.." && pwd)"
 release_developer_dir="/Applications/Xcode.app/Contents/Developer"
+release_xcode_toolchain_dir="$release_developer_dir/Toolchains/XcodeDefault.xctoolchain"
+release_xcode_swift_path="$release_xcode_toolchain_dir/usr/bin/swift"
 release_signing_identity="Developer ID Application: John Scott Ray (DZ8B5454ZN)"
 release_plist_buddy="/usr/libexec/PlistBuddy"
 release_xcodebuild_path=""
@@ -983,6 +985,48 @@ validate_release_developer_dir() {
             return 1
             ;;
     esac
+}
+
+select_release_swift_toolchain() {
+    local physical_developer_dir
+    local physical_swift
+    local physical_toolchain
+
+    DEVELOPER_DIR="$release_developer_dir"
+    export DEVELOPER_DIR
+    unset SDKROOT
+    validate_release_developer_dir "$DEVELOPER_DIR" || return 1
+    [[ -d "$release_developer_dir" && ! -L "$release_developer_dir" ]] || {
+        echo "stable Xcode developer directory is missing or symlinked: $release_developer_dir" >&2
+        return 1
+    }
+    physical_developer_dir="$(cd "$release_developer_dir" && pwd -P)" || return 1
+    validate_release_developer_dir "$physical_developer_dir" || return 1
+    [[ -d "$release_xcode_toolchain_dir" && ! -L "$release_xcode_toolchain_dir" ]] || {
+        echo "stable Xcode default toolchain is missing or symlinked: $release_xcode_toolchain_dir" >&2
+        return 1
+    }
+    physical_toolchain="$(cd "$release_xcode_toolchain_dir" && pwd -P)" || return 1
+    [[ "$physical_toolchain" == "$release_xcode_toolchain_dir" ]] || {
+        echo "stable Xcode default toolchain resolved unexpectedly" >&2
+        return 1
+    }
+    [[ -x "$release_xcode_swift_path" ]] || {
+        echo "stable Xcode Swift executable is unavailable: $release_xcode_swift_path" >&2
+        return 1
+    }
+    physical_swift="$(/bin/realpath "$release_xcode_swift_path")" || return 1
+    case "$physical_swift" in
+        "$physical_toolchain/usr/bin/"*) ;;
+        *)
+            echo "stable Xcode Swift executable escaped the default toolchain" >&2
+            return 1
+            ;;
+    esac
+    [[ -f "$physical_swift" && ! -L "$physical_swift" && -x "$physical_swift" ]] || {
+        echo "stable Xcode Swift executable did not resolve to a physical executable" >&2
+        return 1
+    }
 }
 
 select_release_developer_dir() {
