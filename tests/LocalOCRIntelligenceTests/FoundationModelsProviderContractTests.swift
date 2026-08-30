@@ -31,6 +31,28 @@ import FoundationModels
         ) == .available)
     }
 
+    @Test func appleProviderReturnsTruthfulSystemDefaultProvenance() async throws {
+        guard #available(macOS 26.0, *) else { return }
+
+        let provider = FoundationModelsIntelligenceProvider(
+            availability: { .available },
+            sessionDriver: ClosureFoundationModelsSessionDriver(
+                summarize: { _ in
+                    .init(items: [
+                        .init(text: "Alpha is present.", page: 1, evidence: "Alpha fact")
+                    ])
+                }
+            )
+        )
+
+        let result = try await provider.summarize(IntelligenceDocument(pages: [
+            .init(number: 1, text: "Alpha fact")
+        ]))
+
+        #expect(result.model == .appleSystemDefault)
+        #expect(result.value.text == "Alpha is present.")
+    }
+
     @Test func unavailableProviderReportsAndThrowsItsReason() async {
         let provider = UnavailableIntelligenceProvider(.requiresMacOS26)
 
@@ -58,13 +80,12 @@ import FoundationModels
         )
         let provider = FoundationModelsIntelligenceProvider(
             availability: { .available },
-            contextSize: 4_096,
             sessionDriver: driver
         )
 
         let result = try await provider.summarize(Self.document)
 
-        #expect(result == .init(
+        #expect(result.value == .init(
             text: "Alpha is present.\n\nBeta is present.",
             citations: [
                 .init(page: 1, quote: "Alpha fact"),
@@ -97,13 +118,12 @@ import FoundationModels
         )
         let provider = FoundationModelsIntelligenceProvider(
             availability: { .available },
-            contextSize: 4_096,
             sessionDriver: driver
         )
 
         let result = try await provider.organize(Self.document)
 
-        #expect(result == .init(
+        #expect(result.value == .init(
             title: "Alpha",
             category: "Facts",
             tags: ["alpha", "beta"],
@@ -128,12 +148,11 @@ import FoundationModels
         )
         let provider = FoundationModelsIntelligenceProvider(
             availability: { .available },
-            contextSize: 4_096,
             sessionDriver: driver
         )
 
         let result = try await provider.summarize(Self.document)
-        let statements = result.text.components(separatedBy: "\n\n")
+        let statements = result.value.text.components(separatedBy: "\n\n")
 
         #expect(statements.count == 12)
         #expect(statements.first == "Page 1 item 1.")
@@ -158,13 +177,12 @@ import FoundationModels
         )
         let provider = FoundationModelsIntelligenceProvider(
             availability: { .available },
-            contextSize: 4_096,
             sessionDriver: driver
         )
 
         let result = try await provider.organize(Self.document)
 
-        #expect(result.tags == ["p1-1", "p1-2", "p1-3", "p1-4", "p2-1"])
+        #expect(result.value.tags == ["p1-1", "p1-2", "p1-3", "p1-4", "p2-1"])
     }
 
     @Test func extractionReturnsEveryRequestedNameOnceInInputOrderAndNullsUngroundedValues() async throws {
@@ -181,7 +199,6 @@ import FoundationModels
         )
         let provider = FoundationModelsIntelligenceProvider(
             availability: { .available },
-            contextSize: 4_096,
             sessionDriver: driver
         )
         let document = IntelligenceDocument(pages: [
@@ -190,7 +207,7 @@ import FoundationModels
 
         let result = try await provider.extract(["total", "date", "missing"], from: document)
 
-        #expect(result == [
+        #expect(result.value == [
             .init(name: "total", value: nil, sourcePage: nil, evidence: nil),
             .init(name: "date", value: "2026-08-27", sourcePage: 1, evidence: "Date: 2026-08-27"),
             .init(name: "missing", value: nil, sourcePage: nil, evidence: nil)
@@ -221,7 +238,6 @@ import FoundationModels
         )
         let provider = FoundationModelsIntelligenceProvider(
             availability: { .available },
-            contextSize: 4_096,
             sessionDriver: driver
         )
         let document = IntelligenceDocument(pages: [
@@ -230,7 +246,7 @@ import FoundationModels
 
         let result = try await provider.extract(["invoiceDate", "total"], from: document)
 
-        #expect(result.first == .init(
+        #expect(result.value.first == .init(
             name: "invoiceDate",
             value: "2026-08-27",
             sourcePage: 1,
@@ -258,7 +274,6 @@ import FoundationModels
         )
         let provider = FoundationModelsIntelligenceProvider(
             availability: { .available },
-            contextSize: 4_096,
             sessionDriver: driver
         )
         let document = IntelligenceDocument(pages: [
@@ -270,7 +285,7 @@ import FoundationModels
             from: document
         )
 
-        #expect(result == [
+        #expect(result.value == [
             .init(name: "total", value: "$42.00", sourcePage: 1, evidence: "Total: $42.00"),
             .init(name: "date", value: "2026-08-27", sourcePage: 1, evidence: "Date: 2026-08-27")
         ])
@@ -282,7 +297,6 @@ import FoundationModels
 
         let provider = FoundationModelsIntelligenceProvider(
             availability: { .available },
-            contextSize: 4_096,
             sessionDriver: ClosureFoundationModelsSessionDriver()
         )
 
@@ -296,7 +310,6 @@ import FoundationModels
 
         let provider = FoundationModelsIntelligenceProvider(
             availability: { .modelNotReady },
-            contextSize: 4_096,
             sessionDriver: ClosureFoundationModelsSessionDriver()
         )
 
@@ -314,7 +327,6 @@ import FoundationModels
         )
         let provider = FoundationModelsIntelligenceProvider(
             availability: { .available },
-            contextSize: 4_096,
             sessionDriver: driver
         )
 
@@ -329,7 +341,6 @@ import FoundationModels
         let driver = SuspendedSuccessSessionDriver()
         let provider = FoundationModelsIntelligenceProvider(
             availability: { .available },
-            contextSize: 4_096,
             sessionDriver: driver
         )
         let document = IntelligenceDocument(pages: [
@@ -354,7 +365,6 @@ import FoundationModels
         let driver = OverflowOnceSessionDriver()
         let provider = FoundationModelsIntelligenceProvider(
             availability: { .available },
-            contextSize: 4_096,
             sessionDriver: driver
         )
         let document = IntelligenceDocument(pages: [
@@ -363,7 +373,7 @@ import FoundationModels
 
         let result = try await provider.summarize(document)
 
-        #expect(result.text == "First half.\n\nSecond half.")
+        #expect(result.value.text == "First half.\n\nSecond half.")
         #expect(await driver.callCount == 3)
     }
 
@@ -376,7 +386,6 @@ import FoundationModels
         )
         let provider = FoundationModelsIntelligenceProvider(
             availability: { .available },
-            contextSize: 4_096,
             sessionDriver: driver
         )
         let document = IntelligenceDocument(pages: [
@@ -385,7 +394,7 @@ import FoundationModels
 
         let result = try await provider.summarize(document)
 
-        #expect(!result.text.isEmpty)
+        #expect(!result.value.text.isEmpty)
         #expect(await driver.acceptedPromptCount > 1)
     }
 
@@ -403,7 +412,6 @@ import FoundationModels
         )
         let provider = FoundationModelsIntelligenceProvider(
             availability: { .available },
-            contextSize: 4_096,
             sessionDriver: driver
         )
         let document = IntelligenceDocument(pages: [
@@ -412,7 +420,7 @@ import FoundationModels
 
         let result = try await provider.extract([longName], from: document)
 
-        #expect(result == [
+        #expect(result.value == [
             .init(name: longName, value: nil, sourcePage: nil, evidence: nil)
         ])
     }
@@ -438,11 +446,11 @@ import FoundationModels
             ])
         )
 
-        #expect(result.count == 1)
-        #expect(result.first?.name == "total")
-        #expect(result.first?.value == "$42.00")
-        #expect(result.first?.sourcePage == 1)
-        #expect(result.first?.evidence != nil)
+        #expect(result.value.count == 1)
+        #expect(result.value.first?.name == "total")
+        #expect(result.value.first?.value == "$42.00")
+        #expect(result.value.first?.sourcePage == 1)
+        #expect(result.value.first?.evidence != nil)
     }
 
     @Test func liveSmokeGateRequiresBothExplicitOptInAndMacOS26() {
@@ -472,39 +480,41 @@ private enum FoundationModelsLiveSmokeGate {
 }
 
 @available(macOS 26.0, *)
-private struct ClosureFoundationModelsSessionDriver: FoundationModelsSessionDriving {
-    private let summarizeClosure: @Sendable (String) async throws -> FoundationModelsGeneratedSummary
-    private let organizeClosure: @Sendable (String) async throws -> FoundationModelsGeneratedOrganization
-    private let extractClosure: @Sendable ([String], String) async throws -> FoundationModelsGeneratedExtraction
+private struct ClosureFoundationModelsSessionDriver: StructuredIntelligenceSessionDriving {
+    let contextSize = 4_096
+    private let summarizeClosure: @Sendable (String) async throws -> GeneratedSummary
+    private let organizeClosure: @Sendable (String) async throws -> GeneratedOrganization
+    private let extractClosure: @Sendable ([String], String) async throws -> GeneratedExtraction
 
     init(
-        summarize: @escaping @Sendable (String) async throws -> FoundationModelsGeneratedSummary = { _ in .init(items: []) },
-        organize: @escaping @Sendable (String) async throws -> FoundationModelsGeneratedOrganization = { _ in .init(title: nil, category: nil, tags: []) },
-        extract: @escaping @Sendable ([String], String) async throws -> FoundationModelsGeneratedExtraction = { _, _ in .init(fields: []) }
+        summarize: @escaping @Sendable (String) async throws -> GeneratedSummary = { _ in .init(items: []) },
+        organize: @escaping @Sendable (String) async throws -> GeneratedOrganization = { _ in .init(title: nil, category: nil, tags: []) },
+        extract: @escaping @Sendable ([String], String) async throws -> GeneratedExtraction = { _, _ in .init(fields: []) }
     ) {
         self.summarizeClosure = summarize
         self.organizeClosure = organize
         self.extractClosure = extract
     }
 
-    func summarize(prompt: String) async throws -> FoundationModelsGeneratedSummary {
+    func summarize(prompt: String) async throws -> GeneratedSummary {
         try await summarizeClosure(prompt)
     }
 
-    func organize(prompt: String) async throws -> FoundationModelsGeneratedOrganization {
+    func organize(prompt: String) async throws -> GeneratedOrganization {
         try await organizeClosure(prompt)
     }
 
-    func extract(names: [String], prompt: String) async throws -> FoundationModelsGeneratedExtraction {
+    func extract(names: [String], prompt: String) async throws -> GeneratedExtraction {
         try await extractClosure(names, prompt)
     }
 }
 
 @available(macOS 26.0, *)
-private actor OverflowOnceSessionDriver: FoundationModelsSessionDriving {
+private actor OverflowOnceSessionDriver: StructuredIntelligenceSessionDriving {
+    nonisolated let contextSize = 4_096
     private(set) var callCount = 0
 
-    func summarize(prompt: String) async throws -> FoundationModelsGeneratedSummary {
+    func summarize(prompt: String) async throws -> GeneratedSummary {
         callCount += 1
         if callCount == 1 {
             throw IntelligenceError.contextOverflow
@@ -519,17 +529,18 @@ private actor OverflowOnceSessionDriver: FoundationModelsSessionDriving {
         ])
     }
 
-    func organize(prompt: String) async throws -> FoundationModelsGeneratedOrganization {
+    func organize(prompt: String) async throws -> GeneratedOrganization {
         .init(title: nil, category: nil, tags: [])
     }
 
-    func extract(names: [String], prompt: String) async throws -> FoundationModelsGeneratedExtraction {
+    func extract(names: [String], prompt: String) async throws -> GeneratedExtraction {
         .init(fields: [])
     }
 }
 
 @available(macOS 26.0, *)
-private actor PromptLengthGuardSessionDriver: FoundationModelsSessionDriving {
+private actor PromptLengthGuardSessionDriver: StructuredIntelligenceSessionDriving {
+    nonisolated let contextSize = 4_096
     private let maximumPromptCharacters: Int
     private let overflowFirstCall: Bool
     private var callCount = 0
@@ -540,7 +551,7 @@ private actor PromptLengthGuardSessionDriver: FoundationModelsSessionDriving {
         self.overflowFirstCall = overflowFirstCall
     }
 
-    func summarize(prompt: String) async throws -> FoundationModelsGeneratedSummary {
+    func summarize(prompt: String) async throws -> GeneratedSummary {
         callCount += 1
         if overflowFirstCall && callCount == 1 {
             throw IntelligenceError.contextOverflow
@@ -554,17 +565,18 @@ private actor PromptLengthGuardSessionDriver: FoundationModelsSessionDriving {
         ])
     }
 
-    func organize(prompt: String) async throws -> FoundationModelsGeneratedOrganization {
+    func organize(prompt: String) async throws -> GeneratedOrganization {
         .init(title: nil, category: nil, tags: [])
     }
 
-    func extract(names: [String], prompt: String) async throws -> FoundationModelsGeneratedExtraction {
+    func extract(names: [String], prompt: String) async throws -> GeneratedExtraction {
         .init(fields: [])
     }
 }
 
 @available(macOS 26.0, *)
-private actor SuspendedSuccessSessionDriver: FoundationModelsSessionDriving {
+private actor SuspendedSuccessSessionDriver: StructuredIntelligenceSessionDriving {
+    nonisolated let contextSize = 4_096
     private var responseContinuation: CheckedContinuation<Void, Never>?
     private var suspensionWaiter: CheckedContinuation<Void, Never>?
 
@@ -580,7 +592,7 @@ private actor SuspendedSuccessSessionDriver: FoundationModelsSessionDriving {
         responseContinuation = nil
     }
 
-    func summarize(prompt: String) async throws -> FoundationModelsGeneratedSummary {
+    func summarize(prompt: String) async throws -> GeneratedSummary {
         await withCheckedContinuation { continuation in
             responseContinuation = continuation
             suspensionWaiter?.resume()
@@ -591,11 +603,11 @@ private actor SuspendedSuccessSessionDriver: FoundationModelsSessionDriving {
         ])
     }
 
-    func organize(prompt: String) async throws -> FoundationModelsGeneratedOrganization {
+    func organize(prompt: String) async throws -> GeneratedOrganization {
         .init(title: nil, category: nil, tags: [])
     }
 
-    func extract(names: [String], prompt: String) async throws -> FoundationModelsGeneratedExtraction {
+    func extract(names: [String], prompt: String) async throws -> GeneratedExtraction {
         .init(fields: [])
     }
 }

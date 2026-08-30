@@ -5,18 +5,22 @@ public struct UnavailableIntelligenceProvider: DocumentIntelligenceProviding {
         self.availability = availability
     }
 
-    public func summarize(_ document: IntelligenceDocument) async throws -> IntelligenceSummary {
+    public func summarize(
+        _ document: IntelligenceDocument
+    ) async throws -> ProvenancedIntelligenceResult<IntelligenceSummary> {
         throw IntelligenceError.unavailable(availability)
     }
 
-    public func organize(_ document: IntelligenceDocument) async throws -> OrganizationSuggestion {
+    public func organize(
+        _ document: IntelligenceDocument
+    ) async throws -> ProvenancedIntelligenceResult<OrganizationSuggestion> {
         throw IntelligenceError.unavailable(availability)
     }
 
     public func extract(
         _ names: [String],
         from document: IntelligenceDocument
-    ) async throws -> [ExtractedDocumentField] {
+    ) async throws -> ProvenancedIntelligenceResult<[ExtractedDocumentField]> {
         throw IntelligenceError.unavailable(availability)
     }
 }

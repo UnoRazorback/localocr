@@ -63,8 +63,9 @@ public struct MCPToolDispatcher: Sendable {
                 let document = try await textLoader.load(request.fileURL)
                 try Task.checkCancellation()
                 do {
+                    let intelligenceResult = try await intelligence.summarize(document)
                     result = objectResult(SummarizeDocumentResponse(
-                        summary: try await intelligence.summarize(document)
+                        summary: intelligenceResult.value
                     ))
                 } catch let error as IntelligenceError {
                     throw error
@@ -77,8 +78,9 @@ public struct MCPToolDispatcher: Sendable {
                 let document = try await textLoader.load(request.fileURL)
                 try Task.checkCancellation()
                 do {
+                    let intelligenceResult = try await intelligence.organize(document)
                     result = objectResult(OrganizeDocumentResponse(
-                        suggestion: try await intelligence.organize(document)
+                        suggestion: intelligenceResult.value
                     ))
                 } catch let error as IntelligenceError {
                     throw error
@@ -91,8 +93,12 @@ public struct MCPToolDispatcher: Sendable {
                 let document = try await textLoader.load(request.fileURL)
                 try Task.checkCancellation()
                 do {
+                    let intelligenceResult = try await intelligence.extract(
+                        request.fields,
+                        from: document
+                    )
                     result = objectResult(ExtractDocumentFieldsResponse(
-                        fields: try await intelligence.extract(request.fields, from: document),
+                        fields: intelligenceResult.value,
                         localModel: .appleSystemDefault
                     ))
                 } catch let error as IntelligenceError {

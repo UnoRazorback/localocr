@@ -681,36 +681,49 @@ private actor FakeIntelligenceProvider: DocumentIntelligenceProviding {
     func operationCount() -> Int { calls.count }
     func operations() -> [Operation] { calls }
 
-    func summarize(_ document: IntelligenceDocument) async throws -> IntelligenceSummary {
+    func summarize(
+        _ document: IntelligenceDocument
+    ) async throws -> ProvenancedIntelligenceResult<IntelligenceSummary> {
         calls.append(.summarize)
         try throwIfConfigured()
-        return IntelligenceSummary(
-            text: summaryText,
-            citations: [.init(page: 1, quote: "Invoice total")]
+        return ProvenancedIntelligenceResult(
+            value: IntelligenceSummary(
+                text: summaryText,
+                citations: [.init(page: 1, quote: "Invoice total")]
+            ),
+            model: .appleSystemDefault
         )
     }
 
-    func organize(_ document: IntelligenceDocument) async throws -> OrganizationSuggestion {
+    func organize(
+        _ document: IntelligenceDocument
+    ) async throws -> ProvenancedIntelligenceResult<OrganizationSuggestion> {
         calls.append(.organize)
         try throwIfConfigured()
-        return OrganizationSuggestion(
-            title: "Paid invoice",
-            category: "Finance",
-            tags: ["invoice", "paid"],
-            citations: [.init(page: 1, quote: "Invoice total")]
+        return ProvenancedIntelligenceResult(
+            value: OrganizationSuggestion(
+                title: "Paid invoice",
+                category: "Finance",
+                tags: ["invoice", "paid"],
+                citations: [.init(page: 1, quote: "Invoice total")]
+            ),
+            model: .appleSystemDefault
         )
     }
 
     func extract(
         _ names: [String],
         from document: IntelligenceDocument
-    ) async throws -> [ExtractedDocumentField] {
+    ) async throws -> ProvenancedIntelligenceResult<[ExtractedDocumentField]> {
         calls.append(.extract(names))
         try throwIfConfigured()
-        return [
-            .init(name: names[0], value: nil, sourcePage: nil, evidence: nil),
-            .init(name: names[1], value: "$19.00", sourcePage: 1, evidence: "Total: $19.00"),
-        ]
+        return ProvenancedIntelligenceResult(
+            value: [
+                .init(name: names[0], value: nil, sourcePage: nil, evidence: nil),
+                .init(name: names[1], value: "$19.00", sourcePage: 1, evidence: "Total: $19.00"),
+            ],
+            model: .appleSystemDefault
+        )
     }
 
     private func throwIfConfigured() throws {

@@ -84,7 +84,7 @@ public final class StudioIntelligenceViewModel {
                 let result = try await provider.summarize(context.document)
                 try Task.checkCancellation()
                 self?.finishSummary(
-                    .result(result),
+                    .result(result.value),
                     generation: context.generation,
                     operationID: operationID
                 )
@@ -127,7 +127,7 @@ public final class StudioIntelligenceViewModel {
                 let result = try await provider.organize(context.document)
                 try Task.checkCancellation()
                 self?.finishOrganization(
-                    .result(result),
+                    .result(result.value),
                     generation: context.generation,
                     operationID: operationID
                 )
@@ -173,7 +173,7 @@ public final class StudioIntelligenceViewModel {
                 )
                 try Task.checkCancellation()
                 self?.finishFields(
-                    .result(result),
+                    .result(result.value),
                     generation: context.generation,
                     operationID: operationID
                 )

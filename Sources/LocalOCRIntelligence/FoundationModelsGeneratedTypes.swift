@@ -1,40 +1,41 @@
-struct FoundationModelsGeneratedFact: Sendable, Equatable {
+protocol StructuredIntelligenceSessionDriving: Sendable {
+    var contextSize: Int { get }
+    func summarize(prompt: String) async throws -> GeneratedSummary
+    func organize(prompt: String) async throws -> GeneratedOrganization
+    func extract(names: [String], prompt: String) async throws -> GeneratedExtraction
+}
+
+struct GeneratedFact: Sendable, Equatable {
     let value: String
     let page: Int
     let evidence: String
 }
 
-struct FoundationModelsGeneratedSummaryItem: Sendable, Equatable {
+struct GeneratedSummaryItem: Sendable, Equatable {
     let text: String
     let page: Int
     let evidence: String
 }
 
-struct FoundationModelsGeneratedSummary: Sendable, Equatable {
-    let items: [FoundationModelsGeneratedSummaryItem]
+struct GeneratedSummary: Sendable, Equatable {
+    let items: [GeneratedSummaryItem]
 }
 
-struct FoundationModelsGeneratedOrganization: Sendable, Equatable {
-    let title: FoundationModelsGeneratedFact?
-    let category: FoundationModelsGeneratedFact?
-    let tags: [FoundationModelsGeneratedFact]
+struct GeneratedOrganization: Sendable, Equatable {
+    let title: GeneratedFact?
+    let category: GeneratedFact?
+    let tags: [GeneratedFact]
 }
 
-struct FoundationModelsGeneratedField: Sendable, Equatable {
+struct GeneratedField: Sendable, Equatable {
     let name: String
     let value: String?
     let page: Int?
     let evidence: String?
 }
 
-struct FoundationModelsGeneratedExtraction: Sendable, Equatable {
-    let fields: [FoundationModelsGeneratedField]
-}
-
-protocol FoundationModelsSessionDriving: Sendable {
-    func summarize(prompt: String) async throws -> FoundationModelsGeneratedSummary
-    func organize(prompt: String) async throws -> FoundationModelsGeneratedOrganization
-    func extract(names: [String], prompt: String) async throws -> FoundationModelsGeneratedExtraction
+struct GeneratedExtraction: Sendable, Equatable {
+    let fields: [GeneratedField]
 }
 
 #if canImport(FoundationModels)

@@ -158,38 +158,45 @@ private actor ControlledIntelligenceProvider: DocumentIntelligenceProviding {
     private var cancellations: Set<IntelligenceOperationRequest> = []
     private var cancellationWaiters: [IntelligenceOperationRequest: [CheckedContinuation<Void, Never>]] = [:]
 
-    func summarize(_ document: IntelligenceDocument) async throws -> IntelligenceSummary {
+    func summarize(
+        _ document: IntelligenceDocument
+    ) async throws -> ProvenancedIntelligenceResult<IntelligenceSummary> {
         recordedRequests.append(.summary)
         resumeRequestWaiters(.summary)
-        return try await withTaskCancellationHandler(operation: {
+        let value = try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { summaryContinuation = $0 }
         }, onCancel: {
             Task { await self.recordCancellation(.summary) }
         })
+        return ProvenancedIntelligenceResult(value: value, model: .appleSystemDefault)
     }
 
-    func organize(_ document: IntelligenceDocument) async throws -> OrganizationSuggestion {
+    func organize(
+        _ document: IntelligenceDocument
+    ) async throws -> ProvenancedIntelligenceResult<OrganizationSuggestion> {
         recordedRequests.append(.organization)
         resumeRequestWaiters(.organization)
-        return try await withTaskCancellationHandler(operation: {
+        let value = try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { organizationContinuation = $0 }
         }, onCancel: {
             Task { await self.recordCancellation(.organization) }
         })
+        return ProvenancedIntelligenceResult(value: value, model: .appleSystemDefault)
     }
 
     func extract(
         _ names: [String],
         from document: IntelligenceDocument
-    ) async throws -> [ExtractedDocumentField] {
+    ) async throws -> ProvenancedIntelligenceResult<[ExtractedDocumentField]> {
         recordedRequests.append(.fields)
         fieldNames = names
         resumeRequestWaiters(.fields)
-        return try await withTaskCancellationHandler(operation: {
+        let value = try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { fieldsContinuation = $0 }
         }, onCancel: {
             Task { await self.recordCancellation(.fields) }
         })
+        return ProvenancedIntelligenceResult(value: value, model: .appleSystemDefault)
     }
 
     func requests() -> [IntelligenceOperationRequest] { recordedRequests }
