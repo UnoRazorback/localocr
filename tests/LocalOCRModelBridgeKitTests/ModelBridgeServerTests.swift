@@ -31,16 +31,24 @@ struct ModelBridgeServerTests {
     }
 
     @Test
-    func productionCompositionKeepsLMStudioExplicitlyUnimplemented() async {
-        let http = CompositionFixtureHTTP(responses: [])
-        let handler = ModelBridgeProductionComposition.handler(http: http)
+    func productionCompositionRoutesLMStudioDiscovery() async {
+        let http = CompositionFixtureHTTP(responses: [
+            Data(
+                #"{"models":[{"type":"llm","publisher":"lmstudio-community","key":"lmstudio-community/gemma-3-4b-it-GGUF","display_name":"Gemma 3 4B IT","architecture":"gemma3","quantization":{"name":"Q4_K_M","bits_per_weight":4},"size_bytes":4294967296,"params_string":"4B","loaded_instances":[],"max_context_length":131072,"format":"gguf","capabilities":{"vision":false,"trained_for_tool_use":false},"description":null,"variants":["lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m"],"selected_variant":"lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m"}]}"#.utf8
+            )
+        ])
+        let handler = ModelBridgeProductionComposition.handler(
+            http: http,
+            lmStudioCLI: CompositionFixtureLMStudioCLI()
+        )
 
         let response = await handler.handle(.discover(id: 502, provider: .lmStudio))
 
         #expect(response.id == 502)
-        #expect(response.error?.code == .providerNotImplemented)
-        #expect(response.error?.message == "Provider adapter is not implemented.")
-        #expect(await http.endpoints.isEmpty)
+        #expect(response.candidates.map(\.identity.model) == ["lmstudio-community/gemma-3-4b-it-GGUF"])
+        #expect(response.candidates.first?.locality == .verifiedLocal)
+        #expect(response.error == nil)
+        #expect(await http.endpoints == [.lmStudioModels])
     }
 
     @Test
@@ -290,6 +298,29 @@ private actor CompositionFixtureHTTP: LoopbackHTTPPerforming {
     ) async throws -> Data {
         endpoints.append(endpoint)
         return responses.removeFirst()
+    }
+}
+
+private struct CompositionFixtureLMStudioCLI: LMStudioCLIProbing {
+    func linkStatus() async throws -> LMStudioLinkStatus {
+        LMStudioLinkStatus(enabled: false, connectedPeerCount: 0)
+    }
+
+    func localModels() async throws -> [LMStudioLocalModel] {
+        [
+            LMStudioLocalModel(
+                key: "lmstudio-community/gemma-3-4b-it-GGUF",
+                selectedVariant: "lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m",
+                architecture: "gemma3",
+                format: "gguf",
+                quantization: "Q4_K_M",
+                sizeBytes: 4_294_967_296
+            )
+        ]
+    }
+
+    func version() async throws -> String {
+        "fixture-commit"
     }
 }
 

@@ -29,20 +29,39 @@ public struct UnimplementedModelBridgeHandler: ModelBridgeHandling {
 
 public struct ModelBridgeProviderHandler: ModelBridgeHandling {
     private let ollama: OllamaBridgeAdapter
+    private let lmStudio: LMStudioBridgeAdapter?
 
-    public init(ollama: OllamaBridgeAdapter) {
+    public init(
+        ollama: OllamaBridgeAdapter,
+        lmStudio: LMStudioBridgeAdapter? = nil
+    ) {
         self.ollama = ollama
+        self.lmStudio = lmStudio
     }
 
     public func handle(_ request: ModelBridgeRequest) async -> ModelBridgeResponse {
-        guard request.provider == .ollama else {
+        switch request.provider {
+        case .ollama:
+            return await handleOllama(request)
+        case .lmStudio:
+            guard let lmStudio else {
+                return Self.errorResponse(
+                    id: request.id,
+                    code: .providerNotImplemented,
+                    message: "Provider adapter is not implemented."
+                )
+            }
+            return await handleLMStudio(request, adapter: lmStudio)
+        case .appleFoundationModels:
             return Self.errorResponse(
                 id: request.id,
                 code: .providerNotImplemented,
                 message: "Provider adapter is not implemented."
             )
         }
+    }
 
+    private func handleOllama(_ request: ModelBridgeRequest) async -> ModelBridgeResponse {
         switch request.action {
         case .discover:
             do {
@@ -93,6 +112,60 @@ public struct ModelBridgeProviderHandler: ModelBridgeHandling {
         }
     }
 
+    private func handleLMStudio(
+        _ request: ModelBridgeRequest,
+        adapter: LMStudioBridgeAdapter
+    ) async -> ModelBridgeResponse {
+        switch request.action {
+        case .discover:
+            do {
+                return ModelBridgeResponse(
+                    id: request.id,
+                    candidates: try await adapter.discover(
+                        timeoutMilliseconds: request.timeoutMilliseconds
+                    )
+                )
+            } catch {
+                return Self.errorResponse(
+                    id: request.id,
+                    code: .providerUnavailable,
+                    message: "LM Studio discovery is unavailable."
+                )
+            }
+        case .generate:
+            return await adapter.generate(request)
+        case .status:
+            guard let selectedModel = request.model else {
+                return Self.errorResponse(
+                    id: request.id,
+                    code: .invalidRequest,
+                    message: "LM Studio status requires an exact model identifier."
+                )
+            }
+            do {
+                let matches = try await adapter.discover(
+                    timeoutMilliseconds: request.timeoutMilliseconds
+                ).filter {
+                    $0.identity.model == selectedModel && $0.locality == .verifiedLocal
+                }
+                guard matches.count == 1, let candidate = matches.first else {
+                    return Self.errorResponse(
+                        id: request.id,
+                        code: .providerUnavailable,
+                        message: "Selected LM Studio model is unavailable or not verified local."
+                    )
+                }
+                return ModelBridgeResponse(id: request.id, identity: candidate.identity)
+            } catch {
+                return Self.errorResponse(
+                    id: request.id,
+                    code: .providerUnavailable,
+                    message: "LM Studio status is unavailable."
+                )
+            }
+        }
+    }
+
     private static func errorResponse(
         id: UInt64,
         code: ModelBridgeWireErrorCode,
@@ -104,9 +177,13 @@ public struct ModelBridgeProviderHandler: ModelBridgeHandling {
 
 public enum ModelBridgeProductionComposition {
     public static func handler(
-        http: any LoopbackHTTPPerforming = LoopbackHTTPClient()
+        http: any LoopbackHTTPPerforming = LoopbackHTTPClient(),
+        lmStudioCLI: any LMStudioCLIProbing = LMStudioCLIProbe()
     ) -> ModelBridgeProviderHandler {
-        ModelBridgeProviderHandler(ollama: OllamaBridgeAdapter(http: http))
+        ModelBridgeProviderHandler(
+            ollama: OllamaBridgeAdapter(http: http),
+            lmStudio: LMStudioBridgeAdapter(http: http, cli: lmStudioCLI)
+        )
     }
 }
 
