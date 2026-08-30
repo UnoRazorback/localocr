@@ -601,7 +601,7 @@ stage_direct_release() {
     trap 'cleanup_release_candidate || true' EXIT
     /bin/mkdir -p "$evidence_dir"
 
-    configure_release_developer_dir
+    configure_release_developer_dir "$release_root"
     "$stage_script_dir/build-native-tools.sh" --artifact-dir "$native_tools_dir"
     for helper in localocr localocr-mcp localocr-model-bridge; do
         [[ -f "$native_tools_dir/$helper" ]] || {

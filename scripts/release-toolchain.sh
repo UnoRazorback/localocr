@@ -1070,11 +1070,13 @@ select_release_developer_dir() {
 
 prepare_release_evidence_directory() {
     local requested_repo_root="${1:-$release_repo_root}"
+    local requested_release_dir="${2:-}"
     local physical_repo
     local dist_dir
     local release_dir
     local evidence_dir
     local directory
+    local explicit_release_dir=false
     local label
 
     [[ -d "$requested_repo_root" && ! -L "$requested_repo_root" ]] || {
@@ -1087,7 +1089,35 @@ prepare_release_evidence_directory() {
         return 1
     }
     dist_dir="$physical_repo/dist"
-    release_dir="$dist_dir/direct-release"
+    if [[ -n "$requested_release_dir" ]]; then
+        [[ "$requested_release_dir" == /* ]] || {
+            echo "release evidence directory must be absolute" >&2
+            return 1
+        }
+        case "$requested_release_dir" in
+            "$dist_dir"/.direct-release.candidate.*) ;;
+            *)
+                echo "release evidence directory must be a private direct-release candidate" >&2
+                return 1
+                ;;
+        esac
+        [[ "$(/usr/bin/dirname "$requested_release_dir")" == "$dist_dir" ]] || {
+            echo "release evidence candidate must remain directly inside dist" >&2
+            return 1
+        }
+        [[ -d "$requested_release_dir" && ! -L "$requested_release_dir" ]] || {
+            echo "release evidence candidate must be a physical directory" >&2
+            return 1
+        }
+        [[ "$(cd "$requested_release_dir" && pwd -P)" == "$requested_release_dir" ]] || {
+            echo "release evidence candidate must not escape through a symlink" >&2
+            return 1
+        }
+        release_dir="$requested_release_dir"
+        explicit_release_dir=true
+    else
+        release_dir="$dist_dir/direct-release"
+    fi
     evidence_dir="$release_dir/evidence"
 
     for directory in "$dist_dir" "$release_dir" "$evidence_dir"; do
@@ -1110,6 +1140,10 @@ prepare_release_evidence_directory() {
                 return 1
             }
         else
+            if [[ "$directory" == "$release_dir" && "$explicit_release_dir" == true ]]; then
+                echo "release evidence candidate disappeared" >&2
+                return 1
+            fi
             /bin/mkdir "$directory" || return 1
         fi
     done
@@ -1117,6 +1151,7 @@ prepare_release_evidence_directory() {
 }
 
 record_release_toolchain_evidence() {
+    local release_dir="${1:-}"
     local evidence_dir
     local version_file
     local version_file_partial
@@ -1125,7 +1160,9 @@ record_release_toolchain_evidence() {
         echo "stable Xcode must be selected before recording evidence" >&2
         return 1
     }
-    evidence_dir="$(prepare_release_evidence_directory)" || return
+    evidence_dir="$(
+        prepare_release_evidence_directory "$release_repo_root" "$release_dir"
+    )" || return
     version_file="$evidence_dir/xcode-version.txt"
     [[ ! -L "$version_file" ]] || {
         echo "Xcode evidence leaf must not be a symlink" >&2
@@ -1149,8 +1186,10 @@ record_release_toolchain_evidence() {
 }
 
 configure_release_developer_dir() {
+    local release_dir="${1:-}"
+
     select_release_developer_dir
-    record_release_toolchain_evidence
+    record_release_toolchain_evidence "$release_dir"
 }
 
 validate_release_inputs() {
