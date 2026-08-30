@@ -84,6 +84,25 @@ struct LMStudioBridgeAdapterTests {
     }
 
     @Test
+    func contradictoryOrDuplicateCLIVariantsCannotBecomeVerified() async throws {
+        let conflicts = [
+            fixtureLocalModel(changes: .init(variants: ["different@variant"])),
+            fixtureLocalModel(changes: .init(variants: [fixtureSelectedVariant, fixtureSelectedVariant])),
+            fixtureLocalModel(changes: .init(variants: nil))
+        ]
+
+        for localModel in conflicts {
+            let candidate = try #require(try await LMStudioBridgeAdapter(
+                http: FixtureLMStudioHTTP(responses: [modelsFixture]),
+                cli: FixtureLMStudioCLIProbe(snapshots: [.init(models: [localModel])])
+            ).discover().first)
+
+            #expect(candidate.locality == .unverified)
+            #expect(candidate.identity.fingerprint == nil)
+        }
+    }
+
+    @Test
     func discoveryUsesOnlyContentFreeModelsEndpointAndFixedCLIProbes() async throws {
         let http = FixtureLMStudioHTTP(responses: [modelsFixture])
         let cli = FixtureLMStudioCLIProbe()
@@ -659,6 +678,7 @@ private let fixtureInstanceID = "gemma-instance"
 
 private struct LocalModelChanges {
     var selectedVariant: String? = fixtureSelectedVariant
+    var variants: [String]? = [fixtureSelectedVariant]
     var architecture: String? = "gemma3"
     var format = "gguf"
     var quantization: String? = "Q4_K_M"
@@ -669,6 +689,7 @@ private func fixtureLocalModel(changes: LocalModelChanges = .init()) -> LMStudio
     LMStudioLocalModel(
         key: fixtureModelKey,
         selectedVariant: changes.selectedVariant,
+        variants: changes.variants,
         architecture: changes.architecture,
         format: changes.format,
         quantization: changes.quantization,

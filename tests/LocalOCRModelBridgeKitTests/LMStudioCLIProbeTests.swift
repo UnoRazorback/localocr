@@ -393,6 +393,132 @@ struct LMStudioCLIProbeTests {
             descendantID: Int32(try fixture.recordedDescendantPID())
         )
     }
+
+    @Test
+    func pinnedDescriptorExecutesOriginalAcrossPathSwapAndRestore() async throws {
+        let fixture = try FDStableExecutionFixture()
+        defer { fixture.remove() }
+        let pinnedFD = Darwin.open(fixture.executableURL.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        #expect(pinnedFD >= 0)
+        defer { Darwin.close(pinnedFD) }
+        try fixture.installReplacementAtExecutablePath()
+        let runner = LMStudioCommandRunner(
+            commandTimeout: .seconds(1),
+            terminationGracePeriod: .milliseconds(50),
+            cleanupBudget: .milliseconds(500),
+            pipeDrainBudget: .milliseconds(100),
+            maximumOutputBytes: 1_048_576
+        )
+        let task = Task {
+            try await runner.run(
+                executableDescriptor: pinnedFD,
+                displayPath: fixture.executableURL.path,
+                arguments: ["--version"],
+                environment: ["HOME=\(fixture.root.path)", "PATH="]
+            )
+        }
+        try await fixture.waitUntilEitherExecutableStarts()
+
+        try fixture.restoreOriginalExecutablePath()
+        let output = try await task.value
+
+        #expect(String(decoding: output, as: UTF8.self) == "CLI commit: original\n")
+        #expect(!FileManager.default.fileExists(atPath: fixture.replacementExecutedURL.path))
+        #expect(FileManager.default.fileExists(atPath: fixture.originalExecutedURL.path))
+    }
+
+    @Test
+    func childCannotObserveUnrelatedOpenParentDescriptor() async throws {
+        let fixture = try RunnerScriptFixture()
+        defer { fixture.remove() }
+        let sentinelURL = fixture.root.appendingPathComponent("sentinel")
+        try Data("secret".utf8).write(to: sentinelURL)
+        let sentinelFD = Darwin.open(sentinelURL.path, O_RDONLY)
+        #expect(sentinelFD >= 0)
+        #expect(fcntl(sentinelFD, F_GETFD) & FD_CLOEXEC == 0)
+        defer { Darwin.close(sentinelFD) }
+        try fixture.writeScript("""
+        #!/bin/sh
+        if [ -e '/dev/fd/\(sentinelFD)' ]; then
+          printf 'leaked\\n'
+        else
+          printf 'closed\\n'
+        fi
+        """)
+        let executableFD = Darwin.open(
+            fixture.executableURL.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+        )
+        #expect(executableFD >= 0)
+        defer { Darwin.close(executableFD) }
+
+        let output = try await fixture.runner().run(
+            executableDescriptor: executableFD,
+            displayPath: fixture.executableURL.path,
+            arguments: ["--version"],
+            environment: ["HOME=\(fixture.root.path)", "PATH="]
+        )
+
+        #expect(String(decoding: output, as: UTF8.self) == "closed\n")
+    }
+
+    @Test
+    func cleanupFailureIsBoundedAndSurfacesStableError() async {
+        let clock = ContinuousClock()
+        let start = clock.now
+
+        await #expect(throws: LMStudioCLIProbeError.commandFailed) {
+            try await LMStudioProcessGroupCleanup.terminateAndReap(
+                pid: 4_242,
+                currentStatus: nil,
+                gracePeriod: .milliseconds(10),
+                cleanupBudget: .milliseconds(50),
+                system: NeverDisappearingProcessSystem()
+            )
+        }
+
+        #expect(start.duration(to: clock.now) < .milliseconds(250))
+    }
+
+    @Test
+    func retainedPipesCannotLeaveReadersThatConsumeReusedDescriptors() async throws {
+        let fixture = try EscapedPipeExecutionFixture()
+        defer { fixture.remove() }
+        let executableFD = Darwin.open(
+            fixture.executableURL.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+        )
+        #expect(executableFD >= 0)
+        defer { Darwin.close(executableFD) }
+        let clock = ContinuousClock()
+        let start = clock.now
+
+        await #expect(throws: LMStudioCLIProbeError.commandFailed) {
+            try await fixture.runner().run(
+                executableDescriptor: executableFD,
+                displayPath: fixture.executableURL.path,
+                arguments: ["--version"],
+                environment: ["HOME=\(fixture.root.path)", "PATH="]
+            )
+        }
+
+        #expect(start.duration(to: clock.now) < .seconds(1))
+        let escapedPID = try fixture.escapedProcessID()
+        defer { kill(escapedPID, SIGKILL) }
+        var reusePipes = try makeNonblockingReusePipes(count: 64)
+        defer { closeReusePipes(&reusePipes) }
+        for pipe in reusePipes {
+            var byte: UInt8 = 0x5A
+            #expect(Darwin.write(pipe.write, &byte, 1) == 1)
+        }
+        try await Task.sleep(for: .seconds(2))
+
+        for pipe in reusePipes {
+            var byte: UInt8 = 0
+            #expect(Darwin.read(pipe.read, &byte, 1) == 1)
+            #expect(byte == 0x5A)
+        }
+    }
 }
 
 private func assertProcessAndGroupAreGone(
@@ -406,6 +532,233 @@ private func assertProcessAndGroupAreGone(
     }
 }
 
+private struct NeverDisappearingProcessSystem: LMStudioProcessSystemCalling {
+    func sendSignal(_ signal: Int32, toProcessGroup pid: pid_t) throws {}
+    func pollStatus(of pid: pid_t) throws -> Int32? { 0 }
+    func processGroupExists(_ pid: pid_t) throws -> Bool { true }
+}
+
+private enum RunnerFixtureError: Error {
+    case setupFailed
+    case executableDidNotStart
+}
+
+private struct RunnerScriptFixture {
+    let root: URL
+    let executableURL: URL
+
+    init(prefix: String = "lmstudio-runner") throws {
+        root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
+        executableURL = root.appendingPathComponent("lms")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+
+    func writeScript(_ script: String) throws {
+        try Data(script.utf8).write(to: executableURL)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: executableURL.path
+        )
+    }
+
+    func runner(
+        timeout: Duration = .seconds(1),
+        cleanupBudget: Duration = .milliseconds(500),
+        pipeDrainBudget: Duration = .milliseconds(100)
+    ) -> LMStudioCommandRunner {
+        LMStudioCommandRunner(
+            commandTimeout: timeout,
+            terminationGracePeriod: .milliseconds(50),
+            cleanupBudget: cleanupBudget,
+            pipeDrainBudget: pipeDrainBudget,
+            maximumOutputBytes: 1_048_576
+        )
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: root)
+    }
+}
+
+private struct FDStableExecutionFixture {
+    let scriptFixture: RunnerScriptFixture
+    let originalBackupURL: URL
+    let replacementExecutedURL: URL
+    let originalExecutedURL: URL
+
+    var root: URL { scriptFixture.root }
+    var executableURL: URL { scriptFixture.executableURL }
+
+    init() throws {
+        let scriptFixture = try RunnerScriptFixture(prefix: "lmstudio-fd-stable")
+        self.scriptFixture = scriptFixture
+        originalBackupURL = scriptFixture.root.appendingPathComponent("original-lms")
+        replacementExecutedURL = scriptFixture.root.appendingPathComponent("replacement-executed")
+        originalExecutedURL = scriptFixture.root.appendingPathComponent("original-executed")
+        try scriptFixture.writeScript("""
+        #!/bin/sh
+        printf 'started\\n' > '\(Self.shellEscaped(originalExecutedURL.path))'
+        /bin/sleep 0.2
+        printf 'CLI commit: original\\n'
+        """)
+    }
+
+    func installReplacementAtExecutablePath() throws {
+        try FileManager.default.moveItem(at: executableURL, to: originalBackupURL)
+        let replacement = """
+        #!/bin/sh
+        printf 'started\\n' > '\(Self.shellEscaped(replacementExecutedURL.path))'
+        /bin/sleep 0.2
+        printf 'CLI commit: replacement\\n'
+        """
+        try Data(replacement.utf8).write(to: executableURL)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: executableURL.path
+        )
+    }
+
+    func restoreOriginalExecutablePath() throws {
+        try FileManager.default.removeItem(at: executableURL)
+        try FileManager.default.moveItem(at: originalBackupURL, to: executableURL)
+    }
+
+    func waitUntilEitherExecutableStarts() async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(1))
+        while clock.now < deadline {
+            if FileManager.default.fileExists(atPath: originalExecutedURL.path)
+                || FileManager.default.fileExists(atPath: replacementExecutedURL.path) {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        throw RunnerFixtureError.executableDidNotStart
+    }
+
+    func remove() { scriptFixture.remove() }
+
+    private static func shellEscaped(_ value: String) -> String {
+        value.replacingOccurrences(of: "'", with: "'\\''")
+    }
+}
+
+private struct EscapedPipeExecutionFixture {
+    let scriptFixture: RunnerScriptFixture
+    let escapedPIDURL: URL
+
+    var root: URL { scriptFixture.root }
+    var executableURL: URL { scriptFixture.executableURL }
+
+    init() throws {
+        let scriptFixture = try RunnerScriptFixture(prefix: "lmstudio-escaped-pipes")
+        self.scriptFixture = scriptFixture
+        escapedPIDURL = scriptFixture.root.appendingPathComponent("escaped.pid")
+        let sourceURL = scriptFixture.root.appendingPathComponent("escape.c")
+        let helperURL = scriptFixture.root.appendingPathComponent("escape-helper")
+        let cPath = Self.cEscaped(escapedPIDURL.path)
+        let source = """
+        #include <fcntl.h>
+        #include <signal.h>
+        #include <stdio.h>
+        #include <unistd.h>
+        int main(void) {
+          pid_t child = fork();
+          if (child < 0) return 1;
+          if (child > 0) return 0;
+          if (setsid() < 0) return 2;
+          signal(SIGTERM, SIG_IGN);
+          signal(SIGPIPE, SIG_IGN);
+          int fd = open("\(cPath)", O_WRONLY | O_CREAT | O_TRUNC, 0600);
+          if (fd < 0) return 3;
+          dprintf(fd, "%d\\n", getpid());
+          close(fd);
+          usleep(1500000);
+          write(STDOUT_FILENO, "late-out", 8);
+          write(STDERR_FILENO, "late-err", 8);
+          usleep(100000);
+          return 0;
+        }
+        """
+        try Data(source.utf8).write(to: sourceURL)
+        let compiler = Process()
+        compiler.executableURL = URL(fileURLWithPath: "/usr/bin/clang")
+        compiler.arguments = [sourceURL.path, "-o", helperURL.path]
+        compiler.standardInput = FileHandle.nullDevice
+        compiler.standardOutput = FileHandle.nullDevice
+        compiler.standardError = FileHandle.nullDevice
+        try compiler.run()
+        compiler.waitUntilExit()
+        guard compiler.terminationReason == .exit, compiler.terminationStatus == 0 else {
+            throw RunnerFixtureError.setupFailed
+        }
+        try scriptFixture.writeScript("""
+        #!/bin/sh
+        '\(Self.shellEscaped(helperURL.path))' &
+        trap '' TERM
+        while :; do /bin/sleep 3; done
+        """)
+    }
+
+    func runner() -> LMStudioCommandRunner {
+        scriptFixture.runner(
+            timeout: .milliseconds(200),
+            cleanupBudget: .milliseconds(300),
+            pipeDrainBudget: .milliseconds(100)
+        )
+    }
+
+    func escapedProcessID() throws -> pid_t {
+        let data = try Data(contentsOf: escapedPIDURL)
+        guard let pid = Int32(
+            String(decoding: data, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        ) else {
+            throw RunnerFixtureError.setupFailed
+        }
+        return pid
+    }
+
+    func remove() { scriptFixture.remove() }
+
+    private static func cEscaped(_ value: String) -> String {
+        value.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    private static func shellEscaped(_ value: String) -> String {
+        value.replacingOccurrences(of: "'", with: "'\\''")
+    }
+}
+
+private struct ReusePipe {
+    let read: Int32
+    let write: Int32
+}
+
+private func makeNonblockingReusePipes(count: Int) throws -> [ReusePipe] {
+    try (0..<count).map { _ in
+        var descriptors = [Int32](repeating: -1, count: 2)
+        guard pipe(&descriptors) == 0 else { throw RunnerFixtureError.setupFailed }
+        let flags = fcntl(descriptors[0], F_GETFL)
+        guard flags >= 0, fcntl(descriptors[0], F_SETFL, flags | O_NONBLOCK) == 0 else {
+            Darwin.close(descriptors[0])
+            Darwin.close(descriptors[1])
+            throw RunnerFixtureError.setupFailed
+        }
+        return ReusePipe(read: descriptors[0], write: descriptors[1])
+    }
+}
+
+private func closeReusePipes(_ pipes: inout [ReusePipe]) {
+    for pipe in pipes {
+        Darwin.close(pipe.read)
+        Darwin.close(pipe.write)
+    }
+    pipes.removeAll()
+}
+
 let disabledLinkJSON = #"{"status":"offline","issues":["deviceDisabled"],"peers":[],"deviceIdentifier":null,"deviceName":"This Mac"}"#
 
 let downloadedModelsJSON = #"[{"type":"llm","modelKey":"lmstudio-community/gemma-3-4b-it-GGUF","format":"gguf","displayName":"Gemma 3 4B IT","publisher":"lmstudio-community","path":"lmstudio-community/gemma-3-4b-it-GGUF/gemma-3-4b-it-Q4_K_M.gguf","sizeBytes":4294967296,"indexedModelIdentifier":"lmstudio-community/gemma-3-4b-it-GGUF/gemma-3-4b-it-Q4_K_M.gguf","deviceIdentifier":null,"paramsString":"4B","architecture":"gemma3","quantization":{"name":"Q4_K_M","bits":4},"variants":["lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m"],"selectedVariant":"lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m","vision":false,"trainedForToolUse":false,"maxContextLength":131072}]"#
@@ -413,6 +766,7 @@ let downloadedModelsJSON = #"[{"type":"llm","modelKey":"lmstudio-community/gemma
 private let fixtureLocalModel = LMStudioLocalModel(
     key: "lmstudio-community/gemma-3-4b-it-GGUF",
     selectedVariant: "lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m",
+    variants: ["lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m"],
     architecture: "gemma3",
     format: "gguf",
     quantization: "Q4_K_M",

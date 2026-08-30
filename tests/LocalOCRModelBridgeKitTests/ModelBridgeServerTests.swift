@@ -311,6 +311,7 @@ private struct CompositionFixtureLMStudioCLI: LMStudioCLIProbing {
             LMStudioLocalModel(
                 key: "lmstudio-community/gemma-3-4b-it-GGUF",
                 selectedVariant: "lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m",
+                variants: ["lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m"],
                 architecture: "gemma3",
                 format: "gguf",
                 quantization: "Q4_K_M",

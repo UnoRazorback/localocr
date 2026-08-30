@@ -1,5 +1,4 @@
 import Darwin
-import Dispatch
 import Foundation
 
 public protocol LMStudioCLIProbing: Sendable {
@@ -83,6 +82,7 @@ public struct LMStudioLinkStatus: Sendable, Equatable {
 public struct LMStudioLocalModel: Sendable, Equatable {
     public let key: String
     public let selectedVariant: String?
+    public let variants: [String]?
     public let architecture: String?
     public let format: String
     public let quantization: String?
@@ -92,6 +92,7 @@ public struct LMStudioLocalModel: Sendable, Equatable {
     public init(
         key: String,
         selectedVariant: String?,
+        variants: [String]? = nil,
         architecture: String?,
         format: String,
         quantization: String?,
@@ -100,11 +101,25 @@ public struct LMStudioLocalModel: Sendable, Equatable {
     ) {
         self.key = key
         self.selectedVariant = selectedVariant
+        self.variants = variants
         self.architecture = architecture
         self.format = format
         self.quantization = quantization
         self.sizeBytes = sizeBytes
         self.deviceIdentifier = deviceIdentifier
+    }
+
+    var hasConsistentVariantEvidence: Bool {
+        switch (variants, selectedVariant) {
+        case (nil, nil):
+            true
+        case let (.some(variants), .some(selected)):
+            !variants.isEmpty
+                && Set(variants).count == variants.count
+                && variants.filter { $0 == selected }.count == 1
+        default:
+            false
+        }
     }
 }
 
@@ -120,8 +135,6 @@ public enum LMStudioCLIProbeError: Error, Sendable, Equatable {
 
 public struct LMStudioCLIProbe: LMStudioCLIProbing, Sendable {
     static let maximumOutputBytes = 1_048_576
-    private static let readerShutdownBudget = Duration.seconds(1)
-    private static let pollInterval = Duration.milliseconds(5)
 
     private let homeDirectory: URL
     private let commandTimeout: Duration
@@ -212,6 +225,7 @@ public struct LMStudioCLIProbe: LMStudioCLIProbing, Sendable {
             LMStudioLocalModel(
                 key: model.modelKey,
                 selectedVariant: model.selectedVariant,
+                variants: model.variants,
                 architecture: model.architecture,
                 format: model.format,
                 quantization: model.quantization?.name,
@@ -245,124 +259,24 @@ public struct LMStudioCLIProbe: LMStudioCLIProbing, Sendable {
         executable: PinnedExecutable
     ) async throws -> Data {
         try executable.revalidate()
-        let child: SpawnedCommand
         do {
-            child = try SpawnedCommand(
-                executable: executable.url.path,
+            let data = try await LMStudioCommandRunner(
+                commandTimeout: commandTimeout,
+                terminationGracePeriod: terminationGracePeriod,
+                cleanupBudget: .seconds(1),
+                pipeDrainBudget: terminationGracePeriod,
+                maximumOutputBytes: Self.maximumOutputBytes
+            ).run(
+                executableDescriptor: executable.executionDescriptor,
+                displayPath: executable.url.path,
                 arguments: command.arguments,
                 environment: ["HOME=\(homeDirectory.path)", "PATH="]
             )
+            try executable.revalidate()
+            return data
         } catch {
             try executable.revalidate()
             throw error
-        }
-        let stdoutCollector = BoundedProcessOutput(limit: Self.maximumOutputBytes)
-        let stderrCollector = BoundedProcessOutput(limit: Self.maximumOutputBytes)
-        let readers = DispatchGroup()
-        Self.startReader(child.stdoutFD, collector: stdoutCollector, group: readers)
-        Self.startReader(child.stderrFD, collector: stderrCollector, group: readers)
-
-        var status: Int32?
-        var terminalError: LMStudioCLIProbeError?
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: commandTimeout)
-
-        while status == nil && terminalError == nil {
-            status = try child.pollStatus()
-            if status != nil { break }
-            if Task.isCancelled {
-                terminalError = .cancelled
-            } else if stdoutCollector.exceededLimit || stderrCollector.exceededLimit {
-                terminalError = .outputTooLarge
-            } else if clock.now >= deadline {
-                terminalError = .timedOut
-            } else {
-                try? await Task.sleep(for: Self.pollInterval)
-            }
-        }
-
-        if terminalError != nil {
-            status = try await child.terminateGroupAndReap(
-                currentStatus: status,
-                gracePeriod: terminationGracePeriod
-            )
-        } else if !(await Self.waitForReaders(readers, timeout: terminationGracePeriod)) {
-            terminalError = .commandFailed
-            status = try await child.terminateGroupAndReap(
-                currentStatus: status,
-                gracePeriod: terminationGracePeriod
-            )
-        }
-
-        if !(await Self.waitForReaders(readers, timeout: Self.readerShutdownBudget)) {
-            terminalError = .commandFailed
-            child.closeReadDescriptors()
-            _ = await Self.waitForReaders(readers, timeout: .milliseconds(100))
-        } else {
-            child.closeReadDescriptors()
-        }
-        try executable.revalidate()
-
-        if let terminalError {
-            throw terminalError
-        }
-        guard let status,
-              status == 0,
-              !stdoutCollector.exceededLimit,
-              !stderrCollector.exceededLimit,
-              !stdoutCollector.readFailed,
-              !stderrCollector.readFailed else {
-            throw stdoutCollector.exceededLimit || stderrCollector.exceededLimit
-                ? LMStudioCLIProbeError.outputTooLarge
-                : LMStudioCLIProbeError.commandFailed
-        }
-        return stdoutCollector.data
-    }
-
-    private static func startReader(
-        _ descriptor: Int32,
-        collector: BoundedProcessOutput,
-        group: DispatchGroup
-    ) {
-        group.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            defer { group.leave() }
-            var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
-            while true {
-                let count = Darwin.read(descriptor, &buffer, buffer.count)
-                if count > 0 {
-                    collector.append(Data(buffer.prefix(count)))
-                } else if count == 0 {
-                    return
-                } else if errno != EINTR {
-                    collector.markReadFailed()
-                    return
-                }
-            }
-        }
-    }
-
-    private static func dispatchDeadline(after duration: Duration) -> DispatchTime {
-        let components = duration.components
-        let milliseconds = components.seconds * 1_000
-            + max(1, components.attoseconds / 1_000_000_000_000_000)
-        return .now() + .milliseconds(Int(clamping: milliseconds))
-    }
-
-    private static func waitForReaders(
-        _ readers: DispatchGroup,
-        timeout: Duration
-    ) async -> Bool {
-        await withCheckedContinuation { continuation in
-            let gate = ReaderWaitGate(continuation: continuation)
-            readers.notify(queue: .global(qos: .userInitiated)) {
-                gate.resume(with: true)
-            }
-            DispatchQueue.global(qos: .userInitiated).asyncAfter(
-                deadline: dispatchDeadline(after: timeout)
-            ) {
-                gate.resume(with: false)
-            }
         }
     }
 
@@ -370,23 +284,6 @@ public struct LMStudioCLIProbe: LMStudioCLIProbing, Sendable {
         value == value.trimmingCharacters(in: .whitespacesAndNewlines)
             && !value.isEmpty
             && value.utf8.count <= 4_096
-    }
-}
-
-private final class ReaderWaitGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<Bool, Never>?
-
-    init(continuation: CheckedContinuation<Bool, Never>) {
-        self.continuation = continuation
-    }
-
-    func resume(with value: Bool) {
-        let continuation = lock.withLock { () -> CheckedContinuation<Bool, Never>? in
-            defer { self.continuation = nil }
-            return self.continuation
-        }
-        continuation?.resume(returning: value)
     }
 }
 
@@ -408,6 +305,7 @@ private extension LMStudioCLIProbe {
 
 private final class PinnedExecutable {
     let url: URL
+    var executionDescriptor: Int32 { descriptor }
     private let logicalExecutable: URL
     private let logicalBin: URL
     private let descriptor: Int32
@@ -498,11 +396,8 @@ private final class PinnedExecutable {
         let interpreter = line.dropFirst(2)
             .trimmingCharacters(in: .whitespaces)
             .split(whereSeparator: \.isWhitespace)
-            .first
-            .map(String.init)
-        guard let interpreter,
-              interpreter.hasPrefix("/"),
-              interpreter != "/usr/bin/env" else {
+        guard interpreter.count == 1,
+              interpreter.first == "/bin/sh" else {
             throw LMStudioCLIProbeError.unsafeExecutable
         }
     }
@@ -516,18 +411,357 @@ private struct ExecutableIdentity: Equatable {
     let size: off_t
 }
 
-private final class SpawnedCommand {
+struct LMStudioCommandRunner: Sendable {
+    let commandTimeout: Duration
+    let terminationGracePeriod: Duration
+    let cleanupBudget: Duration
+    let pipeDrainBudget: Duration
+    let maximumOutputBytes: Int
+
+    func run(
+        executableDescriptor: Int32,
+        displayPath: String,
+        arguments: [String],
+        environment: [String]
+    ) async throws -> Data {
+        let command = try SpawnedCommand(
+            executableDescriptor: executableDescriptor,
+            displayPath: displayPath,
+            arguments: arguments,
+            environment: environment
+        )
+        defer { command.closeReadDescriptors() }
+        do {
+            try command.verifyIsolatedProcessGroup()
+        } catch {
+            try await command.terminateUnverifiedProcess(cleanupBudget: cleanupBudget)
+            throw LMStudioCLIProbeError.commandFailed
+        }
+
+        let system = DarwinLMStudioProcessSystem()
+        let clock = ContinuousClock()
+        let commandDeadline = clock.now.advanced(by: commandTimeout)
+        var drainDeadline: ContinuousClock.Instant?
+        var status: Int32?
+        var stdout = PipeCapture(limit: maximumOutputBytes)
+        var stderr = PipeCapture(limit: maximumOutputBytes)
+
+        while true {
+            stdout.drain(descriptor: command.stdoutFD)
+            stderr.drain(descriptor: command.stderrFD)
+
+            if stdout.exceededLimit || stderr.exceededLimit {
+                try await abort(
+                    command: command,
+                    currentStatus: status,
+                    stdout: &stdout,
+                    stderr: &stderr,
+                    error: .outputTooLarge,
+                    system: system
+                )
+            }
+            if stdout.readFailed || stderr.readFailed {
+                try await abort(
+                    command: command,
+                    currentStatus: status,
+                    stdout: &stdout,
+                    stderr: &stderr,
+                    error: .commandFailed,
+                    system: system
+                )
+            }
+            if Task.isCancelled {
+                try await abort(
+                    command: command,
+                    currentStatus: status,
+                    stdout: &stdout,
+                    stderr: &stderr,
+                    error: .cancelled,
+                    system: system
+                )
+            }
+
+            if status == nil {
+                status = try system.pollStatus(of: command.pid)
+                if status != nil {
+                    drainDeadline = clock.now.advanced(by: pipeDrainBudget)
+                }
+            }
+            if let status, stdout.reachedEOF, stderr.reachedEOF {
+                if try system.processGroupExists(command.pid) {
+                    try await abort(
+                        command: command,
+                        currentStatus: status,
+                        stdout: &stdout,
+                        stderr: &stderr,
+                        error: .commandFailed,
+                        system: system
+                    )
+                }
+                guard status == 0 else {
+                    throw LMStudioCLIProbeError.commandFailed
+                }
+                return stdout.data
+            }
+            if let drainDeadline, clock.now >= drainDeadline {
+                try await abort(
+                    command: command,
+                    currentStatus: status,
+                    stdout: &stdout,
+                    stderr: &stderr,
+                    error: .commandFailed,
+                    system: system
+                )
+            }
+            if clock.now >= commandDeadline {
+                try await abort(
+                    command: command,
+                    currentStatus: status,
+                    stdout: &stdout,
+                    stderr: &stderr,
+                    error: .timedOut,
+                    system: system
+                )
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    private func abort(
+        command: SpawnedCommand,
+        currentStatus: Int32?,
+        stdout: inout PipeCapture,
+        stderr: inout PipeCapture,
+        error: LMStudioCLIProbeError,
+        system: any LMStudioProcessSystemCalling
+    ) async throws -> Never {
+        _ = try await LMStudioProcessGroupCleanup.terminateAndReap(
+            pid: command.pid,
+            currentStatus: currentStatus,
+            gracePeriod: terminationGracePeriod,
+            cleanupBudget: cleanupBudget,
+            system: system
+        )
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: pipeDrainBudget)
+        repeat {
+            stdout.drain(descriptor: command.stdoutFD)
+            stderr.drain(descriptor: command.stderrFD)
+            if stdout.reachedEOF, stderr.reachedEOF { throw error }
+            if stdout.readFailed || stderr.readFailed {
+                throw LMStudioCLIProbeError.commandFailed
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        } while clock.now < deadline
+        throw LMStudioCLIProbeError.commandFailed
+    }
+}
+
+protocol LMStudioProcessSystemCalling: Sendable {
+    func sendSignal(_ signal: Int32, toProcessGroup pid: pid_t) throws
+    func pollStatus(of pid: pid_t) throws -> Int32?
+    func processGroupExists(_ pid: pid_t) throws -> Bool
+}
+
+struct LMStudioProcessGroupCleanup {
+    static func terminateAndReap(
+        pid: pid_t,
+        currentStatus: Int32?,
+        gracePeriod: Duration,
+        cleanupBudget: Duration,
+        system: any LMStudioProcessSystemCalling
+    ) async throws -> Int32 {
+        let clock = ContinuousClock()
+        let graceDeadline = clock.now.advanced(by: gracePeriod)
+        let cleanupDeadline = graceDeadline.advanced(by: cleanupBudget)
+        var status = currentStatus
+
+        try system.sendSignal(SIGTERM, toProcessGroup: pid)
+        while clock.now < graceDeadline {
+            if status == nil { status = try system.pollStatus(of: pid) }
+            if let status, try !system.processGroupExists(pid) { return status }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+
+        try system.sendSignal(SIGKILL, toProcessGroup: pid)
+        while clock.now < cleanupDeadline {
+            if status == nil { status = try system.pollStatus(of: pid) }
+            let groupExists = try system.processGroupExists(pid)
+            if let status, !groupExists { return status }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+
+        if status == nil { status = try system.pollStatus(of: pid) }
+        guard let status, try !system.processGroupExists(pid) else {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        return status
+    }
+}
+
+private struct DarwinLMStudioProcessSystem: LMStudioProcessSystemCalling {
+    func sendSignal(_ signal: Int32, toProcessGroup pid: pid_t) throws {
+        guard kill(-pid, signal) == 0 || errno == ESRCH else {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+    }
+
+    func pollStatus(of pid: pid_t) throws -> Int32? {
+        var status: Int32 = 0
+        let result = waitpid(pid, &status, WNOHANG)
+        if result == pid { return status }
+        if result == 0 || (result == -1 && errno == EINTR) { return nil }
+        throw LMStudioCLIProbeError.commandFailed
+    }
+
+    func processGroupExists(_ pid: pid_t) throws -> Bool {
+        if kill(-pid, 0) == 0 { return true }
+        if errno == ESRCH { return false }
+        if errno == EPERM { return true }
+        throw LMStudioCLIProbeError.commandFailed
+    }
+}
+
+private final class SpawnExecutionPlan {
+    let spawnPath: String
+    let argv: [String]
+    let inheritedDescriptors: [Int32]
+    private let executableReadDescriptor: Int32
+    private let executableIdentity: ExecutableIdentity
+    private let interpreterDescriptor: Int32?
+    private let interpreterIdentity: ExecutableIdentity?
+
+    init(
+        executableDescriptor: Int32,
+        displayPath: String,
+        arguments: [String]
+    ) throws {
+        var bytes = [UInt8](repeating: 0, count: 512)
+        let count = pread(executableDescriptor, &bytes, bytes.count, 0)
+        guard count >= 0 else { throw LMStudioCLIProbeError.commandFailed }
+        let readIdentity = try Self.descriptorIdentity(executableDescriptor)
+        executableReadDescriptor = executableDescriptor
+        executableIdentity = readIdentity
+        // macOS devfs cannot be executed directly. A fixed root-owned interpreter
+        // may read this inherited descriptor; every other executable form fails closed.
+        guard count >= 2, bytes[0] == 35, bytes[1] == 33 else {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+
+        let lineBytes = bytes.prefix(count).prefix { $0 != 10 && $0 != 13 }
+        guard let line = String(bytes: lineBytes, encoding: .utf8),
+              line.dropFirst(2).trimmingCharacters(in: .whitespaces) == "/bin/sh" else {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        let interpreterPath = "/bin/sh"
+        let descriptor = Darwin.open(interpreterPath, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor > STDERR_FILENO else {
+            if descriptor >= 0 { Darwin.close(descriptor) }
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        do {
+            let identity = try Self.interpreterIdentity(
+                descriptor: descriptor,
+                path: interpreterPath
+            )
+            spawnPath = interpreterPath
+            argv = [interpreterPath, "/dev/fd/\(executableDescriptor)"] + arguments
+            inheritedDescriptors = [executableDescriptor]
+            interpreterDescriptor = descriptor
+            interpreterIdentity = identity
+        } catch {
+            Darwin.close(descriptor)
+            throw error
+        }
+    }
+
+    func revalidate() -> Bool {
+        guard (try? Self.descriptorIdentity(executableReadDescriptor)) == executableIdentity else {
+            return false
+        }
+        guard let interpreterDescriptor, let interpreterIdentity else { return true }
+        return (try? Self.interpreterIdentity(
+            descriptor: interpreterDescriptor,
+            path: "/bin/sh"
+        )) == interpreterIdentity
+    }
+
+    func close() {
+        if let interpreterDescriptor { Darwin.close(interpreterDescriptor) }
+    }
+
+    private static func descriptorIdentity(_ descriptor: Int32) throws -> ExecutableIdentity {
+        var descriptorStat = stat()
+        guard fstat(descriptor, &descriptorStat) == 0,
+              (descriptorStat.st_mode & S_IFMT) == S_IFREG else {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        return ExecutableIdentity(
+            device: UInt64(descriptorStat.st_dev),
+            inode: UInt64(descriptorStat.st_ino),
+            owner: descriptorStat.st_uid,
+            mode: descriptorStat.st_mode,
+            size: descriptorStat.st_size
+        )
+    }
+
+    private static func interpreterIdentity(
+        descriptor: Int32,
+        path: String
+    ) throws -> ExecutableIdentity {
+        var descriptorStat = stat()
+        var pathStat = stat()
+        guard fstat(descriptor, &descriptorStat) == 0,
+              lstat(path, &pathStat) == 0,
+              descriptorStat.st_dev == pathStat.st_dev,
+              descriptorStat.st_ino == pathStat.st_ino,
+              (descriptorStat.st_mode & S_IFMT) == S_IFREG,
+              descriptorStat.st_uid == 0,
+              access(path, X_OK) == 0 else {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        return ExecutableIdentity(
+            device: UInt64(descriptorStat.st_dev),
+            inode: UInt64(descriptorStat.st_ino),
+            owner: descriptorStat.st_uid,
+            mode: descriptorStat.st_mode,
+            size: descriptorStat.st_size
+        )
+    }
+}
+
+private final class SpawnedCommand: @unchecked Sendable {
     let pid: pid_t
     let stdoutFD: Int32
     let stderrFD: Int32
-    private let lock = NSLock()
-    private var reapedStatus: Int32?
+    private let descriptorLock = NSLock()
     private var descriptorsClosed = false
 
-    init(executable: String, arguments: [String], environment: [String]) throws {
+    init(
+        executableDescriptor: Int32,
+        displayPath: String,
+        arguments: [String],
+        environment: [String]
+    ) throws {
+        guard executableDescriptor > STDERR_FILENO,
+              fcntl(executableDescriptor, F_GETFD) >= 0 else {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        let executionPlan = try SpawnExecutionPlan(
+            executableDescriptor: executableDescriptor,
+            displayPath: displayPath,
+            arguments: arguments
+        )
+        defer { executionPlan.close() }
         var stdoutPipe = [Int32](repeating: -1, count: 2)
         var stderrPipe = [Int32](repeating: -1, count: 2)
         guard pipe(&stdoutPipe) == 0, pipe(&stderrPipe) == 0 else {
+            Self.closePipe(stdoutPipe)
+            Self.closePipe(stderrPipe)
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        guard Self.makeNonblocking(stdoutPipe[0]),
+              Self.makeNonblocking(stderrPipe[0]) else {
             Self.closePipe(stdoutPipe)
             Self.closePipe(stderrPipe)
             throw LMStudioCLIProbeError.commandFailed
@@ -560,6 +794,10 @@ private final class SpawnedCommand {
         }
 
         var setupOK = true
+        for descriptor in executionPlan.inheritedDescriptors {
+            setupOK = setupOK
+                && posix_spawn_file_actions_addinherit_np(&actions, descriptor) == 0
+        }
         setupOK = setupOK && posix_spawn_file_actions_adddup2(&actions, nullFD, STDIN_FILENO) == 0
         setupOK = setupOK && posix_spawn_file_actions_adddup2(&actions, stdoutPipe[1], STDOUT_FILENO) == 0
         setupOK = setupOK && posix_spawn_file_actions_adddup2(&actions, stderrPipe[1], STDERR_FILENO) == 0
@@ -569,7 +807,7 @@ private final class SpawnedCommand {
         setupOK = setupOK && posix_spawnattr_setpgroup(&attributes, 0) == 0
         setupOK = setupOK && posix_spawnattr_setflags(
             &attributes,
-            Int16(POSIX_SPAWN_SETPGROUP)
+            Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)
         ) == 0
         guard setupOK else {
             Darwin.close(nullFD)
@@ -577,13 +815,19 @@ private final class SpawnedCommand {
             Self.closePipe(stderrPipe)
             throw LMStudioCLIProbeError.commandFailed
         }
+        guard executionPlan.revalidate() else {
+            Darwin.close(nullFD)
+            Self.closePipe(stdoutPipe)
+            Self.closePipe(stderrPipe)
+            throw LMStudioCLIProbeError.commandFailed
+        }
 
         var spawnedPID: pid_t = 0
-        let spawnResult = Self.withCStringArray([executable] + arguments) { argv in
+        let spawnResult = Self.withCStringArray(executionPlan.argv) { argv in
             Self.withCStringArray(environment) { environmentPointer in
                 posix_spawn(
                     &spawnedPID,
-                    executable,
+                    executionPlan.spawnPath,
                     &actions,
                     &attributes,
                     argv,
@@ -594,14 +838,9 @@ private final class SpawnedCommand {
         Darwin.close(nullFD)
         Darwin.close(stdoutPipe[1])
         Darwin.close(stderrPipe[1])
-        guard spawnResult == 0, spawnedPID > 0, getpgid(spawnedPID) == spawnedPID else {
+        guard spawnResult == 0, spawnedPID > 0 else {
             Darwin.close(stdoutPipe[0])
             Darwin.close(stderrPipe[0])
-            if spawnedPID > 0 {
-                kill(spawnedPID, SIGKILL)
-                var status: Int32 = 0
-                waitpid(spawnedPID, &status, 0)
-            }
             throw LMStudioCLIProbeError.commandFailed
         }
         pid = spawnedPID
@@ -609,50 +848,39 @@ private final class SpawnedCommand {
         stderrFD = stderrPipe[0]
     }
 
-    func pollStatus() throws -> Int32? {
-        if let status = lock.withLock({ reapedStatus }) { return status }
-        var status: Int32 = 0
-        let result = waitpid(pid, &status, WNOHANG)
-        if result == pid {
-            lock.withLock { reapedStatus = status }
-            return status
+    func verifyIsolatedProcessGroup() throws {
+        guard getpgid(pid) == pid else {
+            throw LMStudioCLIProbeError.commandFailed
         }
-        if result == 0 { return nil }
-        if result == -1, errno == EINTR { return nil }
-        if result == -1, errno == ECHILD,
-           let status = lock.withLock({ reapedStatus }) {
-            return status
-        }
-        throw LMStudioCLIProbeError.commandFailed
     }
 
-    func terminateGroupAndReap(
-        currentStatus: Int32?,
-        gracePeriod: Duration
-    ) async throws -> Int32 {
-        var status = currentStatus
-        kill(-pid, SIGTERM)
+    func terminateUnverifiedProcess(cleanupBudget: Duration) async throws {
+        let directResult = kill(pid, SIGKILL)
+        guard directResult == 0 || errno == ESRCH else {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        let groupResult = kill(-pid, SIGKILL)
+        guard groupResult == 0 || errno == ESRCH else {
+            throw LMStudioCLIProbeError.commandFailed
+        }
         let clock = ContinuousClock()
-        let graceDeadline = clock.now.advanced(by: gracePeriod)
-        while status == nil && clock.now < graceDeadline {
-            status = try pollStatus()
-            if status == nil { try? await Task.sleep(for: .milliseconds(5)) }
-        }
-        kill(-pid, SIGKILL)
-        while status == nil {
-            status = try pollStatus()
-            if status == nil { try? await Task.sleep(for: .milliseconds(5)) }
-        }
-        let groupDeadline = clock.now.advanced(by: .seconds(1))
-        while kill(-pid, 0) == 0 && clock.now < groupDeadline {
-            kill(-pid, SIGKILL)
+        let deadline = clock.now.advanced(by: cleanupBudget)
+        var status: Int32?
+        let system = DarwinLMStudioProcessSystem()
+        while clock.now < deadline {
+            if status == nil { status = try system.pollStatus(of: pid) }
+            let groupExists = try system.processGroupExists(pid)
+            if status != nil, !groupExists { return }
             try? await Task.sleep(for: .milliseconds(5))
         }
-        return status ?? -1
+        if status == nil { status = try system.pollStatus(of: pid) }
+        guard status != nil, try !system.processGroupExists(pid) else {
+            throw LMStudioCLIProbeError.commandFailed
+        }
     }
 
     func closeReadDescriptors() {
-        lock.withLock {
+        descriptorLock.withLock {
             guard !descriptorsClosed else { return }
             descriptorsClosed = true
             Darwin.close(stdoutFD)
@@ -679,37 +907,45 @@ private final class SpawnedCommand {
     private static func closePipe(_ descriptors: [Int32]) {
         descriptors.filter { $0 >= 0 }.forEach { Darwin.close($0) }
     }
+
+    private static func makeNonblocking(_ descriptor: Int32) -> Bool {
+        let flags = fcntl(descriptor, F_GETFL)
+        return flags >= 0 && fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0
+    }
 }
 
-private final class BoundedProcessOutput: @unchecked Sendable {
-    private let lock = NSLock()
+private struct PipeCapture {
     private let limit: Int
-    private var storedData = Data()
-    private var limitExceeded = false
-    private var failed = false
+    private(set) var data = Data()
+    private(set) var exceededLimit = false
+    private(set) var readFailed = false
+    private(set) var reachedEOF = false
 
     init(limit: Int) {
         self.limit = limit
     }
 
-    var data: Data { lock.withLock { storedData } }
-    var exceededLimit: Bool { lock.withLock { limitExceeded } }
-    var readFailed: Bool { lock.withLock { failed } }
-
-    func append(_ data: Data) {
-        lock.withLock {
-            let available = max(0, limit - storedData.count)
-            if data.count > available {
-                storedData.append(data.prefix(available))
-                limitExceeded = true
-            } else {
-                storedData.append(data)
+    mutating func drain(descriptor: Int32) {
+        guard !reachedEOF, !readFailed else { return }
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while true {
+            let count = Darwin.read(descriptor, &buffer, buffer.count)
+            if count > 0 {
+                let available = max(0, limit - data.count)
+                let accepted = min(available, count)
+                if accepted > 0 { data.append(buffer, count: accepted) }
+                if count > available { exceededLimit = true }
+                continue
             }
+            if count == 0 {
+                reachedEOF = true
+                return
+            }
+            if errno == EINTR { continue }
+            if errno == EAGAIN || errno == EWOULDBLOCK { return }
+            readFailed = true
+            return
         }
-    }
-
-    func markReadFailed() {
-        lock.withLock { failed = true }
     }
 }
 

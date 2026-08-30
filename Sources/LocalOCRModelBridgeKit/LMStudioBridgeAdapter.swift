@@ -297,6 +297,7 @@ public struct LMStudioBridgeAdapter: Sendable {
         }
         guard matches.count == 1, let local = matches.first,
               local.deviceIdentifier == nil,
+              local.hasConsistentVariantEvidence,
               local.sizeBytes > 0,
               model.sizeBytes > 0,
               local.format == "gguf" || local.format == "mlx",
