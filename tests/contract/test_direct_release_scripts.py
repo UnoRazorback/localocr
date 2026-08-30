@@ -1686,12 +1686,12 @@ def test_real_app_staging_rejects_altered_release_input_before_cleanup(
         unexpected.chmod(0o755)
     elif mutation == "unexpected_nested_code":
         unexpected = candidate / "Contents" / "Resources" / "hidden-tool"
-        unexpected.parent.mkdir()
+        unexpected.parent.mkdir(exist_ok=True)
         unexpected.write_bytes(main.read_bytes())
         unexpected.chmod(0o755)
     elif mutation == "private_resource":
         resource = candidate / "Contents" / "Resources" / "build-path.txt"
-        resource.parent.mkdir()
+        resource.parent.mkdir(exist_ok=True)
         resource.write_text("/Users/example/private/source.swift\n")
     else:
         raise AssertionError(f"unhandled mutation: {mutation}")
@@ -1717,7 +1717,7 @@ def test_real_app_staging_preserves_known_good_release_when_resource_scan_fails(
         tmp_path / "Unreadable Resource LocalOCR Studio.app",
     )
     resource = candidate / "Contents" / "Resources" / "unreadable-resource.dat"
-    resource.parent.mkdir()
+    resource.parent.mkdir(exist_ok=True)
     resource.write_text("benign fixture")
     resource.chmod(0)
     release_root = ROOT / "dist" / "direct-release"

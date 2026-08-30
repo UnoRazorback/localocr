@@ -825,17 +825,22 @@ def _write_staged_app(
     staged_app = build_root / "Staged" / "LocalOCR Studio.app"
     contents = staged_app / "Contents"
     executable = contents / "MacOS" / "LocalOCR Studio"
+    resources = contents / "Resources"
     executable.parent.mkdir(parents=True)
+    resources.mkdir()
     with (contents / "Info.plist").open("wb") as plist:
         plistlib.dump(
             {
                 "CFBundleIdentifier": bundle_identifier,
+                "CFBundleIconName": "AppIcon",
                 "CFBundleShortVersionString": "0.3.0",
                 "CFBundleVersion": "2",
                 "LSMinimumSystemVersion": minimum_os,
             },
             plist,
         )
+    (resources / "AppIcon.icns").write_bytes(b"test app icon")
+    (resources / "Assets.car").write_bytes(b"test asset catalog")
     if compile_arm64_executable:
         subprocess.run(
             [
