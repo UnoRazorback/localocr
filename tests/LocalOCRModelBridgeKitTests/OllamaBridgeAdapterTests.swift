@@ -184,7 +184,12 @@ struct OllamaBridgeAdapterTests {
 
     @Test(arguments: [
         (LoopbackHTTPError.timedOut, ModelBridgeWireErrorCode.generationTimedOut),
-        (LoopbackHTTPError.invalidStatus(413), ModelBridgeWireErrorCode.contextOverflow)
+        (LoopbackHTTPError.invalidStatus(413), ModelBridgeWireErrorCode.contextOverflow),
+        (LoopbackHTTPError.responseTooLarge, ModelBridgeWireErrorCode.providerResponseInvalid),
+        (LoopbackHTTPError.redirectRejected, ModelBridgeWireErrorCode.localityBlocked),
+        (LoopbackHTTPError.authenticationRejected, ModelBridgeWireErrorCode.localityBlocked),
+        (LoopbackHTTPError.nonLoopbackResponse, ModelBridgeWireErrorCode.localityBlocked),
+        (LoopbackHTTPError.invalidStatus(500), ModelBridgeWireErrorCode.generationFailed)
     ])
     func chatTransportFailureUsesItsStableWireCategory(
         error: LoopbackHTTPError,
@@ -200,6 +205,63 @@ struct OllamaBridgeAdapterTests {
 
         #expect(response.error?.code == expected)
         #expect(response.payloadJSON == nil)
+    }
+
+    @Test func cancellationUsesItsStableWireCategory() async {
+        let http = FixtureLoopbackHTTP(outcomes: [
+            .data(versionFixture),
+            .data(localTagsFixture),
+            .cancelled
+        ])
+
+        let response = await OllamaBridgeAdapter(http: http).generate(summaryRequest)
+
+        #expect(response.error?.code == .cancelled)
+        #expect(response.payloadJSON == nil)
+    }
+
+    @Test func malformedPreflightAndPostflightMetadataAreProtocolFailures() async {
+        let malformedVersion = Data(#"{"version":17}"#.utf8)
+        let preflight = await OllamaBridgeAdapter(http: FixtureLoopbackHTTP(responses: [
+            malformedVersion, localTagsFixture
+        ])).generate(summaryRequest)
+        let postflight = await OllamaBridgeAdapter(http: FixtureLoopbackHTTP(responses: [
+            versionFixture,
+            localTagsFixture,
+            chatFixture(content: #"{"items":[]}"#),
+            malformedVersion,
+            localTagsFixture
+        ])).generate(summaryRequest)
+
+        #expect(preflight.error?.code == .providerResponseInvalid)
+        #expect(postflight.error?.code == .providerResponseInvalid)
+        #expect(preflight.error?.code != .modelIdentityChanged)
+        #expect(postflight.error?.code != .modelIdentityChanged)
+    }
+
+    @Test func organizeAndExtractTransportFailuresKeepTheirStableCategories() async {
+        let organize = ModelBridgeRequest.generate(
+            id: 91,
+            expectedIdentity: ollamaFixtureIdentity,
+            operation: .organize,
+            prompt: "organize"
+        )
+        let extract = ModelBridgeRequest.generate(
+            id: 92,
+            expectedIdentity: ollamaFixtureIdentity,
+            operation: .extract,
+            prompt: "extract",
+            fields: ["date"]
+        )
+        let organizationResponse = await OllamaBridgeAdapter(http: FixtureLoopbackHTTP(outcomes: [
+            .data(versionFixture), .data(localTagsFixture), .error(.invalidStatus(500))
+        ])).generate(organize)
+        let extractionResponse = await OllamaBridgeAdapter(http: FixtureLoopbackHTTP(outcomes: [
+            .data(versionFixture), .data(localTagsFixture), .error(.responseTooLarge)
+        ])).generate(extract)
+
+        #expect(organizationResponse.error?.code == .generationFailed)
+        #expect(extractionResponse.error?.code == .providerResponseInvalid)
     }
 
     @Test func malformedStructuredProviderOutputUsesSchemaFailure() async {
@@ -291,13 +353,13 @@ struct OllamaBridgeAdapterTests {
 
     @Test
     func changedNameOrLocalityDiscardsGeneration() async {
-        let fixtures = [
-            tagsFixture(name: "gemma4:8b-cloud"),
-            tagsFixture(size: 0),
-            tagsFixture(name: "alias:8b", model: "gemma4:8b")
+        let fixtures: [(Data, ModelBridgeWireErrorCode)] = [
+            (tagsFixture(name: "gemma4:8b-cloud"), .modelUnavailable),
+            (tagsFixture(size: 0), .localityUnverified),
+            (tagsFixture(name: "alias:8b", model: "gemma4:8b"), .localityUnverified)
         ]
 
-        for changedTags in fixtures {
+        for (changedTags, expected) in fixtures {
             let response = await OllamaBridgeAdapter(
                 http: FixtureLoopbackHTTP(
                     responses: [
@@ -309,7 +371,7 @@ struct OllamaBridgeAdapterTests {
                     ]
                 )
             ).generate(summaryRequest)
-            #expect(response.error?.code == .modelIdentityChanged)
+            #expect(response.error?.code == expected)
             #expect(response.payloadJSON == nil)
         }
     }
@@ -436,7 +498,7 @@ struct OllamaBridgeAdapterTests {
             http: FixtureLoopbackHTTP(outcomes: [.error(.timedOut)])
         ).generate(summaryRequest)
 
-        #expect(response.error?.code == .providerUnavailable)
+        #expect(response.error?.code == .generationTimedOut)
         #expect(response.payloadJSON == nil)
         #expect(response.identity == nil)
     }
@@ -511,6 +573,7 @@ private actor FixtureLoopbackHTTP: LoopbackHTTPPerforming {
     enum Outcome: Sendable {
         case data(Data)
         case error(LoopbackHTTPError)
+        case cancelled
     }
 
     private var outcomes: [Outcome]
@@ -535,6 +598,8 @@ private actor FixtureLoopbackHTTP: LoopbackHTTPPerforming {
             return data
         case let .error(error):
             throw error
+        case .cancelled:
+            throw CancellationError()
         }
     }
 }

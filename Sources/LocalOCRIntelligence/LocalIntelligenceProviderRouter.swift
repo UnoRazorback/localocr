@@ -154,6 +154,10 @@ public actor LocalIntelligenceProviderRouter: DocumentIntelligenceProviding {
             .selection(.localityBlocked(expected))
         case .providerUnavailable:
             .selection(.providerUnavailable(expected.provider))
+        case .providerResponseInvalid:
+            .bridgeInvalid
+        case .modelUnavailable:
+            .selection(.modelUnavailable(expected))
         case .generationTimedOut:
             .generationTimedOut
         case .generationFailed:
@@ -164,12 +168,15 @@ public actor LocalIntelligenceProviderRouter: DocumentIntelligenceProviding {
             .malformedOutput
         case .groundingFailure:
             .ungroundedOutput
+        case .cancelled:
+            .cancelled
         case .invalidRequest, .messageTooLarge, .unsupportedVersion, .providerNotImplemented:
             .bridgeInvalid
         }
     }
 
     nonisolated static func mappedTransportError(_ error: any Error) -> IntelligenceError {
+        if error is CancellationError { return .cancelled }
         guard let bridgeError = error as? ModelBridgeClientError else {
             return .bridgeUnavailable
         }

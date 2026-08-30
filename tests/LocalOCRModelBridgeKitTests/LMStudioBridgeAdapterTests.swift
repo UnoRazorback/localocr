@@ -134,7 +134,12 @@ struct LMStudioBridgeAdapterTests {
 
     @Test(arguments: [
         (LoopbackHTTPError.timedOut, ModelBridgeWireErrorCode.generationTimedOut),
-        (LoopbackHTTPError.invalidStatus(413), ModelBridgeWireErrorCode.contextOverflow)
+        (LoopbackHTTPError.invalidStatus(413), ModelBridgeWireErrorCode.contextOverflow),
+        (LoopbackHTTPError.responseTooLarge, ModelBridgeWireErrorCode.providerResponseInvalid),
+        (LoopbackHTTPError.redirectRejected, ModelBridgeWireErrorCode.localityBlocked),
+        (LoopbackHTTPError.authenticationRejected, ModelBridgeWireErrorCode.localityBlocked),
+        (LoopbackHTTPError.nonLoopbackResponse, ModelBridgeWireErrorCode.localityBlocked),
+        (LoopbackHTTPError.invalidStatus(500), ModelBridgeWireErrorCode.generationFailed)
     ])
     func chatTransportFailureUsesItsStableWireCategory(
         error: LoopbackHTTPError,
@@ -152,6 +157,77 @@ struct LMStudioBridgeAdapterTests {
 
         #expect(response.error?.code == expected)
         #expect(response.payloadJSON == nil)
+    }
+
+    @Test func cancellationUsesItsStableWireCategory() async {
+        let response = await LMStudioBridgeAdapter(
+            http: FixtureLMStudioHTTP(outcomes: [.data(modelsFixture), .cancelled]),
+            cli: FixtureLMStudioCLIProbe()
+        ).generate(summaryRequest)
+
+        #expect(response.error?.code == .cancelled)
+        #expect(response.payloadJSON == nil)
+    }
+
+    @Test func cancellationDuringCLIAttestationIsNotRelabeledAsLocalityLoss() async {
+        let http = FixtureLMStudioHTTP(responses: [modelsFixture])
+        let response = await LMStudioBridgeAdapter(
+            http: http,
+            cli: CancellingLMStudioCLIProbe()
+        ).generate(summaryRequest)
+
+        #expect(response.error?.code == .cancelled)
+        #expect(response.payloadJSON == nil)
+        #expect(await http.requests.map(\.endpoint) == [.lmStudioModels])
+        #expect(await http.requests.allSatisfy { $0.body == nil })
+    }
+
+    @Test func malformedPreflightAndPostflightMetadataAreProtocolFailures() async {
+        let malformedModels = Data(#"{"models":17}"#.utf8)
+        let preflight = await LMStudioBridgeAdapter(
+            http: FixtureLMStudioHTTP(responses: [malformedModels]),
+            cli: FixtureLMStudioCLIProbe()
+        ).generate(summaryRequest)
+        let postflight = await LMStudioBridgeAdapter(
+            http: FixtureLMStudioHTTP(responses: [
+                modelsFixture,
+                chatFixture(content: #"{"items":[]}"#),
+                malformedModels
+            ]),
+            cli: FixtureLMStudioCLIProbe(snapshots: [.init(), .init()])
+        ).generate(summaryRequest)
+
+        #expect(preflight.error?.code == .providerResponseInvalid)
+        #expect(postflight.error?.code == .providerResponseInvalid)
+        #expect(preflight.error?.code != .modelIdentityChanged)
+        #expect(postflight.error?.code != .modelIdentityChanged)
+    }
+
+    @Test func organizeAndExtractTransportFailuresKeepTheirStableCategories() async {
+        let organize = ModelBridgeRequest.generate(
+            id: 93,
+            expectedIdentity: lmStudioFixtureIdentity,
+            operation: .organize,
+            prompt: "organize"
+        )
+        let extract = ModelBridgeRequest.generate(
+            id: 94,
+            expectedIdentity: lmStudioFixtureIdentity,
+            operation: .extract,
+            prompt: "extract",
+            fields: ["date"]
+        )
+        let organizationResponse = await LMStudioBridgeAdapter(
+            http: FixtureLMStudioHTTP(outcomes: [.data(modelsFixture), .error(.invalidStatus(500))]),
+            cli: FixtureLMStudioCLIProbe()
+        ).generate(organize)
+        let extractionResponse = await LMStudioBridgeAdapter(
+            http: FixtureLMStudioHTTP(outcomes: [.data(modelsFixture), .error(.responseTooLarge)]),
+            cli: FixtureLMStudioCLIProbe()
+        ).generate(extract)
+
+        #expect(organizationResponse.error?.code == .generationFailed)
+        #expect(extractionResponse.error?.code == .providerResponseInvalid)
     }
 
     @Test func malformedStructuredProviderOutputUsesSchemaFailure() async {
@@ -193,7 +269,7 @@ struct LMStudioBridgeAdapterTests {
 
         let response = await LMStudioBridgeAdapter(http: http, cli: cli).generate(summaryRequest)
 
-        #expect(response.error?.code == .modelIdentityChanged)
+        #expect(response.error?.code == .localityBlocked)
         #expect(response.payloadJSON == nil)
         #expect(response.identity == nil)
         #expect(await http.requests.map(\.endpoint) == [
@@ -487,21 +563,21 @@ struct LMStudioBridgeAdapterTests {
     @Test
     func changedModelVersionOrLinkStateDiscardsOutput() async {
         let changedModel = fixtureLocalModel(changes: .init(sizeBytes: 4_294_967_295))
-        let snapshots: [[FixtureLMStudioCLIProbe.Snapshot]] = [
-            [.init(), .init(models: [changedModel])],
-            [.init(), .init(version: "changed-commit")],
-            [.init(), .init(link: .init(enabled: true, connectedPeerCount: 0))],
-            [.init(), .init(link: .init(enabled: false, connectedPeerCount: 1))]
+        let snapshots: [([FixtureLMStudioCLIProbe.Snapshot], ModelBridgeWireErrorCode)] = [
+            ([.init(), .init(models: [changedModel])], .localityUnverified),
+            ([.init(), .init(version: "changed-commit")], .modelIdentityChanged),
+            ([.init(), .init(link: .init(enabled: true, connectedPeerCount: 0))], .localityBlocked),
+            ([.init(), .init(link: .init(enabled: false, connectedPeerCount: 1))], .localityBlocked)
         ]
 
-        for sequence in snapshots {
+        for (sequence, expected) in snapshots {
             let response = await LMStudioBridgeAdapter(
                 http: FixtureLMStudioHTTP(
                     responses: [modelsFixture, chatFixture(content: #"{"items":[]}"#), modelsFixture]
                 ),
                 cli: FixtureLMStudioCLIProbe(snapshots: sequence)
             ).generate(summaryRequest)
-            #expect(response.error?.code == .modelIdentityChanged)
+            #expect(response.error?.code == expected)
             #expect(response.payloadJSON == nil)
             #expect(response.identity == nil)
         }
@@ -616,6 +692,7 @@ private actor FixtureLMStudioHTTP: LoopbackHTTPPerforming {
     enum Outcome: Sendable {
         case data(Data)
         case error(LoopbackHTTPError)
+        case cancelled
     }
 
     private var outcomes: [Outcome]
@@ -640,6 +717,8 @@ private actor FixtureLMStudioHTTP: LoopbackHTTPPerforming {
             return data
         case let .error(error):
             throw error
+        case .cancelled:
+            throw CancellationError()
         }
     }
 }
@@ -696,6 +775,12 @@ private actor FixtureLMStudioCLIProbe: LMStudioCLIProbing {
         snapshotIndex += 1
         return value
     }
+}
+
+private struct CancellingLMStudioCLIProbe: LMStudioCLIProbing {
+    func linkStatus() async throws -> LMStudioLinkStatus { throw CancellationError() }
+    func localModels() async throws -> [LMStudioLocalModel] { throw CancellationError() }
+    func version() async throws -> String { throw CancellationError() }
 }
 
 private actor InterleavingLinkCLIProbe: LMStudioCLIProbing {

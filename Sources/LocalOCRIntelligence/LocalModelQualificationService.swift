@@ -108,7 +108,7 @@ public actor LocalModelQualificationService {
     ) {
         self.providerFactory = providerFactory
         self.now = now
-        self.fixture = fixture
+        self.fixture = Self.isCanonicalFixture(fixture) ? fixture : nil
         self.cacheDirectory = cacheDirectory
         expectedCacheOwnerID = geteuid()
     }
@@ -136,7 +136,11 @@ public actor LocalModelQualificationService {
         self.now = now
         self.cacheDirectory = cacheDirectory
         expectedCacheOwnerID = geteuid()
-        fixture = try? fixtureLoader()
+        if let loaded = try? fixtureLoader(), Self.isCanonicalFixture(loaded) {
+            fixture = loaded
+        } else {
+            fixture = nil
+        }
     }
 
     public func qualify(
@@ -283,12 +287,55 @@ public actor LocalModelQualificationService {
         ) else {
             throw CocoaError(.fileNoSuchFile)
         }
-        let payload = try JSONDecoder().decode(FixturePayload.self, from: Data(contentsOf: url))
-        return LocalModelQualificationFixture(
+        return try decodeFixture(Data(contentsOf: url))
+    }
+
+    static func decodeFixture(_ data: Data) throws -> LocalModelQualificationFixture {
+        let object = try JSONSerialization.jsonObject(with: data)
+        let canonicalData = try JSONSerialization.data(
+            withJSONObject: canonicalFixtureJSONObject(),
+            options: [.sortedKeys]
+        )
+        let normalizedData = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        guard normalizedData == canonicalData else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let payload = try JSONDecoder().decode(FixturePayload.self, from: data)
+        let fixture = LocalModelQualificationFixture(
             version: payload.fixtureVersion,
             document: IntelligenceDocument(pages: payload.pages),
             fields: payload.fields
         )
+        guard Self.isCanonicalFixture(fixture) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return fixture
+    }
+
+    private nonisolated static let canonicalFixture = LocalModelQualificationFixture(
+        version: 1,
+        document: IntelligenceDocument(pages: [
+            .init(number: 1, text: "Invoice Q-104. Date: 2026-08-29. Total: $144.17."),
+            .init(number: 2, text: "Project: LocalOCR Qualification. Status: synthetic test only.")
+        ]),
+        fields: ["date", "total", "reference_number"]
+    )
+
+    private nonisolated static func canonicalFixtureJSONObject() -> [String: Any] {
+        [
+            "fixture_version": 1,
+            "pages": [
+                ["number": 1, "text": "Invoice Q-104. Date: 2026-08-29. Total: $144.17."],
+                ["number": 2, "text": "Project: LocalOCR Qualification. Status: synthetic test only."]
+            ],
+            "fields": ["date", "total", "reference_number"]
+        ]
+    }
+
+    private nonisolated static func isCanonicalFixture(
+        _ fixture: LocalModelQualificationFixture
+    ) -> Bool {
+        fixture == canonicalFixture
     }
 
     private func persist(
@@ -408,25 +455,101 @@ public actor LocalModelQualificationService {
         else {
             return false
         }
-        let supportedTokens = Set(summary.citations.flatMap { materialTokens(in: $0.quote) })
-        let claimedTokens = materialTokens(in: summary.text)
-        return !claimedTokens.isEmpty && claimedTokens.allSatisfy(supportedTokens.contains)
-    }
+        let tokens = summaryTokens(in: summary.text)
+        let tokenSet = Set(tokens)
+        let invoiceIndicators: Set<String> = [
+            "invoice", "q", "104", "date", "dated", "total", "totals", "amount", "value",
+            "2026", "08", "29", "144", "17"
+        ]
+        let projectIndicators: Set<String> = [
+            "project", "localocr", "qualification", "status", "synthetic", "test", "only"
+        ]
+        let hasInvoiceFacts = !tokenSet.isDisjoint(with: invoiceIndicators)
+        let hasProjectFacts = !tokenSet.isDisjoint(with: projectIndicators)
+        guard hasInvoiceFacts != hasProjectFacts else { return false }
 
-    private nonisolated static func materialTokens(in value: String) -> [String] {
-        let stopWords: Set<String> = [
-            "a", "an", "and", "as", "at", "by", "for", "from", "in", "is", "it",
+        let connective: Set<String> = [
+            "a", "an", "and", "as", "at", "by", "for", "from", "has", "in", "is", "it",
             "of", "on", "or", "the", "this", "to", "was", "were", "with"
         ]
+        if hasInvoiceFacts {
+            guard Set(summary.citations.map(\.page)) == [1]
+            else { return false }
+            let relations = [
+                ["invoice", "q", "104"],
+                ["on", "2026", "08", "29"]
+            ] + ["date", "dated"].map { [$0, "2026", "08", "29"] }
+                + ["total", "totals", "amount", "value"].map { [$0, "144", "17"] }
+            return everyMaterialTokenIsInACompleteRelation(
+                tokens,
+                relations: relations,
+                connective: connective
+            )
+        }
+
+        guard Set(summary.citations.map(\.page)) == [2]
+        else { return false }
+        return everyMaterialTokenIsInACompleteRelation(
+            tokens,
+            relations: [
+                ["project", "localocr", "qualification"],
+                ["localocr", "qualification", "project"],
+                ["status", "synthetic", "test", "only"]
+            ],
+            connective: connective
+        )
+    }
+
+    private nonisolated static func summaryTokens(in value: String) -> [String] {
         return value.lowercased()
             .split { !$0.isLetter && !$0.isNumber }
             .map(String.init)
-            .filter { !stopWords.contains($0) }
-            .map { token in
-                token.count > 3 && token.hasSuffix("s")
-                    ? String(token.dropLast())
-                    : token
+    }
+
+    private nonisolated static func everyMaterialTokenIsInACompleteRelation(
+        _ tokens: [String],
+        relations: [[String]],
+        connective: Set<String>
+    ) -> Bool {
+        let covered = relations.reduce(into: Set<Int>()) { covered, relation in
+            if let match = relationMatch(
+                relation,
+                in: tokens,
+                connective: connective
+            ) {
+                covered.formUnion(match)
             }
+        }
+        guard !covered.isEmpty else { return false }
+        return tokens.indices.allSatisfy { covered.contains($0) || connective.contains(tokens[$0]) }
+    }
+
+    private nonisolated static func relationMatch(
+        _ material: [String],
+        in tokens: [String],
+        connective: Set<String>
+    ) -> Set<Int>? {
+        guard let first = material.first else { return nil }
+        for start in tokens.indices where tokens[start] == first {
+            var matched = [start]
+            var cursor = tokens.index(after: start)
+            var failed = false
+            for expected in material.dropFirst() {
+                while cursor < tokens.endIndex,
+                      tokens[cursor] != expected,
+                      connective.contains(tokens[cursor]) {
+                    cursor = tokens.index(after: cursor)
+                }
+                guard cursor < tokens.endIndex, tokens[cursor] == expected else {
+                    failed = true
+                    break
+                }
+                matched.append(cursor)
+                cursor = tokens.index(after: cursor)
+            }
+            if !failed { return Set(matched) }
+        }
+        return nil
     }
 
     private nonisolated static func validOrganization(

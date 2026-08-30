@@ -74,7 +74,7 @@ public struct ModelBridgeProviderHandler: ModelBridgeHandling {
             } catch {
                 return Self.errorResponse(
                     id: request.id,
-                    code: .providerUnavailable,
+                    code: Self.discoveryErrorCode(error),
                     message: "Ollama discovery is unavailable."
                 )
             }
@@ -105,7 +105,7 @@ public struct ModelBridgeProviderHandler: ModelBridgeHandling {
             } catch {
                 return Self.errorResponse(
                     id: request.id,
-                    code: .providerUnavailable,
+                    code: Self.discoveryErrorCode(error),
                     message: "Ollama status is unavailable."
                 )
             }
@@ -128,7 +128,7 @@ public struct ModelBridgeProviderHandler: ModelBridgeHandling {
             } catch {
                 return Self.errorResponse(
                     id: request.id,
-                    code: .providerUnavailable,
+                    code: Self.discoveryErrorCode(error),
                     message: "LM Studio discovery is unavailable."
                 )
             }
@@ -159,7 +159,7 @@ public struct ModelBridgeProviderHandler: ModelBridgeHandling {
             } catch {
                 return Self.errorResponse(
                     id: request.id,
-                    code: .providerUnavailable,
+                    code: Self.discoveryErrorCode(error),
                     message: "LM Studio status is unavailable."
                 )
             }
@@ -172,6 +172,47 @@ public struct ModelBridgeProviderHandler: ModelBridgeHandling {
         message: String
     ) -> ModelBridgeResponse {
         ModelBridgeResponse(id: id, error: ModelBridgeWireError(code: code, message: message))
+    }
+
+    private static func discoveryErrorCode(_ error: any Error) -> ModelBridgeWireErrorCode {
+        if error is CancellationError { return .cancelled }
+        if let httpError = error as? LoopbackHTTPError {
+            switch httpError {
+            case .timedOut:
+                return .generationTimedOut
+            case .responseTooLarge:
+                return .providerResponseInvalid
+            case .redirectRejected, .authenticationRejected, .nonLoopbackResponse:
+                return .localityBlocked
+            case .invalidStatus:
+                return .providerUnavailable
+            }
+        }
+        if let adapterError = error as? OllamaBridgeError {
+            switch adapterError {
+            case .invalidProviderResponse:
+                return .providerResponseInvalid
+            case .modelUnavailable:
+                return .modelUnavailable
+            case .localityUnverified:
+                return .localityUnverified
+            case .localityBlocked:
+                return .localityBlocked
+            }
+        }
+        if let adapterError = error as? LMStudioBridgeError {
+            switch adapterError {
+            case .invalidProviderResponse:
+                return .providerResponseInvalid
+            case .modelUnavailable:
+                return .modelUnavailable
+            case .localityUnverified:
+                return .localityUnverified
+            case .localityBlocked:
+                return .localityBlocked
+            }
+        }
+        return .providerUnavailable
     }
 }
 

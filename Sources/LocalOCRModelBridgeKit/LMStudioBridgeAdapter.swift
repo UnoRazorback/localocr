@@ -80,6 +80,8 @@ public struct LMStudioBridgeAdapter: Sendable {
         let snapshot: LMStudioCLISnapshot
         do {
             snapshot = try await cli.snapshot()
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             return models.map {
                 attestedCandidate($0, attestation: Self.unverifiedCLI, loadedInstanceID: nil)
@@ -146,29 +148,11 @@ public struct LMStudioBridgeAdapter: Sendable {
                 named: selectedModel,
                 timeoutMilliseconds: request.timeoutMilliseconds
             )
-        } catch LMStudioBridgeError.localityUnverified {
-            return Self.errorResponse(
-                id: request.id,
-                code: .localityUnverified,
-                message: "Selected LM Studio model is not verified local."
-            )
-        } catch LMStudioBridgeError.localityBlocked {
-            return Self.errorResponse(
-                id: request.id,
-                code: .localityBlocked,
-                message: "Selected LM Studio model is blocked by locality policy."
-            )
-        } catch is LMStudioBridgeError {
-            return Self.errorResponse(
-                id: request.id,
-                code: .modelIdentityChanged,
-                message: "Selected LM Studio model identity is unavailable or ambiguous."
-            )
         } catch {
             return Self.errorResponse(
                 id: request.id,
-                code: .providerUnavailable,
-                message: "LM Studio model verification is unavailable."
+                code: Self.verificationErrorCode(error),
+                message: "LM Studio model verification failed before generation."
             )
         }
         guard before.candidate.identity == expectedIdentity else {
@@ -225,8 +209,8 @@ public struct LMStudioBridgeAdapter: Sendable {
         } catch {
             return Self.errorResponse(
                 id: request.id,
-                code: .modelIdentityChanged,
-                message: "LM Studio model identity or link state could not be reverified."
+                code: Self.verificationErrorCode(error),
+                message: "LM Studio model verification failed after generation."
             )
         }
         guard before.candidate.identity == expectedIdentity,
@@ -553,13 +537,50 @@ public struct LMStudioBridgeAdapter: Sendable {
     private static func generationTransportErrorCode(
         _ error: any Error
     ) -> ModelBridgeWireErrorCode {
-        switch error as? LoopbackHTTPError {
+        if error is CancellationError { return .cancelled }
+        return switch error as? LoopbackHTTPError {
         case .timedOut:
             .generationTimedOut
         case .invalidStatus(413):
             .contextOverflow
+        case .responseTooLarge:
+            .providerResponseInvalid
+        case .redirectRejected, .authenticationRejected, .nonLoopbackResponse:
+            .localityBlocked
+        case .invalidStatus:
+            .generationFailed
         default:
             .providerUnavailable
+        }
+    }
+
+    private static func verificationErrorCode(
+        _ error: any Error
+    ) -> ModelBridgeWireErrorCode {
+        if error is CancellationError { return .cancelled }
+        if let bridgeError = error as? LMStudioBridgeError {
+            switch bridgeError {
+            case .invalidProviderResponse:
+                return .providerResponseInvalid
+            case .modelUnavailable:
+                return .modelUnavailable
+            case .localityUnverified:
+                return .localityUnverified
+            case .localityBlocked:
+                return .localityBlocked
+            }
+        }
+        switch error as? LoopbackHTTPError {
+        case .timedOut:
+            return .generationTimedOut
+        case .responseTooLarge:
+            return .providerResponseInvalid
+        case .redirectRejected, .authenticationRejected, .nonLoopbackResponse:
+            return .localityBlocked
+        case .invalidStatus:
+            return .providerUnavailable
+        default:
+            return .providerUnavailable
         }
     }
 }

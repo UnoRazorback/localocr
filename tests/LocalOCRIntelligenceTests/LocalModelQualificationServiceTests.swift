@@ -70,7 +70,7 @@ import Testing
 
     @Test func summaryWithUnsupportedClaimAndUnrelatedValidQuoteFailsQualification() async throws {
         let provider = Task6FixtureProvider(summary: .init(
-            text: "This invoice was paid through a cloud payment service.",
+            text: "Invoice Q-104 totals $144.17 and was paid through a cloud payment service.",
             citations: [
                 .init(page: 1, quote: "Invoice Q-104. Date: 2026-08-29. Total: $144.17.")
             ]
@@ -82,6 +82,75 @@ import Testing
         #expect(outcome.status == .failed)
         #expect(outcome.receipt == nil)
         #expect(outcome.failures == ["summary"])
+    }
+
+    @Test func summaryRejectsFalseCrossPageRelationshipUsingOnlyFixtureVocabulary() async throws {
+        let provider = Task6FixtureProvider(summary: .init(
+            text: "Project Q-104 totals $144.17.",
+            citations: [
+                .init(page: 1, quote: "Invoice Q-104. Date: 2026-08-29. Total: $144.17."),
+                .init(page: 2, quote: "Project: LocalOCR Qualification. Status: synthetic test only.")
+            ]
+        ))
+
+        let outcome = try await task6QualificationService(provider: provider)
+            .qualify(task6OllamaIdentity)
+
+        #expect(outcome.status == .failed)
+        #expect(outcome.failures == ["summary"])
+    }
+
+    @Test func summaryRejectsRecombinedPageFactsThatReverseTheirRelations() async throws {
+        let provider = Task6FixtureProvider(summary: .init(
+            text: "Invoice $144.17 and total Q-104.",
+            citations: [
+                .init(page: 1, quote: "Invoice Q-104. Date: 2026-08-29. Total: $144.17.")
+            ]
+        ))
+
+        let outcome = try await task6QualificationService(provider: provider)
+            .qualify(task6OllamaIdentity)
+
+        #expect(outcome.status == .failed)
+        #expect(outcome.failures == ["summary"])
+    }
+
+    @Test func trivialSummaryWithoutACompleteFixtureRelationFailsQualification() async throws {
+        let provider = Task6FixtureProvider(summary: .init(
+            text: "Invoice",
+            citations: [.init(page: 1, quote: "Invoice Q-104")]
+        ))
+
+        let outcome = try await task6QualificationService(provider: provider)
+            .qualify(task6OllamaIdentity)
+
+        #expect(outcome.status == .failed)
+        #expect(outcome.failures == ["summary"])
+    }
+
+    @Test func groundedInvoiceAndProjectParaphrasesPassQualification() async throws {
+        let summaries = [
+            IntelligenceSummary(
+                text: "Invoice Q-104 has a value of $144.17, dated 2026-08-29.",
+                citations: [
+                    .init(page: 1, quote: "Invoice Q-104. Date: 2026-08-29. Total: $144.17.")
+                ]
+            ),
+            IntelligenceSummary(
+                text: "LocalOCR Qualification is a project with status synthetic test only.",
+                citations: [
+                    .init(page: 2, quote: "Project: LocalOCR Qualification. Status: synthetic test only.")
+                ]
+            )
+        ]
+
+        for summary in summaries {
+            let outcome = try await task6QualificationService(
+                provider: Task6FixtureProvider(summary: summary)
+            ).qualify(task6OllamaIdentity)
+            #expect(outcome.status == .passed)
+            #expect(outcome.failures.isEmpty)
+        }
     }
 
     @Test func cachedQualificationBecomesStaleForIdentityHarnessFixtureOrPolicyChanges() async throws {
@@ -280,6 +349,74 @@ import Testing
         await #expect(throws: IntelligenceError.bridgeInvalid) {
             try await service.qualify(task6OllamaIdentity)
         }
+    }
+
+    @Test func syntacticallyValidButSemanticallyAlteredFixtureFailsClosed() async {
+        let alteredFixtures = [
+            LocalModelQualificationFixture(
+                version: 1,
+                document: IntelligenceDocument(pages: [
+                    .init(number: 1, text: "Invoice Q-104. Date: 2026-08-29. Total: $999.99."),
+                    .init(number: 2, text: "Project: LocalOCR Qualification. Status: synthetic test only.")
+                ]),
+                fields: ["date", "total", "reference_number"]
+            ),
+            LocalModelQualificationFixture(
+                version: 1,
+                document: IntelligenceDocument(pages: [
+                    .init(number: 1, text: "Invoice Q-104. Date: 2026-08-29. Total: $144.17."),
+                    .init(number: 2, text: "Project: LocalOCR Qualification. Status: synthetic test only.")
+                ]),
+                fields: ["date", "reference_number"]
+            )
+        ]
+
+        for fixture in alteredFixtures {
+            let service = LocalModelQualificationService(
+                providerFactory: { _ in Task6FixtureProvider() },
+                now: { task6Now },
+                cacheDirectory: nil,
+                fixtureLoader: { fixture }
+            )
+            await #expect(throws: IntelligenceError.bridgeInvalid) {
+                try await service.qualify(task6OllamaIdentity)
+            }
+        }
+    }
+
+    @Test func decodedFixtureRejectsMissingOrAlteredCanonicalV1FactsAndFields() {
+        let fixtures = [
+            #"{"fixture_version":1,"pages":[{"number":1,"text":"Invoice Q-104. Date: 2026-08-29. Total: $999.99."},{"number":2,"text":"Project: LocalOCR Qualification. Status: synthetic test only."}],"fields":["date","total","reference_number"]}"#,
+            #"{"fixture_version":1,"pages":[{"number":1,"text":"Invoice Q-104. Date: 2026-08-29. Total: $144.17."},{"number":2,"text":"Project: LocalOCR Qualification. Status: synthetic test only."}],"fields":["date","reference_number"]}"#
+        ]
+
+        for fixture in fixtures {
+            #expect(throws: (any Error).self) {
+                try LocalModelQualificationService.decodeFixture(Data(fixture.utf8))
+            }
+        }
+    }
+
+    @Test func concurrentValidWinnerRemainsReadableAndUnquarantinedAfterPeerReturns() async throws {
+        let fixture = try Task6QualificationCacheFixture()
+        defer { fixture.remove() }
+        let first = fixture.relaunchedService(provider: Task6FixtureProvider())
+        let second = fixture.relaunchedService(provider: Task6FixtureProvider())
+
+        async let firstResult = task6QualificationResult(from: first)
+        async let secondResult = task6QualificationResult(from: second)
+        let outcomes = await [firstResult, secondResult]
+        let persisted = await fixture.relaunchedService().cachedOutcome(for: task6OllamaIdentity)
+        let entries = try FileManager.default.contentsOfDirectory(
+            at: fixture.cacheDirectory,
+            includingPropertiesForKeys: nil
+        )
+
+        #expect(outcomes.contains { $0?.status == .passed })
+        #expect(persisted?.status == .passed)
+        #expect(persisted?.receipt == task6QualificationReceipt())
+        #expect(entries.count == 1, "unexpected cache entries: \(entries.map(\.lastPathComponent))")
+        #expect(entries.allSatisfy { !$0.lastPathComponent.hasSuffix(".quarantine") })
     }
 }
 

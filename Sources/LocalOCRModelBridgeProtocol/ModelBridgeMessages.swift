@@ -271,6 +271,8 @@ public enum ModelBridgeWireErrorCode: String, Codable, Sendable, Equatable {
     case unsupportedVersion = "unsupported_version"
     case providerNotImplemented = "provider_not_implemented"
     case providerUnavailable = "provider_unavailable"
+    case providerResponseInvalid = "provider_response_invalid"
+    case modelUnavailable = "model_unavailable"
     case modelIdentityChanged = "model_identity_changed"
     case localityUnverified = "locality_unverified"
     case localityBlocked = "locality_blocked"
@@ -279,6 +281,7 @@ public enum ModelBridgeWireErrorCode: String, Codable, Sendable, Equatable {
     case contextOverflow = "context_overflow"
     case schemaFailure = "schema_failure"
     case groundingFailure = "grounding_failure"
+    case cancelled
 }
 
 public struct ModelBridgeWireError: Codable, Sendable, Equatable {

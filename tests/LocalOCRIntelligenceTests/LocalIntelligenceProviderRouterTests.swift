@@ -144,7 +144,10 @@ import Testing
             (.wire(.contextOverflow), .contextOverflow),
             (.wire(.schemaFailure), .malformedOutput),
             (.wire(.groundingFailure), .ungroundedOutput),
-            (.wire(.localityUnverified), .selection(.localityUnverified(task6OllamaIdentity)))
+            (.wire(.localityUnverified), .selection(.localityUnverified(task6OllamaIdentity))),
+            (.wire(.providerResponseInvalid), .bridgeInvalid),
+            (.wire(.modelUnavailable), .selection(.modelUnavailable(task6OllamaIdentity))),
+            (.wire(.cancelled), .cancelled)
         ]
 
         for (fixture, expected) in fixtures {

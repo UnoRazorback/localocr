@@ -81,7 +81,7 @@ public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging {
 
         var discovered: [BridgeModelCandidate] = []
         for provider in [LocalModelProviderID.ollama, .lmStudio] {
-            if let candidates = try? await discover(provider) {
+            if let candidates = try? await discover(provider, expected: nil) {
                 discovered.append(contentsOf: candidates)
             }
         }
@@ -200,7 +200,7 @@ public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging {
     private func verifiedCandidate(
         _ identity: LocalModelIdentity
     ) async throws -> BridgeModelCandidate {
-        let candidates = try await discover(identity.provider)
+        let candidates = try await discover(identity.provider, expected: identity)
         let sameModel = candidates.filter {
             $0.identity.provider == identity.provider && $0.identity.model == identity.model
         }
@@ -227,7 +227,8 @@ public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging {
     }
 
     private func discover(
-        _ provider: LocalModelProviderID
+        _ provider: LocalModelProviderID,
+        expected: LocalModelIdentity?
     ) async throws -> [BridgeModelCandidate] {
         guard provider == .ollama || provider == .lmStudio else {
             throw IntelligenceError.selection(.providerUnavailable(provider))
@@ -237,16 +238,16 @@ public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging {
         do {
             response = try await transport.send(.discover(id: id, provider: provider))
         } catch {
-            throw IntelligenceError.selection(.providerUnavailable(provider))
+            throw LocalIntelligenceProviderRouter.mappedTransportError(error)
         }
         if let error = response.error {
-            let placeholder = LocalModelIdentity(
+            let mappedIdentity = expected ?? LocalModelIdentity(
                 provider: provider,
                 model: "unavailable",
                 fingerprint: nil,
                 harnessVersion: nil
             )
-            throw LocalIntelligenceProviderRouter.mappedWireError(error, expected: placeholder)
+            throw LocalIntelligenceProviderRouter.mappedWireError(error, expected: mappedIdentity)
         }
         return response.candidates.filter { $0.identity.provider == provider }
     }

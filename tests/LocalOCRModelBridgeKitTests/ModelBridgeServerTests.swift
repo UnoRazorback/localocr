@@ -51,6 +51,30 @@ struct ModelBridgeServerTests {
         #expect(await http.endpoints == [.lmStudioModels])
     }
 
+    @Test func providerDiscoveryPreservesStableSourceFailureCategories() async {
+        let fixtures: [([CompositionFixtureHTTP.Outcome], ModelBridgeWireErrorCode)] = [
+            ([.error(.timedOut)], .generationTimedOut),
+            ([.error(.responseTooLarge)], .providerResponseInvalid),
+            ([.error(.redirectRejected)], .localityBlocked),
+            ([.error(.authenticationRejected)], .localityBlocked),
+            ([.error(.nonLoopbackResponse)], .localityBlocked),
+            ([.error(.invalidStatus(500))], .providerUnavailable),
+            ([.cancelled], .cancelled),
+            ([.data(Data(#"{"version":17}"#.utf8)), .data(Data(#"{"models":[]}"#.utf8))],
+             .providerResponseInvalid)
+        ]
+
+        for (outcomes, expected) in fixtures {
+            let handler = ModelBridgeProductionComposition.handler(
+                http: CompositionFixtureHTTP(outcomes: outcomes)
+            )
+            let response = await handler.handle(.discover(id: 510, provider: .ollama))
+
+            #expect(response.error?.code == expected)
+            #expect(response.candidates.isEmpty)
+        }
+    }
+
     @Test
     func productionCompositionExitsCleanlyOnEOFWithoutHTTP() async throws {
         let http = CompositionFixtureHTTP(responses: [])
@@ -284,11 +308,21 @@ struct ModelBridgeServerTests {
 }
 
 private actor CompositionFixtureHTTP: LoopbackHTTPPerforming {
-    private var responses: [Data]
+    enum Outcome: Sendable {
+        case data(Data)
+        case error(LoopbackHTTPError)
+        case cancelled
+    }
+
+    private var outcomes: [Outcome]
     private(set) var endpoints: [ApprovedLoopbackEndpoint] = []
 
     init(responses: [Data]) {
-        self.responses = responses
+        outcomes = responses.map(Outcome.data)
+    }
+
+    init(outcomes: [Outcome]) {
+        self.outcomes = outcomes
     }
 
     func perform(
@@ -297,7 +331,14 @@ private actor CompositionFixtureHTTP: LoopbackHTTPPerforming {
         timeoutMilliseconds: Int
     ) async throws -> Data {
         endpoints.append(endpoint)
-        return responses.removeFirst()
+        switch outcomes.removeFirst() {
+        case let .data(data):
+            return data
+        case let .error(error):
+            throw error
+        case .cancelled:
+            throw CancellationError()
+        }
     }
 }
 

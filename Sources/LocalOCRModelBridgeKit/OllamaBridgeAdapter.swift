@@ -84,29 +84,11 @@ public struct OllamaBridgeAdapter: Sendable {
                 named: selectedModel,
                 timeoutMilliseconds: request.timeoutMilliseconds
             )
-        } catch OllamaBridgeError.localityUnverified {
-            return Self.errorResponse(
-                id: request.id,
-                code: .localityUnverified,
-                message: "Selected Ollama model is not verified local."
-            )
-        } catch OllamaBridgeError.localityBlocked {
-            return Self.errorResponse(
-                id: request.id,
-                code: .localityBlocked,
-                message: "Selected Ollama model is blocked by locality policy."
-            )
-        } catch is OllamaBridgeError {
-            return Self.errorResponse(
-                id: request.id,
-                code: .modelIdentityChanged,
-                message: "Selected Ollama model identity is unavailable or ambiguous."
-            )
         } catch {
             return Self.errorResponse(
                 id: request.id,
-                code: .providerUnavailable,
-                message: "Ollama model verification is unavailable."
+                code: Self.verificationErrorCode(error),
+                message: "Ollama model verification failed before generation."
             )
         }
         guard before.identity == expectedIdentity else {
@@ -157,8 +139,8 @@ public struct OllamaBridgeAdapter: Sendable {
         } catch {
             return Self.errorResponse(
                 id: request.id,
-                code: .modelIdentityChanged,
-                message: "Ollama model identity could not be reverified."
+                code: Self.verificationErrorCode(error),
+                message: "Ollama model verification failed after generation."
             )
         }
         guard before.identity == expectedIdentity,
@@ -495,13 +477,50 @@ public struct OllamaBridgeAdapter: Sendable {
     private static func generationTransportErrorCode(
         _ error: any Error
     ) -> ModelBridgeWireErrorCode {
-        switch error as? LoopbackHTTPError {
+        if error is CancellationError { return .cancelled }
+        return switch error as? LoopbackHTTPError {
         case .timedOut:
             .generationTimedOut
         case .invalidStatus(413):
             .contextOverflow
+        case .responseTooLarge:
+            .providerResponseInvalid
+        case .redirectRejected, .authenticationRejected, .nonLoopbackResponse:
+            .localityBlocked
+        case .invalidStatus:
+            .generationFailed
         default:
             .providerUnavailable
+        }
+    }
+
+    private static func verificationErrorCode(
+        _ error: any Error
+    ) -> ModelBridgeWireErrorCode {
+        if error is CancellationError { return .cancelled }
+        if let bridgeError = error as? OllamaBridgeError {
+            switch bridgeError {
+            case .invalidProviderResponse:
+                return .providerResponseInvalid
+            case .modelUnavailable:
+                return .modelUnavailable
+            case .localityUnverified:
+                return .localityUnverified
+            case .localityBlocked:
+                return .localityBlocked
+            }
+        }
+        switch error as? LoopbackHTTPError {
+        case .timedOut:
+            return .generationTimedOut
+        case .responseTooLarge:
+            return .providerResponseInvalid
+        case .redirectRejected, .authenticationRejected, .nonLoopbackResponse:
+            return .localityBlocked
+        case .invalidStatus:
+            return .providerUnavailable
+        default:
+            return .providerUnavailable
         }
     }
 }

@@ -210,6 +210,29 @@ struct ModelBridgeMessagesTests {
         #expect(try JSONDecoder().decode(ModelBridgeResponse.self, from: data) == response)
     }
 
+    @Test(arguments: [
+        ModelBridgeWireErrorCode.cancelled,
+        .providerResponseInvalid,
+        .modelUnavailable
+    ])
+    func stableProviderFailureCodesRoundTripThroughTheClosedWire(
+        _ code: ModelBridgeWireErrorCode
+    ) throws {
+        let response = ModelBridgeResponse(
+            id: 77,
+            error: .init(code: code, message: "stable fixture")
+        )
+
+        let decoded = try JSONDecoder().decode(
+            ModelBridgeResponse.self,
+            from: JSONEncoder().encode(response)
+        )
+
+        #expect(decoded.error?.code == code)
+        #expect(decoded.payloadJSON == nil)
+        #expect(decoded.identity == nil)
+    }
+
     @Test
     func responseDecoderRejectsUnknownKeys() throws {
         let object: [String: Any] = [

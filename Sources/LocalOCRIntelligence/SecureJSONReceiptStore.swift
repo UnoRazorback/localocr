@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 
 private let secureJSONReceiptMaximumSize = 16 * 1_024
+private let secureJSONReceiptCreateLock = NSLock()
 
 public enum SecureJSONReceiptStoreError: Error, Sendable, Equatable {
     case invalidReceiptPath
@@ -310,6 +311,11 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
         defer { close(handles) }
         try reprove(handles)
         let parent = try requiredParent(in: handles)
+        secureJSONReceiptCreateLock.lock()
+        defer { secureJSONReceiptCreateLock.unlock() }
+        try lockExclusively(parent.descriptor)
+        defer { unlock(parent.descriptor) }
+        try reprove(handles)
         guard try entryMetadata(named: receiptName, beneath: parent.descriptor) == nil else {
             return false
         }
@@ -384,6 +390,18 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
             throw error
         }
         return true
+    }
+
+    private func lockExclusively(_ descriptor: Int32) throws {
+        while flock(descriptor, LOCK_EX) != 0 {
+            let code = errno
+            if code == EINTR { continue }
+            throw SecureJSONReceiptStoreError.filesystemOperationFailed(code)
+        }
+    }
+
+    private func unlock(_ descriptor: Int32) {
+        while flock(descriptor, LOCK_UN) != 0, errno == EINTR {}
     }
 
     func removeIfPresent() throws {

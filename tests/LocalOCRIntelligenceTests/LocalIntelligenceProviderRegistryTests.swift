@@ -144,4 +144,50 @@ import Testing
             #expect(await store.state() == .none)
         }
     }
+
+    @Test func qualificationDiscoveryPreservesHelperProtocolAndCancellationFailures() async {
+        enum Fixture: Sendable {
+            case helper
+            case malformedProtocol
+            case oversizedResponse
+            case cancellation
+        }
+        let fixtures: [(Fixture, IntelligenceError)] = [
+            (.helper, .bridgeUnavailable),
+            (.malformedProtocol, .bridgeInvalid),
+            (.oversizedResponse, .bridgeInvalid),
+            (.cancellation, .cancelled)
+        ]
+
+        for (fixture, expected) in fixtures {
+            let transport = Task6Transport { _ in
+                switch fixture {
+                case .helper:
+                    throw ModelBridgeClientError.helperLaunchFailed
+                case .malformedProtocol:
+                    throw ModelBridgeClientError.malformedResponse
+                case .oversizedResponse:
+                    throw ModelBridgeClientError.responseTooLarge
+                case .cancellation:
+                    throw CancellationError()
+                }
+            }
+            let registry = LocalIntelligenceProviderRegistry(
+                transport: transport,
+                selectionStore: Task6SelectionStore(.none),
+                qualificationService: task6QualificationService(provider: Task6FixtureProvider()),
+                appleProviderFactory: { Task6FixtureProvider(identity: .appleSystemDefault) },
+                now: { task6Now }
+            )
+
+            do {
+                _ = try await registry.qualify(task6OllamaIdentity)
+                Issue.record("Expected stable registry failure \(expected)")
+            } catch let actual as IntelligenceError {
+                #expect(actual == expected)
+            } catch {
+                Issue.record("Unexpected registry failure: \(error)")
+            }
+        }
+    }
 }
