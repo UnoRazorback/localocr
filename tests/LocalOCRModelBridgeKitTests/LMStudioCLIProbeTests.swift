@@ -450,7 +450,7 @@ struct LMStudioCLIProbeTests {
     }
 
     @Test
-    func suspendedMachOSwapAndRestoreIsKilledBeforeReplacementExecutes() async throws {
+    func suspendedMachOPathABAStillRejectsTheLoadedReplacementCode() async throws {
         let fixture = try MachOExecutionFixture()
         defer { fixture.remove() }
         let pinnedFD = Darwin.open(
@@ -461,7 +461,7 @@ struct LMStudioCLIProbeTests {
         defer { Darwin.close(pinnedFD) }
         try fixture.installReplacementAtExecutablePath()
         let runner = fixture.runner(
-            suspendedInspector: GatedSuspendedExecutableInspector(fixture: fixture)
+            suspendedCodeInspector: ABASuspendedCodeInspector(fixture: fixture)
         )
         let task = Task {
             try await runner.run(
@@ -475,6 +475,9 @@ struct LMStudioCLIProbeTests {
 
         try fixture.restoreOriginalExecutablePath()
         try fixture.releaseSuspendedInspection()
+        try await fixture.waitUntilSuspendedCodeIsBound()
+        try fixture.reinstallReplacementAtExecutablePath()
+        try fixture.releaseSuspendedCodeInspection()
 
         await #expect(throws: LMStudioCLIProbeError.unsafeExecutable) {
             try await task.value
@@ -486,6 +489,57 @@ struct LMStudioCLIProbeTests {
             #expect(kill(target, 0) == -1)
             #expect(errno == ESRCH)
         }
+    }
+
+    @Test
+    func arm64MachOChildDoesNotInheritPinnedExecutableDescriptor() async throws {
+        let fixture = try MachOExecutionFixture(rejectsInheritedDescriptors: true)
+        defer { fixture.remove() }
+        let pinnedFD = Darwin.open(
+            fixture.executableURL.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+        )
+        #expect(pinnedFD >= 0)
+        defer { Darwin.close(pinnedFD) }
+
+        let output = try await fixture.runner().run(
+            executableDescriptor: pinnedFD,
+            displayPath: fixture.executableURL.path,
+            arguments: ["--version"],
+            environment: ["HOME=\(fixture.root.path)", "PATH="]
+        )
+
+        #expect(String(decoding: output, as: UTF8.self) == "CLI commit: original-mach-o\n")
+    }
+
+    @Test
+    func suspendedCodeInspectionConsumesTheHardCommandDeadline() async throws {
+        let fixture = try MachOExecutionFixture()
+        defer { fixture.remove() }
+        let pinnedFD = Darwin.open(
+            fixture.executableURL.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+        )
+        #expect(pinnedFD >= 0)
+        defer { Darwin.close(pinnedFD) }
+        let runner = fixture.runner(
+            timeout: .milliseconds(50),
+            suspendedCodeInspector: DelayedSuspendedCodeInspector(delay: .milliseconds(100))
+        )
+        let clock = ContinuousClock()
+        let start = clock.now
+
+        await #expect(throws: LMStudioCLIProbeError.timedOut) {
+            try await runner.run(
+                executableDescriptor: pinnedFD,
+                displayPath: fixture.executableURL.path,
+                arguments: ["--version"],
+                environment: ["HOME=\(fixture.root.path)", "PATH="]
+            )
+        }
+
+        #expect(start.duration(to: clock.now) < .milliseconds(300))
+        #expect(!FileManager.default.fileExists(atPath: fixture.originalExecutedURL.path))
     }
 
     @Test
@@ -542,7 +596,36 @@ struct LMStudioCLIProbeTests {
     }
 
     @Test
-    func retainedPipesCannotLeaveReadersThatConsumeReusedDescriptors() async throws {
+    func descendantRefreshFailureStillKillsAndReapsOwnedGroup() async throws {
+        try await assertObserverFailureStillCleansOwnedGroup(
+            tracker: RefreshFailingDescendantTracker()
+        )
+    }
+
+    @Test
+    func descendantAmbiguityStillKillsAndReapsOwnedGroup() async throws {
+        try await assertObserverFailureStillCleansOwnedGroup(
+            tracker: AmbiguousDescendantTracker()
+        )
+    }
+
+    @Test
+    func observedDescendantPIDReuseCannotSignalTheReplacementProcess() throws {
+        let observer = ReusedPIDProcessObserver()
+        let tracker = try DarwinLMStudioDescendantTracker(
+            rootPID: observer.root.pid,
+            observer: observer
+        )
+        try tracker.refresh()
+        observer.replaceChildAtSamePID()
+
+        try tracker.sendSignalToObservedDescendants(SIGKILL)
+
+        #expect(observer.replacementWasSignaled == false)
+    }
+
+    @Test
+    func immediateUnobservableEscapeFailsClosedWithoutClaimingContainment() async throws {
         let fixture = try EscapedPipeExecutionFixture()
         defer { fixture.remove() }
         let executableFD = Darwin.open(
@@ -554,7 +637,7 @@ struct LMStudioCLIProbeTests {
         let clock = ContinuousClock()
         let start = clock.now
 
-        await #expect(throws: LMStudioCLIProbeError.timedOut) {
+        await #expect(throws: LMStudioCLIProbeError.commandFailed) {
             try await fixture.runner().run(
                 executableDescriptor: executableFD,
                 displayPath: fixture.executableURL.path,
@@ -565,10 +648,10 @@ struct LMStudioCLIProbeTests {
 
         #expect(start.duration(to: clock.now) < .seconds(1))
         let escapedPID = try fixture.escapedProcessID()
-        for target in [escapedPID, -escapedPID] {
-            errno = 0
-            #expect(kill(target, 0) == -1)
-            #expect(errno == ESRCH)
+        #expect(kill(escapedPID, 0) == 0)
+        defer {
+            _ = kill(escapedPID, SIGKILL)
+            _ = kill(-escapedPID, SIGKILL)
         }
         var reusePipes = try makeNonblockingReusePipes(count: 64)
         defer { closeReusePipes(&reusePipes) }
@@ -576,7 +659,7 @@ struct LMStudioCLIProbeTests {
             var byte: UInt8 = 0x5A
             #expect(Darwin.write(pipe.write, &byte, 1) == 1)
         }
-        try await Task.sleep(for: .seconds(2))
+        try await Task.sleep(for: .milliseconds(100))
 
         for pipe in reusePipes {
             var byte: UInt8 = 0
@@ -606,6 +689,185 @@ private struct NeverDisappearingProcessSystem: LMStudioProcessSystemCalling {
 private enum RunnerFixtureError: Error {
     case setupFailed
     case executableDidNotStart
+}
+
+private func assertObserverFailureStillCleansOwnedGroup(
+    tracker: any LMStudioDescendantTracking
+) async throws {
+    let fixture = try OwnedGroupExecutionFixture()
+    defer { fixture.remove() }
+    let executableFD = Darwin.open(
+        fixture.executableURL.path,
+        O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+    )
+    #expect(executableFD >= 0)
+    defer { Darwin.close(executableFD) }
+    let runner = fixture.runner(descendantTracker: tracker)
+    let task = Task {
+        try await runner.run(
+            executableDescriptor: executableFD,
+            displayPath: fixture.executableURL.path,
+            arguments: ["--version"],
+            environment: ["HOME=\(fixture.root.path)", "PATH="]
+        )
+    }
+    try await fixture.waitUntilStarted()
+    let processID = try fixture.processID()
+    let descendantID = try fixture.descendantID()
+    defer {
+        _ = kill(-processID, SIGKILL)
+        _ = kill(processID, SIGKILL)
+        _ = kill(descendantID, SIGKILL)
+    }
+
+    await #expect(throws: LMStudioCLIProbeError.commandFailed) {
+        try await task.value
+    }
+
+    try assertProcessAndGroupAreGone(
+        processID: processID,
+        descendantID: descendantID
+    )
+}
+
+private final class RefreshFailingDescendantTracker: LMStudioDescendantTracking,
+    @unchecked Sendable {
+    func refresh() throws { throw LMStudioCLIProbeError.commandFailed }
+    func sendSignalToObservedDescendants(_ signal: Int32) throws {}
+    func allGone() throws -> Bool { throw LMStudioCLIProbeError.commandFailed }
+}
+
+private final class AmbiguousDescendantTracker: LMStudioDescendantTracking,
+    @unchecked Sendable {
+    func refresh() throws {}
+    func sendSignalToObservedDescendants(_ signal: Int32) throws {
+        throw LMStudioCLIProbeError.commandFailed
+    }
+    func allGone() throws -> Bool { throw LMStudioCLIProbeError.commandFailed }
+}
+
+private final class ReusedPIDProcessObserver: LMStudioProcessIdentityObserving,
+    @unchecked Sendable {
+    let root = LMStudioObservedProcessIdentity(
+        pid: 40_001,
+        owner: getuid(),
+        uniqueID: 100,
+        parentUniqueID: 99,
+        pidVersion: 10
+    )
+    private let originalChild = LMStudioObservedProcessIdentity(
+        pid: 40_002,
+        owner: getuid(),
+        uniqueID: 101,
+        parentUniqueID: 100,
+        pidVersion: 11
+    )
+    private var currentChild: LMStudioObservedProcessIdentity
+    private(set) var replacementWasSignaled = false
+
+    init() {
+        currentChild = originalChild
+    }
+
+    func identity(of pid: pid_t) throws -> LMStudioObservedProcessIdentity? {
+        if pid == root.pid { return root }
+        if pid == currentChild.pid { return currentChild }
+        return nil
+    }
+
+    func childIdentities(
+        of parent: LMStudioObservedProcessIdentity
+    ) throws -> [LMStudioObservedProcessIdentity] {
+        parent == root && currentChild == originalChild ? [originalChild] : []
+    }
+
+    func sendSignal(
+        _ signal: Int32,
+        to identity: LMStudioObservedProcessIdentity
+    ) throws -> Bool {
+        if identity.pid == currentChild.pid, identity != currentChild {
+            return false
+        }
+        if identity == currentChild { replacementWasSignaled = true }
+        return true
+    }
+
+    func replaceChildAtSamePID() {
+        currentChild = LMStudioObservedProcessIdentity(
+            pid: originalChild.pid,
+            owner: getuid(),
+            uniqueID: 202,
+            parentUniqueID: 201,
+            pidVersion: 22
+        )
+    }
+}
+
+private struct OwnedGroupExecutionFixture {
+    let scriptFixture: RunnerScriptFixture
+    let processIDURL: URL
+    let descendantIDURL: URL
+
+    var root: URL { scriptFixture.root }
+    var executableURL: URL { scriptFixture.executableURL }
+
+    init() throws {
+        let fixture = try RunnerScriptFixture(prefix: "lmstudio-owned-group")
+        scriptFixture = fixture
+        processIDURL = fixture.root.appendingPathComponent("process.pid")
+        descendantIDURL = fixture.root.appendingPathComponent("descendant.pid")
+        try fixture.writeScript("""
+        #!/bin/sh
+        printf '%s\n' "$$" > '\(Self.shellEscaped(processIDURL.path))'
+        trap '' TERM
+        (trap '' TERM; exec /bin/sleep 30) &
+        printf '%s\n' "$!" > '\(Self.shellEscaped(descendantIDURL.path))'
+        while :; do /bin/sleep 30; done
+        """)
+    }
+
+    func runner(descendantTracker: any LMStudioDescendantTracking) -> LMStudioCommandRunner {
+        LMStudioCommandRunner(
+            commandTimeout: .milliseconds(100),
+            terminationGracePeriod: .milliseconds(20),
+            cleanupBudget: .milliseconds(300),
+            pipeDrainBudget: .milliseconds(100),
+            maximumOutputBytes: 1_048_576,
+            descendantTrackerFactory: { _ in descendantTracker }
+        )
+    }
+
+    func waitUntilStarted() async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(1))
+        while clock.now < deadline {
+            if FileManager.default.fileExists(atPath: processIDURL.path),
+               FileManager.default.fileExists(atPath: descendantIDURL.path) {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        throw RunnerFixtureError.executableDidNotStart
+    }
+
+    func processID() throws -> pid_t { try readPID(processIDURL) }
+    func descendantID() throws -> pid_t { try readPID(descendantIDURL) }
+    func remove() { scriptFixture.remove() }
+
+    private func readPID(_ url: URL) throws -> pid_t {
+        let data = try Data(contentsOf: url)
+        guard let pid = Int32(
+            String(decoding: data, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        ) else {
+            throw RunnerFixtureError.setupFailed
+        }
+        return pid
+    }
+
+    private static func shellEscaped(_ value: String) -> String {
+        value.replacingOccurrences(of: "'", with: "'\\''")
+    }
 }
 
 private struct RunnerScriptFixture {
@@ -646,21 +908,27 @@ private struct RunnerScriptFixture {
     }
 }
 
-private struct GatedSuspendedExecutableInspector: LMStudioSuspendedExecutableInspecting {
+private struct ABASuspendedCodeInspector: LMStudioSuspendedCodeInspecting {
     let fixture: MachOExecutionFixture
 
-    func executableIdentity(ofSuspendedProcess pid: pid_t) async throws -> ExecutableIdentity {
+    func codeIdentity(ofSuspendedProcess pid: pid_t) async throws -> ExecutableCodeIdentity {
         try fixture.recordSuspendedInspection(processID: pid)
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(1))
-        while !fixture.suspendedInspectionIsReleased, clock.now < deadline {
-            try await Task.sleep(for: .milliseconds(5))
+        try await fixture.waitUntilSuspendedInspectionIsReleased()
+        return try await DarwinLMStudioSuspendedCodeInspector {
+            try fixture.recordSuspendedCodeIsBound()
+            try await fixture.waitUntilSuspendedCodeInspectionIsReleased()
         }
-        guard fixture.suspendedInspectionIsReleased else {
-            throw LMStudioCLIProbeError.commandFailed
-        }
-        return try await DarwinLMStudioSuspendedExecutableInspector()
-            .executableIdentity(ofSuspendedProcess: pid)
+            .codeIdentity(ofSuspendedProcess: pid)
+    }
+}
+
+private struct DelayedSuspendedCodeInspector: LMStudioSuspendedCodeInspecting {
+    let delay: Duration
+
+    func codeIdentity(ofSuspendedProcess pid: pid_t) async throws -> ExecutableCodeIdentity {
+        try await Task.sleep(for: delay)
+        return try await DarwinLMStudioSuspendedCodeInspector()
+            .codeIdentity(ofSuspendedProcess: pid)
     }
 }
 
@@ -674,9 +942,11 @@ private struct MachOExecutionFixture {
     private let retiredReplacementURL: URL
     private let inspectionStartedURL: URL
     private let inspectionReleasedURL: URL
+    private let suspendedCodeBoundURL: URL
+    private let codeInspectionReleasedURL: URL
     private let suspendedPIDURL: URL
 
-    init() throws {
+    init(rejectsInheritedDescriptors: Bool = false) throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("lmstudio-mach-o-\(UUID().uuidString)", isDirectory: true)
         executableURL = root.appendingPathComponent("lms")
@@ -687,31 +957,36 @@ private struct MachOExecutionFixture {
         replacementExecutedURL = root.appendingPathComponent("replacement-executed")
         inspectionStartedURL = root.appendingPathComponent("inspection-started")
         inspectionReleasedURL = root.appendingPathComponent("inspection-released")
+        suspendedCodeBoundURL = root.appendingPathComponent("suspended-code-bound")
+        codeInspectionReleasedURL = root.appendingPathComponent("code-inspection-released")
         suspendedPIDURL = root.appendingPathComponent("suspended.pid")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try Self.compileExecutable(
             at: executableURL,
             marker: originalExecutedURL,
-            output: "CLI commit: original-mach-o\n"
+            output: "CLI commit: original-mach-o\n",
+            rejectsInheritedDescriptors: rejectsInheritedDescriptors
         )
         try Self.compileExecutable(
             at: replacementSourceURL,
             marker: replacementExecutedURL,
-            output: "CLI commit: replacement-mach-o\n"
+            output: "CLI commit: replacement-mach-o\n",
+            rejectsInheritedDescriptors: rejectsInheritedDescriptors
         )
     }
 
     func runner(
-        suspendedInspector: any LMStudioSuspendedExecutableInspecting =
-            DarwinLMStudioSuspendedExecutableInspector()
+        timeout: Duration = .seconds(1),
+        suspendedCodeInspector: any LMStudioSuspendedCodeInspecting =
+            DarwinLMStudioSuspendedCodeInspector()
     ) -> LMStudioCommandRunner {
         LMStudioCommandRunner(
-            commandTimeout: .seconds(1),
+            commandTimeout: timeout,
             terminationGracePeriod: .milliseconds(50),
             cleanupBudget: .milliseconds(500),
             pipeDrainBudget: .milliseconds(100),
             maximumOutputBytes: 1_048_576,
-            suspendedInspector: suspendedInspector
+            suspendedCodeInspector: suspendedCodeInspector
         )
     }
 
@@ -723,6 +998,11 @@ private struct MachOExecutionFixture {
     func restoreOriginalExecutablePath() throws {
         try FileManager.default.moveItem(at: executableURL, to: retiredReplacementURL)
         try FileManager.default.moveItem(at: originalBackupURL, to: executableURL)
+    }
+
+    func reinstallReplacementAtExecutablePath() throws {
+        try FileManager.default.moveItem(at: executableURL, to: originalBackupURL)
+        try FileManager.default.moveItem(at: retiredReplacementURL, to: executableURL)
     }
 
     func recordSuspendedInspection(processID: pid_t) throws {
@@ -742,12 +1022,28 @@ private struct MachOExecutionFixture {
         }
     }
 
-    var suspendedInspectionIsReleased: Bool {
-        FileManager.default.fileExists(atPath: inspectionReleasedURL.path)
+    func waitUntilSuspendedInspectionIsReleased() async throws {
+        try await waitForFile(inspectionReleasedURL)
     }
 
     func releaseSuspendedInspection() throws {
         try Data().write(to: inspectionReleasedURL)
+    }
+
+    func recordSuspendedCodeIsBound() throws {
+        try Data().write(to: suspendedCodeBoundURL)
+    }
+
+    func waitUntilSuspendedCodeIsBound() async throws {
+        try await waitForFile(suspendedCodeBoundURL)
+    }
+
+    func releaseSuspendedCodeInspection() throws {
+        try Data().write(to: codeInspectionReleasedURL)
+    }
+
+    func waitUntilSuspendedCodeInspectionIsReleased() async throws {
+        try await waitForFile(codeInspectionReleasedURL)
     }
 
     func suspendedProcessID() throws -> pid_t {
@@ -768,7 +1064,8 @@ private struct MachOExecutionFixture {
     private static func compileExecutable(
         at executableURL: URL,
         marker: URL,
-        output: String
+        output: String,
+        rejectsInheritedDescriptors: Bool
     ) throws {
         let sourceURL = executableURL.appendingPathExtension("c")
         let source = """
@@ -776,6 +1073,11 @@ private struct MachOExecutionFixture {
         #include <string.h>
         #include <unistd.h>
         int main(int argc, char **argv) {
+          if (\(rejectsInheritedDescriptors ? 1 : 0)) {
+            for (int fd = 3; fd < 256; fd++) {
+              if (fcntl(fd, F_GETFD) >= 0) return 89;
+            }
+          }
           int marker = open("\(cEscaped(marker.path))", O_WRONLY | O_CREAT | O_TRUNC, 0600);
           if (marker >= 0) { write(marker, "ran", 3); close(marker); }
           if (argc != 2 || strcmp(argv[1], "--version") != 0) return 88;
@@ -794,6 +1096,17 @@ private struct MachOExecutionFixture {
         compiler.waitUntilExit()
         guard compiler.terminationReason == .exit, compiler.terminationStatus == 0 else {
             throw RunnerFixtureError.setupFailed
+        }
+    }
+
+    private func waitForFile(_ url: URL) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(1))
+        while !FileManager.default.fileExists(atPath: url.path), clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw RunnerFixtureError.executableDidNotStart
         }
     }
 
@@ -889,7 +1202,7 @@ private struct EscapedPipeExecutionFixture {
         int main(void) {
           pid_t child = fork();
           if (child < 0) return 1;
-          if (child > 0) { usleep(100000); return 0; }
+          if (child > 0) return 0;
           if (setsid() < 0) return 2;
           signal(SIGTERM, SIG_IGN);
           signal(SIGPIPE, SIG_IGN);
@@ -897,7 +1210,7 @@ private struct EscapedPipeExecutionFixture {
           if (fd < 0) return 3;
           dprintf(fd, "%d\\n", getpid());
           close(fd);
-          usleep(1500000);
+          usleep(30000000);
           write(STDOUT_FILENO, "late-out", 8);
           write(STDERR_FILENO, "late-err", 8);
           usleep(100000);
