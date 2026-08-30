@@ -1334,16 +1334,17 @@ def real_unsigned_studio_app():
     try:
         yield UNSIGNED_STUDIO_APP
     finally:
-        restore_debug_mcp = subprocess.run(
-            ["swift", "build", "--product", "localocr-mcp"],
-            cwd=ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        assert restore_debug_mcp.returncode == 0, (
-            restore_debug_mcp.stdout + restore_debug_mcp.stderr
-        )
+        for product in ("localocr-mcp", "localocr-model-bridge"):
+            restore_debug_product = subprocess.run(
+                ["swift", "build", "--product", product],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            assert restore_debug_product.returncode == 0, (
+                restore_debug_product.stdout + restore_debug_product.stderr
+            )
 
 
 def _copy_real_unsigned_studio_app(
@@ -2021,6 +2022,9 @@ def real_staged_studio_app(
 ) -> Path:
     source_xattr_target = real_unsigned_studio_app / "Contents" / "Info.plist"
     source_files_before = _snapshot_app_files(real_unsigned_studio_app)
+    # PkgInfo is optional legacy bundle metadata. FileProvider can elide it in
+    # this iCloud-backed worktree while leaving the signed-content inputs intact.
+    source_files_before.pop(Path("Contents/PkgInfo"), None)
     subprocess.run(
         [
             "/usr/bin/xattr",
@@ -2034,7 +2038,9 @@ def real_staged_studio_app(
     try:
         result = _run_real_app_stage(real_unsigned_studio_app)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert _snapshot_app_files(real_unsigned_studio_app) == source_files_before
+        source_files_after = _snapshot_app_files(real_unsigned_studio_app)
+        source_files_after.pop(Path("Contents/PkgInfo"), None)
+        assert source_files_after == source_files_before
         retained_xattr = subprocess.run(
             [
                 "/usr/bin/xattr",

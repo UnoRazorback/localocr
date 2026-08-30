@@ -371,13 +371,13 @@ Record UTC time, commit, branch, clean status, stable Xcode build/version, Swift
 ```bash
 swift package clean
 swift test
-xcodebuild -project LocalOCRStudio.xcodeproj -scheme LocalOCRStudio -configuration Debug clean build
-xcodebuild -project LocalOCRStudio.xcodeproj -scheme LocalOCRStudio -configuration Release clean build
-.venv/bin/python scripts/validate-mcp-stdio-policy.py
-.venv/bin/python scripts/validate-model-bridge-policy.py
+xcodebuild -project "LocalOCR Studio.xcodeproj" -scheme "LocalOCR Studio" -configuration Debug clean build
+xcodebuild -project "LocalOCR Studio.xcodeproj" -scheme "LocalOCR Studio" -configuration Release clean build
+.venv/bin/python scripts/validate-mcp-stdio-policy.py --repo-root "$PWD"
+.venv/bin/python scripts/validate-model-bridge-policy.py --source-root "$PWD"
 scripts/build-native-tools.sh
 scripts/smoke-native-tools.sh
-.venv/bin/python -m pytest -q Tests
+.venv/bin/python -m pytest -q tests
 git diff --check
 git status --short
 ```
