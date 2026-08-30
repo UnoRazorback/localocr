@@ -487,6 +487,8 @@ public struct OllamaBridgeAdapter: Sendable {
             .providerResponseInvalid
         case .redirectRejected, .authenticationRejected, .nonLoopbackResponse:
             .localityBlocked
+        case .cancelled:
+            .cancelled
         case .invalidStatus:
             .generationFailed
         default:
@@ -517,6 +519,8 @@ public struct OllamaBridgeAdapter: Sendable {
             return .providerResponseInvalid
         case .redirectRejected, .authenticationRejected, .nonLoopbackResponse:
             return .localityBlocked
+        case .cancelled:
+            return .cancelled
         case .invalidStatus:
             return .providerUnavailable
         default:

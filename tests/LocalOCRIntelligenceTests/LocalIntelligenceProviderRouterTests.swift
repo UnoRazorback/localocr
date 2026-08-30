@@ -22,48 +22,81 @@ import Testing
     }
 
     @Test func blockedAndUnverifiedSelectionsFailClosedWithoutGenerationOrApple() async {
-        for locality in [LocalModelLocality.blocked, .unverified] {
-            let apple = Task6FixtureProvider(identity: .appleSystemDefault)
-            let transport = Task6Transport { request in
-                task6DiscoveryResponse(
-                    request: request,
-                    candidates: [task6Candidate(locality: locality)]
+        for identity in [task6OllamaIdentity, task6LMStudioIdentity] {
+            for locality in [LocalModelLocality.blocked, .unverified] {
+                let apple = Task6FixtureProvider(identity: .appleSystemDefault)
+                let transport = Task6Transport { request in
+                    task6DiscoveryResponse(
+                        request: request,
+                        candidates: [task6Candidate(identity: identity, locality: locality)]
+                    )
+                }
+                let router = task6Router(
+                    transport: transport,
+                    apple: apple,
+                    state: .selected(task6ExternalSelection(identity: identity))
                 )
-            }
-            let router = task6Router(transport: transport, apple: apple)
-            let expected = locality == .blocked
-                ? LocalIntelligenceSelectionFailure.localityBlocked(task6OllamaIdentity)
-                : LocalIntelligenceSelectionFailure.localityUnverified(task6OllamaIdentity)
+                let expected = locality == .blocked
+                    ? LocalIntelligenceSelectionFailure.localityBlocked(identity)
+                    : LocalIntelligenceSelectionFailure.localityUnverified(identity)
 
-            await #expect(throws: IntelligenceError.selection(expected)) {
-                try await router.summarize(task6Document)
+                await #expect(throws: IntelligenceError.selection(expected)) {
+                    try await router.summarize(task6Document)
+                }
+                #expect(await transport.requests.count == 1)
+                #expect(await apple.summaryCount == 0)
             }
-            #expect(await transport.requests.count == 1)
-            #expect(await apple.summaryCount == 0)
         }
     }
 
     @Test func discoveryIdentityChangeFailsBeforeSendingDocumentText() async {
-        let changed = LocalModelIdentity(
-            provider: .ollama,
-            model: task6OllamaIdentity.model,
-            fingerprint: "sha256:changed",
-            harnessVersion: task6OllamaIdentity.harnessVersion
-        )
-        let apple = Task6FixtureProvider(identity: .appleSystemDefault)
-        let transport = Task6Transport { request in
-            task6DiscoveryResponse(request: request, candidates: [task6Candidate(identity: changed)])
-        }
-        let router = task6Router(transport: transport, apple: apple)
+        for identity in [task6OllamaIdentity, task6LMStudioIdentity] {
+            let changed = LocalModelIdentity(
+                provider: identity.provider,
+                model: identity.model,
+                fingerprint: "sha256:changed",
+                harnessVersion: identity.harnessVersion
+            )
+            let apple = Task6FixtureProvider(identity: .appleSystemDefault)
+            let transport = Task6Transport { request in
+                task6DiscoveryResponse(request: request, candidates: [task6Candidate(identity: changed)])
+            }
+            let router = task6Router(
+                transport: transport,
+                apple: apple,
+                state: .selected(task6ExternalSelection(identity: identity))
+            )
 
-        await #expect(throws: IntelligenceError.selection(.identityChanged(
-            expected: task6OllamaIdentity,
-            actual: changed
-        ))) {
-            try await router.summarize(task6Document)
+            await #expect(throws: IntelligenceError.selection(.identityChanged(
+                expected: identity,
+                actual: changed
+            ))) {
+                try await router.summarize(task6Document)
+            }
+            #expect(await transport.requests.allSatisfy { $0.prompt == nil })
+            #expect(await apple.summaryCount == 0)
         }
-        #expect(await transport.requests.allSatisfy { $0.prompt == nil })
-        #expect(await apple.summaryCount == 0)
+    }
+
+    @Test func ambiguousDuplicateDiscoveryFailsAsInvalidBridgeForBothExternalProviders() async {
+        for identity in [task6OllamaIdentity, task6LMStudioIdentity] {
+            let apple = Task6FixtureProvider(identity: .appleSystemDefault)
+            let duplicate = task6Candidate(identity: identity)
+            let transport = Task6Transport { request in
+                task6DiscoveryResponse(request: request, candidates: [duplicate, duplicate])
+            }
+            let router = task6Router(
+                transport: transport,
+                apple: apple,
+                state: .selected(task6ExternalSelection(identity: identity))
+            )
+
+            await #expect(throws: IntelligenceError.bridgeInvalid) {
+                try await router.summarize(task6Document)
+            }
+            #expect(await transport.requests.allSatisfy { $0.prompt == nil })
+            #expect(await apple.summaryCount == 0)
+        }
     }
 
     @Test func selectedExternalIdentityWithoutImmutableEvidenceFailsBeforeDiscovery() async {

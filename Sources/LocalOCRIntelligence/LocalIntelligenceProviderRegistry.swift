@@ -208,7 +208,7 @@ public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging {
             throw IntelligenceError.selection(.modelUnavailable(identity))
         }
         guard sameModel.count == 1, let candidate = sameModel.first else {
-            throw IntelligenceError.selection(.identityChanged(expected: identity, actual: nil))
+            throw IntelligenceError.bridgeInvalid
         }
         guard candidate.identity == identity else {
             throw IntelligenceError.selection(.identityChanged(

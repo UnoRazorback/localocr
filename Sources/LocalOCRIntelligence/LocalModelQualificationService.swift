@@ -42,7 +42,7 @@ public actor LocalModelQualificationService {
         let model: String
     }
 
-    private struct QualificationCacheEntry: Codable, Sendable {
+    private struct QualificationCacheEntry: Codable, Sendable, Equatable {
         static let currentSchemaVersion = 1
 
         let schemaVersion: Int
@@ -350,12 +350,7 @@ public actor LocalModelQualificationService {
             receipt: outcome.receipt,
             failures: outcome.failures
         )
-        do {
-            _ = try await store.read()
-            try await store.replace(with: entry)
-        } catch SecureJSONReceiptStoreError.missingPath {
-            _ = try await store.createIfAbsent(with: entry)
-        }
+        try await store.replace(with: entry)
     }
 
     private func persistedOutcome(
@@ -438,7 +433,8 @@ public actor LocalModelQualificationService {
                     "failures": .array(.value)
                 ],
                 optional: ["receipt": receiptSchema]
-            )
+            ),
+            receiptsEquivalent: ==
         )
     }
 
@@ -455,10 +451,26 @@ public actor LocalModelQualificationService {
         else {
             return false
         }
-        let tokens = summaryTokens(in: summary.text)
+        let clauses = summaryClauses(in: summary.text)
+        guard !clauses.isEmpty else { return false }
+        return clauses.allSatisfy { clause in
+            validSummaryClause(
+                clause,
+                citedPages: Set(summary.citations.map(\.page))
+            )
+        }
+    }
+
+    private nonisolated static func validSummaryClause(
+        _ clause: String,
+        citedPages: Set<Int>
+    ) -> Bool {
+        let tokens = summaryTokens(in: clause)
+        guard !tokens.isEmpty, !tokens.contains("or") else { return false }
         let tokenSet = Set(tokens)
         let invoiceIndicators: Set<String> = [
-            "invoice", "q", "104", "date", "dated", "total", "totals", "amount", "value",
+            "invoice", "reference", "number", "q", "104", "date", "dated",
+            "total", "totals", "amount", "value",
             "2026", "08", "29", "144", "17"
         ]
         let projectIndicators: Set<String> = [
@@ -468,36 +480,67 @@ public actor LocalModelQualificationService {
         let hasProjectFacts = !tokenSet.isDisjoint(with: projectIndicators)
         guard hasInvoiceFacts != hasProjectFacts else { return false }
 
-        let connective: Set<String> = [
-            "a", "an", "and", "as", "at", "by", "for", "from", "has", "in", "is", "it",
-            "of", "on", "or", "the", "this", "to", "was", "were", "with"
-        ]
+        let clauseGlue: Set<String> = ["a", "an", "and", "has", "is", "the", "with"]
         if hasInvoiceFacts {
-            guard Set(summary.citations.map(\.page)) == [1]
-            else { return false }
-            let relations = [
+            guard citedPages == [1] else { return false }
+            let relations: [[String]] = [
                 ["invoice", "q", "104"],
-                ["on", "2026", "08", "29"]
-            ] + ["date", "dated"].map { [$0, "2026", "08", "29"] }
-                + ["total", "totals", "amount", "value"].map { [$0, "144", "17"] }
+                ["invoice", "reference", "q", "104"],
+                ["invoice", "number", "q", "104"],
+                ["on", "2026", "08", "29"],
+                ["date", "2026", "08", "29"],
+                ["date", "is", "2026", "08", "29"],
+                ["date", "of", "2026", "08", "29"],
+                ["dated", "2026", "08", "29"]
+            ] + ["total", "totals", "amount", "value"].flatMap { label in
+                [
+                    [label, "144", "17"],
+                    [label, "is", "144", "17"],
+                    [label, "of", "144", "17"]
+                ]
+            }
             return everyMaterialTokenIsInACompleteRelation(
                 tokens,
                 relations: relations,
-                connective: connective
+                clauseGlue: clauseGlue
             )
         }
 
-        guard Set(summary.citations.map(\.page)) == [2]
-        else { return false }
+        guard citedPages == [2] else { return false }
         return everyMaterialTokenIsInACompleteRelation(
             tokens,
             relations: [
                 ["project", "localocr", "qualification"],
-                ["localocr", "qualification", "project"],
-                ["status", "synthetic", "test", "only"]
+                ["localocr", "qualification", "is", "a", "project"],
+                ["status", "synthetic", "test", "only"],
+                ["status", "is", "synthetic", "test", "only"]
             ],
-            connective: connective
+            clauseGlue: clauseGlue
         )
+    }
+
+    private nonisolated static func summaryClauses(in value: String) -> [String] {
+        let characters = Array(value.lowercased())
+        var clauses: [String] = []
+        var current = ""
+        for index in characters.indices {
+            let character = characters[index]
+            let decimalPoint = character == "." &&
+                index > characters.startIndex &&
+                index < characters.index(before: characters.endIndex) &&
+                characters[characters.index(before: index)].isNumber &&
+                characters[characters.index(after: index)].isNumber
+            if !decimalPoint && [".", "!", "?", ";", ",", "\n", "\r"].contains(character) {
+                let clause = current.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !clause.isEmpty { clauses.append(clause) }
+                current = ""
+            } else {
+                current.append(character)
+            }
+        }
+        let clause = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !clause.isEmpty { clauses.append(clause) }
+        return clauses
     }
 
     private nonisolated static func summaryTokens(in value: String) -> [String] {
@@ -509,47 +552,28 @@ public actor LocalModelQualificationService {
     private nonisolated static func everyMaterialTokenIsInACompleteRelation(
         _ tokens: [String],
         relations: [[String]],
-        connective: Set<String>
+        clauseGlue: Set<String>
     ) -> Bool {
         let covered = relations.reduce(into: Set<Int>()) { covered, relation in
-            if let match = relationMatch(
-                relation,
-                in: tokens,
-                connective: connective
-            ) {
-                covered.formUnion(match)
+            for match in relationMatches(relation, in: tokens) {
+                covered.formUnion(match.indices)
             }
         }
         guard !covered.isEmpty else { return false }
-        return tokens.indices.allSatisfy { covered.contains($0) || connective.contains(tokens[$0]) }
+        return tokens.indices.allSatisfy { covered.contains($0) || clauseGlue.contains(tokens[$0]) }
     }
 
-    private nonisolated static func relationMatch(
+    private nonisolated static func relationMatches(
         _ material: [String],
-        in tokens: [String],
-        connective: Set<String>
-    ) -> Set<Int>? {
-        guard let first = material.first else { return nil }
-        for start in tokens.indices where tokens[start] == first {
-            var matched = [start]
-            var cursor = tokens.index(after: start)
-            var failed = false
-            for expected in material.dropFirst() {
-                while cursor < tokens.endIndex,
-                      tokens[cursor] != expected,
-                      connective.contains(tokens[cursor]) {
-                    cursor = tokens.index(after: cursor)
-                }
-                guard cursor < tokens.endIndex, tokens[cursor] == expected else {
-                    failed = true
-                    break
-                }
-                matched.append(cursor)
-                cursor = tokens.index(after: cursor)
-            }
-            if !failed { return Set(matched) }
+        in tokens: [String]
+    ) -> [ArraySlice<String>] {
+        guard !material.isEmpty, material.count <= tokens.count else { return [] }
+        return tokens.indices.compactMap { start in
+            let end = start + material.count
+            guard end <= tokens.endIndex else { return nil }
+            let candidate = tokens[start..<end]
+            return Array(candidate) == material ? candidate : nil
         }
-        return nil
     }
 
     private nonisolated static func validOrganization(

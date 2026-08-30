@@ -45,6 +45,7 @@ public enum LoopbackHTTPError: Error, Sendable, Equatable {
     case invalidStatus(Int)
     case responseTooLarge
     case timedOut
+    case cancelled
 }
 
 public protocol LoopbackHTTPPerforming: Sendable {
@@ -135,6 +136,8 @@ public final class LoopbackHTTPClient: LoopbackHTTPPerforming, @unchecked Sendab
                 body: body,
                 timeoutMilliseconds: timeoutMilliseconds
             )
+        } catch let error as URLError where error.code == .cancelled {
+            throw LoopbackHTTPError.cancelled
         } catch let error as URLError where error.code == .cannotConnectToHost {
             guard let remainingMilliseconds = Self.remainingMilliseconds(
                 until: deadline,
@@ -149,8 +152,15 @@ public final class LoopbackHTTPClient: LoopbackHTTPPerforming, @unchecked Sendab
                     body: body,
                     timeoutMilliseconds: remainingMilliseconds
                 )
-            } catch let error as URLError where error.code == .timedOut {
-                throw LoopbackHTTPError.timedOut
+            } catch let error as URLError {
+                switch error.code {
+                case .cancelled:
+                    throw LoopbackHTTPError.cancelled
+                case .timedOut:
+                    throw LoopbackHTTPError.timedOut
+                default:
+                    throw error
+                }
             }
         } catch let error as URLError where error.code == .timedOut {
             throw LoopbackHTTPError.timedOut

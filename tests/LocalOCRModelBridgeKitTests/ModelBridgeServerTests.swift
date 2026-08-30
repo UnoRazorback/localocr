@@ -58,6 +58,7 @@ struct ModelBridgeServerTests {
             ([.error(.redirectRejected)], .localityBlocked),
             ([.error(.authenticationRejected)], .localityBlocked),
             ([.error(.nonLoopbackResponse)], .localityBlocked),
+            ([.error(.cancelled)], .cancelled),
             ([.error(.invalidStatus(500))], .providerUnavailable),
             ([.cancelled], .cancelled),
             ([.data(Data(#"{"version":17}"#.utf8)), .data(Data(#"{"models":[]}"#.utf8))],
@@ -72,6 +73,55 @@ struct ModelBridgeServerTests {
 
             #expect(response.error?.code == expected)
             #expect(response.candidates.isEmpty)
+        }
+    }
+
+    @Test func ollamaStatusClassifiesExactCandidateBeforeLocalityFiltering() async throws {
+        let model = "gemma4:8b"
+        let cases: [(Data, ModelBridgeWireErrorCode)] = [
+            (Data(#"{"models":[]}"#.utf8), .modelUnavailable),
+            (try ollamaStatusTags(model: model, size: 0), .localityUnverified),
+            (try ollamaStatusTags(model: model, remoteHost: "https://example.invalid"), .localityBlocked),
+            (try ollamaStatusTags(model: model, duplicate: true), .providerResponseInvalid)
+        ]
+
+        for (tags, expected) in cases {
+            let handler = ModelBridgeProductionComposition.handler(
+                http: CompositionFixtureHTTP(responses: [
+                    Data(#"{"version":"0.11.8"}"#.utf8),
+                    tags
+                ])
+            )
+
+            let response = await handler.handle(.status(id: 511, provider: .ollama, model: model))
+
+            #expect(response.error?.code == expected)
+            #expect(response.identity == nil)
+        }
+    }
+
+    @Test func lmStudioStatusClassifiesExactCandidateBeforeLocalityFiltering() async throws {
+        let model = "lmstudio-community/gemma-3-4b-it-GGUF"
+        let missing = Data(#"{"models":[]}"#.utf8)
+        let valid = try lmStudioStatusModels(model: model)
+        let duplicate = try lmStudioStatusModels(model: model, duplicate: true)
+        let cases: [(Data, CompositionFixtureLMStudioCLI, ModelBridgeWireErrorCode)] = [
+            (missing, .init(), .modelUnavailable),
+            (valid, .init(models: []), .localityUnverified),
+            (valid, .init(link: .init(enabled: true, connectedPeerCount: 1)), .localityBlocked),
+            (duplicate, .init(), .providerResponseInvalid)
+        ]
+
+        for (models, cli, expected) in cases {
+            let handler = ModelBridgeProductionComposition.handler(
+                http: CompositionFixtureHTTP(responses: [models]),
+                lmStudioCLI: cli
+            )
+
+            let response = await handler.handle(.status(id: 512, provider: .lmStudio, model: model))
+
+            #expect(response.error?.code == expected)
+            #expect(response.identity == nil)
         }
     }
 
@@ -343,27 +393,81 @@ private actor CompositionFixtureHTTP: LoopbackHTTPPerforming {
 }
 
 private struct CompositionFixtureLMStudioCLI: LMStudioCLIProbing {
+    let link: LMStudioLinkStatus
+    let models: [LMStudioLocalModel]
+    let fixtureVersion: String
+
+    init(
+        link: LMStudioLinkStatus = .init(enabled: false, connectedPeerCount: 0),
+        models: [LMStudioLocalModel]? = nil,
+        version: String = "fixture-commit"
+    ) {
+        self.link = link
+        self.models = models ?? [Self.fixtureModel]
+        fixtureVersion = version
+    }
+
     func linkStatus() async throws -> LMStudioLinkStatus {
-        LMStudioLinkStatus(enabled: false, connectedPeerCount: 0)
+        link
     }
 
     func localModels() async throws -> [LMStudioLocalModel] {
-        [
-            LMStudioLocalModel(
-                key: "lmstudio-community/gemma-3-4b-it-GGUF",
-                selectedVariant: "lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m",
-                variants: ["lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m"],
-                architecture: "gemma3",
-                format: "gguf",
-                quantization: "Q4_K_M",
-                sizeBytes: 4_294_967_296
-            )
-        ]
+        models
     }
 
     func version() async throws -> String {
-        "fixture-commit"
+        fixtureVersion
     }
+
+    private static let fixtureModel = LMStudioLocalModel(
+        key: "lmstudio-community/gemma-3-4b-it-GGUF",
+        selectedVariant: "lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m",
+        variants: ["lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m"],
+        architecture: "gemma3",
+        format: "gguf",
+        quantization: "Q4_K_M",
+        sizeBytes: 4_294_967_296
+    )
+}
+
+private func ollamaStatusTags(
+    model: String,
+    size: Int = 5_234_567_890,
+    remoteHost: String? = nil,
+    duplicate: Bool = false
+) throws -> Data {
+    var item: [String: Any] = [
+        "name": model,
+        "model": model,
+        "size": size,
+        "digest": String(repeating: "a", count: 64),
+        "details": ["format": "gguf"]
+    ]
+    if let remoteHost { item["remote_host"] = remoteHost }
+    let models = duplicate ? [item, item] : [item]
+    return try JSONSerialization.data(withJSONObject: ["models": models])
+}
+
+private func lmStudioStatusModels(model: String, duplicate: Bool = false) throws -> Data {
+    let item: [String: Any] = [
+        "type": "llm",
+        "publisher": "lmstudio-community",
+        "key": model,
+        "display_name": "Gemma 3 4B IT",
+        "architecture": "gemma3",
+        "quantization": ["name": "Q4_K_M", "bits_per_weight": 4],
+        "size_bytes": 4_294_967_296,
+        "params_string": "4B",
+        "loaded_instances": [["id": "gemma-instance", "config": ["context_length": 4096]]],
+        "max_context_length": 131_072,
+        "format": "gguf",
+        "capabilities": ["vision": false, "trained_for_tool_use": false],
+        "description": NSNull(),
+        "variants": ["\(model)@q4_k_m"],
+        "selected_variant": "\(model)@q4_k_m"
+    ]
+    let models = duplicate ? [item, item] : [item]
+    return try JSONSerialization.data(withJSONObject: ["models": models])
 }
 
 private func builtModelBridgeExecutableURL() throws -> URL {

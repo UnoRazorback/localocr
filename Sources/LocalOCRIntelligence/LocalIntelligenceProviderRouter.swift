@@ -95,7 +95,7 @@ public actor LocalIntelligenceProviderRouter: DocumentIntelligenceProviding {
             throw IntelligenceError.selection(.modelUnavailable(selected))
         }
         guard sameModel.count == 1, let candidate = sameModel.first else {
-            throw IntelligenceError.selection(.identityChanged(expected: selected, actual: nil))
+            throw IntelligenceError.bridgeInvalid
         }
         guard candidate.identity == selected else {
             throw IntelligenceError.selection(.identityChanged(

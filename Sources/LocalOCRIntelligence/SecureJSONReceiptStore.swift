@@ -1,8 +1,34 @@
 import Darwin
+import Dispatch
 import Foundation
 
 private let secureJSONReceiptMaximumSize = 16 * 1_024
-private let secureJSONReceiptCreateLock = NSLock()
+private let secureJSONReceiptFlockQueue = DispatchQueue(
+    label: "com.rayconsulting.localocr.secure-receipt-flock"
+)
+
+private actor SecureJSONReceiptMutationGate {
+    static let shared = SecureJSONReceiptMutationGate()
+
+    private var held = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if !held {
+            held = true
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            held = false
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}
 
 public enum SecureJSONReceiptStoreError: Error, Sendable, Equatable {
     case invalidReceiptPath
@@ -104,6 +130,7 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
     private let expectedReceiptOwnerID: uid_t
     private let allowedTopLevelMemberSets: Set<Set<String>>?
     private let receiptSchema: SecureJSONReceiptSchema?
+    private let receiptsEquivalent: (@Sendable (Receipt, Receipt) -> Bool)?
     private let hooks: SecureJSONReceiptStoreHooks
 
     init(
@@ -111,6 +138,7 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
         expectedReceiptOwnerID: uid_t = geteuid(),
         allowedTopLevelMemberSets: Set<Set<String>>? = nil,
         receiptSchema: SecureJSONReceiptSchema? = nil,
+        receiptsEquivalent: (@Sendable (Receipt, Receipt) -> Bool)? = nil,
         hooks: SecureJSONReceiptStoreHooks = SecureJSONReceiptStoreHooks()
     ) {
         self.receiptURL = receiptURL
@@ -119,6 +147,7 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
         self.expectedReceiptOwnerID = expectedReceiptOwnerID
         self.allowedTopLevelMemberSets = allowedTopLevelMemberSets
         self.receiptSchema = receiptSchema
+        self.receiptsEquivalent = receiptsEquivalent
         self.hooks = hooks
     }
 
@@ -139,12 +168,28 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
         return try decodeReceipt(data)
     }
 
-    func replace(with receipt: Receipt) throws {
+    func replace(with receipt: Receipt) async throws {
+        await SecureJSONReceiptMutationGate.shared.acquire()
+        do {
+            try Task.checkCancellation()
+            try await replaceWhileHoldingMutationPermit(with: receipt)
+            await SecureJSONReceiptMutationGate.shared.release()
+        } catch {
+            await SecureJSONReceiptMutationGate.shared.release()
+            throw error
+        }
+    }
+
+    private func replaceWhileHoldingMutationPermit(with receipt: Receipt) async throws {
         let data = try encodeReceipt(receipt)
         let handles = try openDirectoryChain(createApplicationDirectory: true)
         defer { close(handles) }
         try reprove(handles)
         let parent = try requiredParent(in: handles)
+        try await lockExclusively(parent.descriptor)
+        defer { unlock(parent.descriptor) }
+        try Task.checkCancellation()
+        try reprove(handles)
         let existingReceipt: OpenedReceipt?
         do {
             existingReceipt = try openValidatedReceipt(beneath: parent.descriptor)
@@ -155,6 +200,17 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
             if let existingReceipt {
                 Darwin.close(existingReceipt.descriptor)
             }
+        }
+
+        if let existingReceipt, let receiptsEquivalent {
+            let existing = try decodeReceipt(readAll(from: existingReceipt.descriptor))
+            try reprove(handles)
+            try requireEntry(
+                named: receiptName,
+                beneath: parent.descriptor,
+                matches: existingReceipt.identity
+            )
+            if receiptsEquivalent(existing, receipt) { return }
         }
 
         let temporary = try createTemporaryReceipt(beneath: parent.descriptor)
@@ -305,16 +361,28 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
         }
     }
 
-    func createIfAbsent(with receipt: Receipt) throws -> Bool {
+    func createIfAbsent(with receipt: Receipt) async throws -> Bool {
+        await SecureJSONReceiptMutationGate.shared.acquire()
+        do {
+            try Task.checkCancellation()
+            let created = try await createIfAbsentWhileHoldingMutationPermit(with: receipt)
+            await SecureJSONReceiptMutationGate.shared.release()
+            return created
+        } catch {
+            await SecureJSONReceiptMutationGate.shared.release()
+            throw error
+        }
+    }
+
+    private func createIfAbsentWhileHoldingMutationPermit(with receipt: Receipt) async throws -> Bool {
         let data = try encodeReceipt(receipt)
         let handles = try openDirectoryChain(createApplicationDirectory: true)
         defer { close(handles) }
         try reprove(handles)
         let parent = try requiredParent(in: handles)
-        secureJSONReceiptCreateLock.lock()
-        defer { secureJSONReceiptCreateLock.unlock() }
-        try lockExclusively(parent.descriptor)
+        try await lockExclusively(parent.descriptor)
         defer { unlock(parent.descriptor) }
+        try Task.checkCancellation()
         try reprove(handles)
         guard try entryMetadata(named: receiptName, beneath: parent.descriptor) == nil else {
             return false
@@ -392,11 +460,20 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
         return true
     }
 
-    private func lockExclusively(_ descriptor: Int32) throws {
-        while flock(descriptor, LOCK_EX) != 0 {
-            let code = errno
-            if code == EINTR { continue }
-            throw SecureJSONReceiptStoreError.filesystemOperationFailed(code)
+    private func lockExclusively(_ descriptor: Int32) async throws {
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, any Error>) in
+            secureJSONReceiptFlockQueue.async {
+                while flock(descriptor, LOCK_EX) != 0 {
+                    let code = errno
+                    if code == EINTR { continue }
+                    continuation.resume(
+                        throwing: SecureJSONReceiptStoreError.filesystemOperationFailed(code)
+                    )
+                    return
+                }
+                continuation.resume()
+            }
         }
     }
 

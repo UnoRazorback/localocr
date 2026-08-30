@@ -115,6 +115,65 @@ import Testing
         #expect(outcome.failures == ["summary"])
     }
 
+    @Test(arguments: [
+        "Invoice. Q-104.",
+        "Invoice reference Q-104 or total $144.17.",
+        "Invoice reference Q-104 has total $144.17. Cloud payment accepted."
+    ])
+    func everyInvoiceClauseMustAssertACompleteUnambiguousRelation(
+        text: String
+    ) async throws {
+        let provider = Task6FixtureProvider(summary: .init(
+            text: text,
+            citations: [
+                .init(page: 1, quote: "Invoice Q-104. Date: 2026-08-29. Total: $144.17.")
+            ]
+        ))
+
+        let outcome = try await task6QualificationService(provider: provider)
+            .qualify(task6OllamaIdentity)
+
+        #expect(outcome.status == .failed)
+        #expect(outcome.failures == ["summary"])
+    }
+
+    @Test func separatedProjectNameAndTypeFragmentsFailQualification() async throws {
+        let provider = Task6FixtureProvider(summary: .init(
+            text: "LocalOCR Qualification. Project.",
+            citations: [
+                .init(page: 2, quote: "Project: LocalOCR Qualification. Status: synthetic test only.")
+            ]
+        ))
+
+        let outcome = try await task6QualificationService(provider: provider)
+            .qualify(task6OllamaIdentity)
+
+        #expect(outcome.status == .failed)
+        #expect(outcome.failures == ["summary"])
+    }
+
+    @Test(arguments: [
+        "Invoice reference Q-104 has total $144.17.",
+        "Invoice number Q-104 has amount $144.17 and is dated 2026-08-29.",
+        "Invoice number Q-104 has value $144.17 and is dated 2026-08-29."
+    ])
+    func explicitInvoiceRelationParaphrasesPassQualification(
+        text: String
+    ) async throws {
+        let provider = Task6FixtureProvider(summary: .init(
+            text: text,
+            citations: [
+                .init(page: 1, quote: "Invoice Q-104. Date: 2026-08-29. Total: $144.17.")
+            ]
+        ))
+
+        let outcome = try await task6QualificationService(provider: provider)
+            .qualify(task6OllamaIdentity)
+
+        #expect(outcome.status == .passed)
+        #expect(outcome.failures.isEmpty)
+    }
+
     @Test func trivialSummaryWithoutACompleteFixtureRelationFailsQualification() async throws {
         let provider = Task6FixtureProvider(summary: .init(
             text: "Invoice",
@@ -418,6 +477,132 @@ import Testing
         #expect(entries.count == 1, "unexpected cache entries: \(entries.map(\.lastPathComponent))")
         #expect(entries.allSatisfy { !$0.lastPathComponent.hasSuffix(".quarantine") })
     }
+
+    @Test func preseededCacheSerializesTwelveIndependentValidReplacements() async throws {
+        let fixture = try Task6QualificationCacheFixture()
+        defer { fixture.remove() }
+        try await fixture.persistPassedQualification()
+        let services = (0..<12).map { _ in
+            fixture.relaunchedService(provider: Task6FixtureProvider())
+        }
+
+        let outcomes = await withTaskGroup(
+            of: LocalModelQualificationOutcome?.self,
+            returning: [LocalModelQualificationOutcome?].self
+        ) { group in
+            for service in services {
+                group.addTask { await task6QualificationResult(from: service) }
+            }
+            return await group.reduce(into: []) { $0.append($1) }
+        }
+        let persisted = await fixture.relaunchedService().cachedOutcome(for: task6OllamaIdentity)
+        let entries = try FileManager.default.contentsOfDirectory(
+            at: fixture.cacheDirectory,
+            includingPropertiesForKeys: nil
+        )
+
+        #expect(outcomes.count == 12)
+        #expect(outcomes.allSatisfy { $0?.status == .passed })
+        #expect(persisted?.receipt == task6QualificationReceipt())
+        #expect(entries.count == 1, "unexpected cache entries: \(entries.map(\.lastPathComponent))")
+        #expect(entries.allSatisfy { !$0.lastPathComponent.hasSuffix(".quarantine") })
+    }
+
+    @Test func independentProcessAdvisoryLockBlocksReplacementUntilRelease() async throws {
+        let fixture = try Task6QualificationCacheFixture()
+        defer { fixture.remove() }
+        try await fixture.persistPassedQualification()
+        let externalLock = try Task6ExternalDirectoryLock(directory: fixture.cacheDirectory)
+        defer { externalLock.releaseAndWait() }
+        try externalLock.waitUntilLocked()
+
+        let provider = Task6FixtureProvider()
+        let completion = Task6QualificationCompletion()
+        let service = fixture.relaunchedService(provider: provider)
+        let writer = Task {
+            let outcome = await task6QualificationResult(from: service)
+            await completion.finish(outcome)
+        }
+        while await provider.extractionCount == 0 {
+            await Task.yield()
+        }
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(await completion.hasFinished == false)
+
+        externalLock.releaseAndWait()
+        await writer.value
+        #expect(await completion.outcome?.status == .passed)
+        #expect(await fixture.relaunchedService().cachedOutcome(for: task6OllamaIdentity)?.status == .passed)
+    }
+
+    @Test func blockedExternalLockDoesNotStarveParallelQualificationTasks() async throws {
+        let fixture = try Task6QualificationCacheFixture()
+        defer { fixture.remove() }
+        try await fixture.persistPassedQualification()
+        let externalLock = try Task6ExternalDirectoryLock(directory: fixture.cacheDirectory)
+        defer { externalLock.releaseAndWait() }
+        try externalLock.waitUntilLocked()
+
+        let blockedProvider = Task6FixtureProvider()
+        let blockedService = fixture.relaunchedService(provider: blockedProvider)
+        let blockedWriter = Task { await task6QualificationResult(from: blockedService) }
+        while await blockedProvider.extractionCount == 0 { await Task.yield() }
+
+        let releasePulse = Task6QualificationCompletion()
+        let releaser = Task {
+            try await Task.sleep(for: .milliseconds(100))
+            await releasePulse.finish(nil)
+            externalLock.releaseAndWait()
+        }
+        let services = (0..<32).map { _ in
+            fixture.relaunchedService(provider: Task6FixtureProvider())
+        }
+        let parallelWriters = Task {
+            await withTaskGroup(of: LocalModelQualificationOutcome?.self) { group in
+                for service in services {
+                    group.addTask { await task6QualificationResult(from: service) }
+                }
+                for await _ in group {}
+            }
+        }
+
+        try await releaser.value
+        #expect(await releasePulse.hasFinished)
+        #expect(await blockedWriter.value?.status == .passed)
+        await parallelWriters.value
+        #expect(await fixture.relaunchedService().cachedOutcome(for: task6OllamaIdentity)?.status == .passed)
+    }
+
+    @Test func cancellationWhileWaitingForExternalLockCannotMutateAfterRelease() async throws {
+        let fixture = try Task6QualificationCacheFixture()
+        defer { fixture.remove() }
+        try await fixture.persistPassedQualification()
+        let externalLock = try Task6ExternalDirectoryLock(directory: fixture.cacheDirectory)
+        defer { externalLock.releaseAndWait() }
+        try externalLock.waitUntilLocked()
+
+        let failingProvider = Task6FixtureProvider(extraction: [
+            .init(name: "date", value: nil, sourcePage: nil, evidence: nil),
+            .init(name: "total", value: nil, sourcePage: nil, evidence: nil),
+            .init(name: "reference_number", value: nil, sourcePage: nil, evidence: nil)
+        ])
+        let completion = Task6QualificationCompletion()
+        let service = fixture.relaunchedService(provider: failingProvider)
+        let writer = Task {
+            let outcome = await task6QualificationResult(from: service)
+            await completion.finish(outcome)
+        }
+        while await failingProvider.extractionCount == 0 { await Task.yield() }
+        writer.cancel()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await completion.hasFinished == false)
+
+        externalLock.releaseAndWait()
+        await writer.value
+        #expect(await completion.outcome == nil)
+        #expect(await fixture.relaunchedService().cachedOutcome(for: task6OllamaIdentity)?.status == .passed)
+    }
 }
 
 let task6Now = Date(timeIntervalSince1970: 1_788_307_200)
@@ -666,6 +851,62 @@ private func task6QualificationResult(
     from service: LocalModelQualificationService
 ) async -> LocalModelQualificationOutcome? {
     try? await service.qualify(task6OllamaIdentity)
+}
+
+private actor Task6QualificationCompletion {
+    private(set) var hasFinished = false
+    private(set) var outcome: LocalModelQualificationOutcome?
+
+    func finish(_ outcome: LocalModelQualificationOutcome?) {
+        self.outcome = outcome
+        hasFinished = true
+    }
+}
+
+private final class Task6ExternalDirectoryLock: @unchecked Sendable {
+    private let process: Process
+    private let input: Pipe
+    private let output: Pipe
+    private let stateLock = NSLock()
+    private var released = false
+
+    init(directory: URL) throws {
+        let input = Pipe()
+        let output = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.arguments = [
+            "-MFcntl=:flock",
+            "-e",
+            #"$|=1; open(my $fh, '<', $ARGV[0]) or exit 2; flock($fh, LOCK_EX) or exit 3; print "locked\n"; scalar(<STDIN>); flock($fh, LOCK_UN);"#,
+            directory.path
+        ]
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = Pipe()
+        try process.run()
+        self.process = process
+        self.input = input
+        self.output = output
+    }
+
+    func waitUntilLocked() throws {
+        let line = try output.fileHandleForReading.read(upToCount: 7)
+        guard line == Data("locked\n".utf8) else {
+            throw CocoaError(.fileReadUnknown)
+        }
+    }
+
+    func releaseAndWait() {
+        stateLock.withLock {
+            guard !released else { return }
+            released = true
+            try? input.fileHandleForWriting.write(contentsOf: Data("release\n".utf8))
+            try? input.fileHandleForWriting.close()
+            process.waitUntilExit()
+            try? output.fileHandleForReading.close()
+        }
+    }
 }
 
 private final class Task6QualificationCacheFixture: @unchecked Sendable {

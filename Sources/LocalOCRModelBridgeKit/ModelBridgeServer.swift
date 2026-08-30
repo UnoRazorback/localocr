@@ -89,19 +89,15 @@ public struct ModelBridgeProviderHandler: ModelBridgeHandling {
                 )
             }
             do {
-                let matches = try await ollama.discover(
+                let candidates = try await ollama.discover(
                     timeoutMilliseconds: request.timeoutMilliseconds
-                ).filter {
-                    $0.identity.model == selectedModel && $0.locality == .verifiedLocal
-                }
-                guard matches.count == 1, let candidate = matches.first else {
-                    return Self.errorResponse(
-                        id: request.id,
-                        code: .providerUnavailable,
-                        message: "Selected Ollama model is unavailable or not verified local."
-                    )
-                }
-                return ModelBridgeResponse(id: request.id, identity: candidate.identity)
+                )
+                return Self.statusResponse(
+                    id: request.id,
+                    model: selectedModel,
+                    candidates: candidates,
+                    providerName: "Ollama"
+                )
             } catch {
                 return Self.errorResponse(
                     id: request.id,
@@ -143,19 +139,15 @@ public struct ModelBridgeProviderHandler: ModelBridgeHandling {
                 )
             }
             do {
-                let matches = try await adapter.discover(
+                let candidates = try await adapter.discover(
                     timeoutMilliseconds: request.timeoutMilliseconds
-                ).filter {
-                    $0.identity.model == selectedModel && $0.locality == .verifiedLocal
-                }
-                guard matches.count == 1, let candidate = matches.first else {
-                    return Self.errorResponse(
-                        id: request.id,
-                        code: .providerUnavailable,
-                        message: "Selected LM Studio model is unavailable or not verified local."
-                    )
-                }
-                return ModelBridgeResponse(id: request.id, identity: candidate.identity)
+                )
+                return Self.statusResponse(
+                    id: request.id,
+                    model: selectedModel,
+                    candidates: candidates,
+                    providerName: "LM Studio"
+                )
             } catch {
                 return Self.errorResponse(
                     id: request.id,
@@ -174,6 +166,45 @@ public struct ModelBridgeProviderHandler: ModelBridgeHandling {
         ModelBridgeResponse(id: id, error: ModelBridgeWireError(code: code, message: message))
     }
 
+    private static func statusResponse(
+        id: UInt64,
+        model: String,
+        candidates: [BridgeModelCandidate],
+        providerName: String
+    ) -> ModelBridgeResponse {
+        let matches = candidates.filter { $0.identity.model == model }
+        guard !matches.isEmpty else {
+            return errorResponse(
+                id: id,
+                code: .modelUnavailable,
+                message: "Selected \(providerName) model is unavailable."
+            )
+        }
+        guard matches.count == 1, let candidate = matches.first else {
+            return errorResponse(
+                id: id,
+                code: .providerResponseInvalid,
+                message: "Selected \(providerName) model metadata is ambiguous."
+            )
+        }
+        switch candidate.locality {
+        case .verifiedLocal:
+            return ModelBridgeResponse(id: id, identity: candidate.identity)
+        case .unverified:
+            return errorResponse(
+                id: id,
+                code: .localityUnverified,
+                message: "Selected \(providerName) model locality is unverified."
+            )
+        case .blocked:
+            return errorResponse(
+                id: id,
+                code: .localityBlocked,
+                message: "Selected \(providerName) model locality is blocked."
+            )
+        }
+    }
+
     private static func discoveryErrorCode(_ error: any Error) -> ModelBridgeWireErrorCode {
         if error is CancellationError { return .cancelled }
         if let httpError = error as? LoopbackHTTPError {
@@ -184,6 +215,8 @@ public struct ModelBridgeProviderHandler: ModelBridgeHandling {
                 return .providerResponseInvalid
             case .redirectRejected, .authenticationRejected, .nonLoopbackResponse:
                 return .localityBlocked
+            case .cancelled:
+                return .cancelled
             case .invalidStatus:
                 return .providerUnavailable
             }
@@ -210,6 +243,17 @@ public struct ModelBridgeProviderHandler: ModelBridgeHandling {
                 return .localityUnverified
             case .localityBlocked:
                 return .localityBlocked
+            }
+        }
+        if let probeError = error as? LMStudioCLIProbeError {
+            switch probeError {
+            case .cancelled:
+                return .cancelled
+            case .timedOut:
+                return .generationTimedOut
+            case .missingExecutable, .unsafeExecutable, .invalidOutput, .commandFailed,
+                 .outputTooLarge:
+                return .providerUnavailable
             }
         }
         return .providerUnavailable

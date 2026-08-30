@@ -82,6 +82,10 @@ public struct LMStudioBridgeAdapter: Sendable {
             snapshot = try await cli.snapshot()
         } catch is CancellationError {
             throw CancellationError()
+        } catch LMStudioCLIProbeError.cancelled {
+            throw LMStudioCLIProbeError.cancelled
+        } catch LMStudioCLIProbeError.timedOut {
+            throw LMStudioCLIProbeError.timedOut
         } catch {
             return models.map {
                 attestedCandidate($0, attestation: Self.unverifiedCLI, loadedInstanceID: nil)
@@ -547,6 +551,8 @@ public struct LMStudioBridgeAdapter: Sendable {
             .providerResponseInvalid
         case .redirectRejected, .authenticationRejected, .nonLoopbackResponse:
             .localityBlocked
+        case .cancelled:
+            .cancelled
         case .invalidStatus:
             .generationFailed
         default:
@@ -558,6 +564,17 @@ public struct LMStudioBridgeAdapter: Sendable {
         _ error: any Error
     ) -> ModelBridgeWireErrorCode {
         if error is CancellationError { return .cancelled }
+        if let probeError = error as? LMStudioCLIProbeError {
+            switch probeError {
+            case .cancelled:
+                return .cancelled
+            case .timedOut:
+                return .generationTimedOut
+            case .missingExecutable, .unsafeExecutable, .invalidOutput, .commandFailed,
+                 .outputTooLarge:
+                return .providerUnavailable
+            }
+        }
         if let bridgeError = error as? LMStudioBridgeError {
             switch bridgeError {
             case .invalidProviderResponse:
@@ -577,6 +594,8 @@ public struct LMStudioBridgeAdapter: Sendable {
             return .providerResponseInvalid
         case .redirectRejected, .authenticationRejected, .nonLoopbackResponse:
             return .localityBlocked
+        case .cancelled:
+            return .cancelled
         case .invalidStatus:
             return .providerUnavailable
         default:

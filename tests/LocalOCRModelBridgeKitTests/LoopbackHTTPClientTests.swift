@@ -171,6 +171,17 @@ struct LoopbackHTTPClientTests {
     }
 
     @Test
+    func sessionCancellationIsMappedToStableClosedError() async {
+        let client = LoopbackHTTPClient(
+            session: FixtureLoopbackHTTPSession(outcomes: [.urlError(.cancelled)])
+        )
+
+        await #expect(throws: LoopbackHTTPError.cancelled) {
+            try await client.perform(.ollamaTags, body: nil, timeoutMilliseconds: 1_000)
+        }
+    }
+
+    @Test
     func ipv6FallbackTimeoutIsMappedToStableError() async {
         let client = LoopbackHTTPClient(
             session: FixtureLoopbackHTTPSession(

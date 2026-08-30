@@ -189,6 +189,7 @@ struct OllamaBridgeAdapterTests {
         (LoopbackHTTPError.redirectRejected, ModelBridgeWireErrorCode.localityBlocked),
         (LoopbackHTTPError.authenticationRejected, ModelBridgeWireErrorCode.localityBlocked),
         (LoopbackHTTPError.nonLoopbackResponse, ModelBridgeWireErrorCode.localityBlocked),
+        (LoopbackHTTPError.cancelled, ModelBridgeWireErrorCode.cancelled),
         (LoopbackHTTPError.invalidStatus(500), ModelBridgeWireErrorCode.generationFailed)
     ])
     func chatTransportFailureUsesItsStableWireCategory(

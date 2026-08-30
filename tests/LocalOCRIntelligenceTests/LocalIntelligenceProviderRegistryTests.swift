@@ -115,16 +115,52 @@ import Testing
     }
 
     @Test func blockedOrUnverifiedCandidateCannotBeSelected() async throws {
-        for locality in [LocalModelLocality.blocked, .unverified] {
+        for identity in [task6OllamaIdentity, task6LMStudioIdentity] {
+            for locality in [LocalModelLocality.blocked, .unverified] {
+                let store = Task6SelectionStore(.none)
+                let qualification = task6QualificationService(
+                    provider: Task6FixtureProvider(identity: identity)
+                )
+                _ = try await qualification.qualify(identity)
+                let transport = Task6Transport { request in
+                    task6DiscoveryResponse(
+                        request: request,
+                        candidates: request.provider == identity.provider
+                            ? [task6Candidate(identity: identity, locality: locality)]
+                            : []
+                    )
+                }
+                let registry = LocalIntelligenceProviderRegistry(
+                    transport: transport,
+                    selectionStore: store,
+                    qualificationService: qualification,
+                    appleProviderFactory: { Task6FixtureProvider(identity: .appleSystemDefault) },
+                    now: { task6Now }
+                )
+
+                let expected = locality == .blocked
+                    ? LocalIntelligenceSelectionFailure.localityBlocked(identity)
+                    : LocalIntelligenceSelectionFailure.localityUnverified(identity)
+                await #expect(throws: IntelligenceError.selection(expected)) {
+                    try await registry.selectExternal(identity, acknowledgmentAcceptedAt: task6Now)
+                }
+                #expect(await store.state() == .none)
+            }
+        }
+    }
+
+    @Test func ambiguousDuplicateCandidateFailsAsInvalidBridgeForBothExternalProviders() async throws {
+        for identity in [task6OllamaIdentity, task6LMStudioIdentity] {
             let store = Task6SelectionStore(.none)
-            let qualification = task6QualificationService(provider: Task6FixtureProvider())
-            _ = try await qualification.qualify(task6OllamaIdentity)
+            let qualification = task6QualificationService(
+                provider: Task6FixtureProvider(identity: identity)
+            )
+            _ = try await qualification.qualify(identity)
+            let duplicate = task6Candidate(identity: identity)
             let transport = Task6Transport { request in
                 task6DiscoveryResponse(
                     request: request,
-                    candidates: request.provider == .ollama
-                        ? [task6Candidate(locality: locality)]
-                        : []
+                    candidates: request.provider == identity.provider ? [duplicate, duplicate] : []
                 )
             }
             let registry = LocalIntelligenceProviderRegistry(
@@ -135,13 +171,47 @@ import Testing
                 now: { task6Now }
             )
 
-            let expected = locality == .blocked
-                ? LocalIntelligenceSelectionFailure.localityBlocked(task6OllamaIdentity)
-                : LocalIntelligenceSelectionFailure.localityUnverified(task6OllamaIdentity)
-            await #expect(throws: IntelligenceError.selection(expected)) {
-                try await registry.selectExternal(task6OllamaIdentity, acknowledgmentAcceptedAt: task6Now)
+            await #expect(throws: IntelligenceError.bridgeInvalid) {
+                try await registry.selectExternal(identity, acknowledgmentAcceptedAt: task6Now)
             }
             #expect(await store.state() == .none)
+        }
+    }
+
+    @Test func oneObservedAlternateIdentityReportsIdentityChangeForBothExternalProviders() async throws {
+        for identity in [task6OllamaIdentity, task6LMStudioIdentity] {
+            let changed = LocalModelIdentity(
+                provider: identity.provider,
+                model: identity.model,
+                fingerprint: "sha256:changed",
+                harnessVersion: identity.harnessVersion
+            )
+            let qualification = task6QualificationService(
+                provider: Task6FixtureProvider(identity: identity)
+            )
+            _ = try await qualification.qualify(identity)
+            let transport = Task6Transport { request in
+                task6DiscoveryResponse(
+                    request: request,
+                    candidates: request.provider == identity.provider
+                        ? [task6Candidate(identity: changed)]
+                        : []
+                )
+            }
+            let registry = LocalIntelligenceProviderRegistry(
+                transport: transport,
+                selectionStore: Task6SelectionStore(.none),
+                qualificationService: qualification,
+                appleProviderFactory: { Task6FixtureProvider(identity: .appleSystemDefault) },
+                now: { task6Now }
+            )
+
+            await #expect(throws: IntelligenceError.selection(.identityChanged(
+                expected: identity,
+                actual: changed
+            ))) {
+                try await registry.selectExternal(identity, acknowledgmentAcceptedAt: task6Now)
+            }
         }
     }
 

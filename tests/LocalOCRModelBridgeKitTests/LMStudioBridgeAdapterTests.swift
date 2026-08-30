@@ -139,6 +139,7 @@ struct LMStudioBridgeAdapterTests {
         (LoopbackHTTPError.redirectRejected, ModelBridgeWireErrorCode.localityBlocked),
         (LoopbackHTTPError.authenticationRejected, ModelBridgeWireErrorCode.localityBlocked),
         (LoopbackHTTPError.nonLoopbackResponse, ModelBridgeWireErrorCode.localityBlocked),
+        (LoopbackHTTPError.cancelled, ModelBridgeWireErrorCode.cancelled),
         (LoopbackHTTPError.invalidStatus(500), ModelBridgeWireErrorCode.generationFailed)
     ])
     func chatTransportFailureUsesItsStableWireCategory(
@@ -169,14 +170,21 @@ struct LMStudioBridgeAdapterTests {
         #expect(response.payloadJSON == nil)
     }
 
-    @Test func cancellationDuringCLIAttestationIsNotRelabeledAsLocalityLoss() async {
+    @Test(arguments: [
+        (LMStudioCLIProbeError.cancelled, ModelBridgeWireErrorCode.cancelled),
+        (LMStudioCLIProbeError.timedOut, ModelBridgeWireErrorCode.generationTimedOut)
+    ])
+    func realCLIProbeCancellationAndTimeoutKeepTheirStableCategories(
+        error: LMStudioCLIProbeError,
+        expected: ModelBridgeWireErrorCode
+    ) async {
         let http = FixtureLMStudioHTTP(responses: [modelsFixture])
         let response = await LMStudioBridgeAdapter(
             http: http,
-            cli: CancellingLMStudioCLIProbe()
+            cli: FixtureLMStudioCLIProbe(error: error)
         ).generate(summaryRequest)
 
-        #expect(response.error?.code == .cancelled)
+        #expect(response.error?.code == expected)
         #expect(response.payloadJSON == nil)
         #expect(await http.requests.map(\.endpoint) == [.lmStudioModels])
         #expect(await http.requests.allSatisfy { $0.body == nil })
@@ -775,12 +783,6 @@ private actor FixtureLMStudioCLIProbe: LMStudioCLIProbing {
         snapshotIndex += 1
         return value
     }
-}
-
-private struct CancellingLMStudioCLIProbe: LMStudioCLIProbing {
-    func linkStatus() async throws -> LMStudioLinkStatus { throw CancellationError() }
-    func localModels() async throws -> [LMStudioLocalModel] { throw CancellationError() }
-    func version() async throws -> String { throw CancellationError() }
 }
 
 private actor InterleavingLinkCLIProbe: LMStudioCLIProbing {
