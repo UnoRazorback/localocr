@@ -365,17 +365,34 @@ import Testing
     @Test(arguments: [
         "Invoice Q-104 and",
         "and Invoice Q-104",
+        "Invoice Q-104 and the",
+        "the and Invoice Q-104",
+        "the the and Invoice Q-104",
+        "Invoice Q-104 and the the",
         "Invoice Q-104 but",
+        "the but Invoice Q-104",
+        "Invoice Q-104 but the",
         "with status synthetic test only",
+        "a with status synthetic test only",
+        "the with status synthetic test only",
+        "status synthetic test only with the",
         "status synthetic test only plus",
+        "the plus Invoice Q-104",
+        "Invoice Q-104 plus the",
         "status synthetic test only is",
         "is status synthetic test only",
+        "the is status synthetic test only",
+        "status synthetic test only is the",
         "date 2026-08-29 and",
         "date 2026-08-29 has",
         "is dated 2026-08-29",
         "Invoice Q-104 has",
         "has Invoice Q-104",
-        "or Invoice Q-104"
+        "Invoice Q-104 has a",
+        "a has Invoice Q-104",
+        "or Invoice Q-104",
+        "the or Invoice Q-104",
+        "Invoice Q-104 or the"
     ])
     func danglingOrNonassertiveConnectorsFailQualification(
         text: String
@@ -394,6 +411,37 @@ import Testing
 
         #expect(outcome.status == .failed)
         #expect(outcome.failures == ["summary"])
+    }
+
+    @Test func oneThroughThreeArticlesCannotMaskAnyClosedEdgeGlue() async throws {
+        let edgeGlue = ["and", "or", "but", "plus", "with", "has", "is"]
+        let articleSequences = ["a", "an the", "the a an"]
+        for glue in edgeGlue {
+            for articles in articleSequences {
+                for text in [
+                    "\(articles) \(glue) Invoice Q-104",
+                    "Invoice Q-104 \(glue) \(articles)"
+                ] {
+                    let outcome = try await task6QualificationService(
+                        provider: Task6FixtureProvider(summary: .init(
+                            text: text,
+                            citations: [
+                                .init(
+                                    page: 1,
+                                    quote: "Invoice Q-104. Date: 2026-08-29. Total: $144.17."
+                                )
+                            ]
+                        ))
+                    ).qualify(task6OllamaIdentity)
+
+                    if outcome.status != .failed {
+                        Issue.record("Article-masked edge glue passed: \(text)")
+                    }
+                    #expect(outcome.status == .failed)
+                    #expect(outcome.failures == ["summary"])
+                }
+            }
+        }
     }
 
     @Test(arguments: [
@@ -423,7 +471,10 @@ import Testing
     @Test(arguments: [
         "Invoice Q-104 has datetime 2026-08-29.",
         "The project is LocalOCR Qualification and the status is synthetic test only.",
-        "LocalOCR Qualification is the project; the status is synthetic test only."
+        "LocalOCR Qualification is the project; the status is synthetic test only.",
+        "LocalOCR Qualification is a project.",
+        "Invoice reference Q-104 has total $144.17.",
+        "Invoice number Q-104 has amount $144.17 and is dated 2026-08-29."
     ])
     func naturalDateProjectAndStatusRelationsPassQualification(
         text: String

@@ -522,11 +522,8 @@ public actor LocalModelQualificationService {
         else {
             return nil
         }
-        let boundaryConnectors: Set<String> = [
-            "and", "or", "but", "plus", "with", "has", "is"
-        ]
-        guard !boundaryConnectors.contains(tokens[0]),
-              !boundaryConnectors.contains(tokens[tokens.count - 1])
+        let clauseGlue: Set<String> = ["a", "an", "and", "has", "is", "the", "with"]
+        guard validSummaryClauseEdges(tokens, clauseGlue: clauseGlue)
         else {
             return nil
         }
@@ -543,7 +540,6 @@ public actor LocalModelQualificationService {
         let hasProjectFacts = !tokenSet.isDisjoint(with: projectIndicators)
         guard hasInvoiceFacts != hasProjectFacts else { return nil }
 
-        let clauseGlue: Set<String> = ["a", "an", "and", "has", "is", "the", "with"]
         if hasInvoiceFacts {
             let relations: [[String]] = [
                 ["invoice", "q", "104"],
@@ -582,6 +578,26 @@ public actor LocalModelQualificationService {
             ],
             clauseGlue: clauseGlue
         ) ? .project : nil
+    }
+
+    private nonisolated static func validSummaryClauseEdges(
+        _ tokens: [String],
+        clauseGlue: Set<String>
+    ) -> Bool {
+        let articles: Set<String> = ["a", "an", "the"]
+        let forbiddenEdgeGlue = clauseGlue
+            .union(["or", "but", "plus"])
+            .subtracting(articles)
+        guard let firstMaterial = tokens.drop(while: articles.contains).first,
+              !forbiddenEdgeGlue.contains(firstMaterial),
+              let lastToken = tokens.last,
+              !articles.contains(lastToken),
+              let lastMaterial = tokens.reversed().drop(while: articles.contains).first,
+              !forbiddenEdgeGlue.contains(lastMaterial)
+        else {
+            return false
+        }
+        return true
     }
 
     private nonisolated static func summaryItems(in value: String) -> [String] {
