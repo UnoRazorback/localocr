@@ -22,6 +22,9 @@ INTELLIGENCE_PROVIDER = (
 INTELLIGENCE_GENERATED_TYPES = (
     ROOT / "Sources" / "LocalOCRIntelligence" / "FoundationModelsGeneratedTypes.swift"
 )
+INTELLIGENCE_ENVIRONMENT = (
+    ROOT / "Sources" / "LocalOCRIntelligence" / "LocalIntelligenceEnvironment.swift"
+)
 MCP_ENTRY_POINT = ROOT / "Sources" / "LocalOCRMCPExecutable" / "main.swift"
 ROOT_VIEW = ROOT / "Sources" / "LocalOCRStudioKit" / "LocalOCRStudioView.swift"
 RESULT_VIEW = ROOT / "Sources" / "LocalOCRStudioKit" / "StudioResultView.swift"
@@ -234,12 +237,14 @@ def test_local_intelligence_is_linked_to_every_shipping_surface() -> None:
 def test_foundation_models_symbols_are_compile_and_availability_guarded() -> None:
     provider = _read(INTELLIGENCE_PROVIDER)
     generated_types = _read(INTELLIGENCE_GENERATED_TYPES)
+    intelligence_environment = _read(INTELLIGENCE_ENVIRONMENT)
     mcp_entry = _read(MCP_ENTRY_POINT)
     app_entry = _read(APP_ENTRY_POINT)
 
     guarded_sources = {
         str(INTELLIGENCE_PROVIDER): provider,
         str(INTELLIGENCE_GENERATED_TYPES): generated_types,
+        str(INTELLIGENCE_ENVIRONMENT): intelligence_environment,
         str(MCP_ENTRY_POINT): mcp_entry,
         str(APP_ENTRY_POINT): app_entry,
     }
@@ -248,7 +253,7 @@ def test_foundation_models_symbols_are_compile_and_availability_guarded() -> Non
 
     assert "@available(macOS 26.0, *)" in provider
     assert "@available(macOS 26.0, *)" in generated_types
-    for entry_source in (mcp_entry, app_entry):
+    for entry_source in (mcp_entry, intelligence_environment):
         available_body = _available_block_body(entry_source, "macOS 26.0")
         assert "FoundationModelsIntelligenceProvider()" in available_body
 
@@ -257,6 +262,7 @@ def test_foundation_models_guard_contract_rejects_appended_unguarded_symbols() -
     for source_path in (
         INTELLIGENCE_PROVIDER,
         INTELLIGENCE_GENERATED_TYPES,
+        INTELLIGENCE_ENVIRONMENT,
         MCP_ENTRY_POINT,
         APP_ENTRY_POINT,
     ):
@@ -397,6 +403,8 @@ def test_ui_fixtures_are_debug_only_and_require_a_test_session_marker() -> None:
         "intelligenceNotReady",
         "intelligenceUnsupportedLanguage",
         "intelligenceError",
+        "modelManager",
+        "modelRecovery",
         "error",
         "batchReview",
         "batchProcessing",

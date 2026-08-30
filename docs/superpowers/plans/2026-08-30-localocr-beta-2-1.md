@@ -46,7 +46,7 @@ Run:
 ```bash
 swift test --filter AgentConnectionGuideModelTests
 swift test --filter StudioLocalModelManagerViewModelTests
-.venv/bin/python -m pytest -q Tests/contract/test_studio_app_project.py Tests/contract/test_beta2_candidate_documentation.py
+.venv/bin/python -m pytest -q tests/contract/test_studio_app_project.py tests/contract/test_beta2_candidate_documentation.py
 ```
 
 Expected: all focused tests pass before reconciliation.
@@ -70,7 +70,7 @@ xcodegen generate
 git diff --check
 swift test --filter AgentConnectionGuideModelTests
 swift test --filter StudioLocalModelManagerViewModelTests
-.venv/bin/python -m pytest -q Tests/contract/test_studio_app_project.py Tests/contract/test_beta2_candidate_documentation.py
+.venv/bin/python -m pytest -q tests/contract/test_studio_app_project.py tests/contract/test_beta2_candidate_documentation.py
 ```
 
 Expected: generation is reproducible and focused tests pass.
@@ -78,7 +78,7 @@ Expected: generation is reproducible and focused tests pass.
 **Step 5: Commit only if conflict resolution was not captured by the merge commit**
 
 ```bash
-git add Package.swift project.yml LocalOCRStudio.xcodeproj App Sources Tests docs scripts README.md
+git add Package.swift project.yml LocalOCRStudio.xcodeproj App Sources tests docs scripts README.md
 git commit -m "merge: reconcile Local Intelligence with beta 2"
 ```
 
@@ -87,10 +87,10 @@ git commit -m "merge: reconcile Local Intelligence with beta 2"
 **Files:**
 - Create `Sources/LocalOCRStudioKit/HelpCenterModel.swift`
 - Create `Sources/LocalOCRStudioKit/HelpCenterView.swift`
-- Create `Tests/LocalOCRStudioKitTests/HelpCenterModelTests.swift`
+- Create `tests/LocalOCRStudioKitTests/HelpCenterModelTests.swift`
 - Modify `App/LocalOCRStudioApp.swift`
 - Modify `App/LocalOCRStudioUITestSupport.swift`
-- Modify `Tests/LocalOCRStudioKitTests/StudioViewContractTests.swift`
+- Modify `tests/LocalOCRStudioKitTests/StudioViewContractTests.swift`
 
 **Step 1: Write the failing Help model tests**
 
@@ -135,7 +135,7 @@ Expected: Help tests, source contracts, and the Debug app build pass.
 **Step 6: Commit**
 
 ```bash
-git add App Sources/LocalOCRStudioKit Tests/LocalOCRStudioKitTests
+git add App Sources/LocalOCRStudioKit tests/LocalOCRStudioKitTests
 git commit -m "feat: add offline LocalOCR help center"
 ```
 
@@ -145,9 +145,9 @@ git commit -m "feat: add offline LocalOCR help center"
 - Create `Sources/LocalOCRStudioKit/AgentClientConnection.swift`
 - Create `Sources/LocalOCRStudioKit/AgentClientDiscovery.swift`
 - Create `Sources/LocalOCRStudioKit/AgentClientCommandRunner.swift`
-- Create `Tests/LocalOCRStudioKitTests/AgentClientConnectionTests.swift`
-- Create `Tests/LocalOCRStudioKitTests/AgentClientDiscoveryTests.swift`
-- Create `Tests/LocalOCRStudioKitTests/AgentClientCommandRunnerTests.swift`
+- Create `tests/LocalOCRStudioKitTests/AgentClientConnectionTests.swift`
+- Create `tests/LocalOCRStudioKitTests/AgentClientDiscoveryTests.swift`
+- Create `tests/LocalOCRStudioKitTests/AgentClientCommandRunnerTests.swift`
 
 **Step 1: Write failing command-spec tests**
 
@@ -189,7 +189,7 @@ Expected: all tests pass, including timeout and output-cap cases.
 **Step 7: Commit**
 
 ```bash
-git add Sources/LocalOCRStudioKit Tests/LocalOCRStudioKitTests
+git add Sources/LocalOCRStudioKit tests/LocalOCRStudioKitTests
 git commit -m "feat: add safe agent connection engine"
 ```
 
@@ -198,9 +198,9 @@ git commit -m "feat: add safe agent connection engine"
 **Files:**
 - Modify `Sources/LocalOCRStudioKit/AgentConnectionGuideModel.swift`
 - Modify `Sources/LocalOCRStudioKit/AgentConnectionGuideView.swift`
-- Modify `Tests/LocalOCRStudioKitTests/AgentConnectionGuideModelTests.swift`
+- Modify `tests/LocalOCRStudioKitTests/AgentConnectionGuideModelTests.swift`
 - Modify `App/LocalOCRStudioUITestSupport.swift`
-- Modify `Tests/contract/test_studio_app_project.py`
+- Modify `tests/contract/test_studio_app_project.py`
 
 **Step 1: Extend failing guide-model tests**
 
@@ -229,7 +229,7 @@ Use fake discovery and command results for connected, disconnected, conflict, an
 
 ```bash
 swift test --filter AgentConnectionGuideModelTests
-.venv/bin/python -m pytest -q Tests/contract/test_studio_app_project.py
+.venv/bin/python -m pytest -q tests/contract/test_studio_app_project.py
 xcodebuild -project LocalOCRStudio.xcodeproj -scheme LocalOCRStudio -configuration Debug build
 ```
 
@@ -238,7 +238,7 @@ Expected: tests pass without altering the developer machine's Codex or Claude co
 **Step 6: Commit**
 
 ```bash
-git add App Sources/LocalOCRStudioKit Tests/LocalOCRStudioKitTests Tests/contract/test_studio_app_project.py
+git add App Sources/LocalOCRStudioKit tests/LocalOCRStudioKitTests tests/contract/test_studio_app_project.py
 git commit -m "feat: guide MCP connection from Studio"
 ```
 
@@ -255,9 +255,9 @@ git commit -m "feat: guide MCP connection from Studio"
 - Modify `scripts/test-downloaded-release.sh`
 - Modify `scripts/smoke-native-tools.sh`
 - Modify `scripts/release-toolchain.sh`
-- Modify `Tests/contract/test_direct_release_scripts.py`
-- Modify `Tests/contract/test_release_artifacts.py`
-- Modify `Tests/contract/test_native_python_compatibility.py`
+- Modify `tests/contract/test_direct_release_scripts.py`
+- Modify `tests/contract/test_release_artifacts.py`
+- Modify `tests/contract/test_native_python_compatibility.py`
 
 **Step 1: Add failing exact-inventory release tests**
 
@@ -290,7 +290,7 @@ Use a fake local loopback provider. Prove the bridge can list models and respond
 **Step 6: Run the focused release tests**
 
 ```bash
-.venv/bin/python -m pytest -q Tests/contract/test_direct_release_scripts.py Tests/contract/test_release_artifacts.py Tests/contract/test_native_python_compatibility.py
+.venv/bin/python -m pytest -q tests/contract/test_direct_release_scripts.py tests/contract/test_release_artifacts.py tests/contract/test_native_python_compatibility.py
 scripts/build-native-tools.sh
 scripts/smoke-native-tools.sh
 .venv/bin/python scripts/validate-model-bridge-policy.py
@@ -301,7 +301,7 @@ Expected: exact helper inventory and local-only policy pass.
 **Step 7: Commit**
 
 ```bash
-git add scripts Tests/contract
+git add scripts tests/contract
 git commit -m "build: package LocalOCR model bridge"
 ```
 
@@ -317,7 +317,7 @@ git commit -m "build: package LocalOCR model bridge"
 - Modify `docs/cli.md`
 - Modify `docs/mcp.md`
 - Create `docs/release/v0.3.1-beta.1-notes.md`
-- Modify documentation contract tests under `Tests/contract/`
+- Modify documentation contract tests under `tests/contract/`
 
 **Step 1: Write failing version and documentation contracts**
 
@@ -342,7 +342,7 @@ Describe offline Help, guided connection, Local Intelligence providers, desktop 
 **Step 5: Run documentation and version tests**
 
 ```bash
-.venv/bin/python -m pytest -q Tests/contract/test_beta_documentation_alignment.py Tests/contract/test_beta_tester_guide.py Tests/contract/test_mcp_consent_and_intelligence_documentation.py Tests/contract/test_studio_app_project.py
+.venv/bin/python -m pytest -q tests/contract/test_beta_documentation_alignment.py tests/contract/test_beta_tester_guide.py tests/contract/test_mcp_consent_and_intelligence_documentation.py tests/contract/test_studio_app_project.py
 swift test --filter MCPToolCatalogTests
 ```
 
@@ -351,7 +351,7 @@ Expected: all claims align with implemented behavior and the catalog contains ex
 **Step 6: Commit**
 
 ```bash
-git add project.yml LocalOCRStudio.xcodeproj Sources/LocalOCRService README.md BETA_TESTING.md docs Tests/contract
+git add project.yml LocalOCRStudio.xcodeproj Sources/LocalOCRService README.md BETA_TESTING.md docs tests/contract
 git commit -m "docs: prepare LocalOCR beta 2.1"
 ```
 
