@@ -1,5 +1,10 @@
 # Local Intelligence and Stdio-Only MCP Candidate Acceptance
 
+> Historical record: this 2026-08-28 automated-only acceptance remains
+> preserved. The later Beta 2.1 exact-commit candidate closes the previously
+> open physical/live-model, runtime-network, and agent-connection gates. See
+> `docs/release/v0.3.1-beta.1-candidate-acceptance.md`.
+
 ## Decision
 
 **AUTOMATED SOURCE/BUILD ACCEPTANCE PASSED — physical, live-model, signing,
