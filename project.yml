@@ -19,7 +19,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.rayconsulting.localocr
         PRODUCT_NAME: LocalOCR Studio
         MARKETING_VERSION: 0.3.0
-        CURRENT_PROJECT_VERSION: 2
+        CURRENT_PROJECT_VERSION: 3
         MACOSX_DEPLOYMENT_TARGET: 14.0
         ARCHS: arm64
         SWIFT_VERSION: 6.0
