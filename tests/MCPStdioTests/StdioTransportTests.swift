@@ -13,7 +13,7 @@ import Testing
     import Darwin.POSIX
 #endif
 
-@Suite("StdioTransport")
+@Suite("StdioTransport", .serialized)
 struct StdioTransportTests {
     @Test(.timeLimit(.minutes(1)))
     func receivesOneNewlineDelimitedMessage() async throws {

@@ -205,6 +205,12 @@ private final class ModelBridgeProcessExecution: @unchecked Sendable {
         process.standardInput = input
         process.standardOutput = output
         process.standardError = diagnostics
+        let terminationStatuses = AsyncStream<Int32>(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            process.terminationHandler = { terminatedProcess in
+                continuation.yield(terminatedProcess.terminationStatus)
+                continuation.finish()
+            }
+        }
 
         try lock.withLock {
             if cancelled {
@@ -221,7 +227,6 @@ private final class ModelBridgeProcessExecution: @unchecked Sendable {
             throw ModelBridgeClientError.helperLaunchFailed
         }
 
-        let processBox = ProcessBox(process)
         let stdoutHandle = output.fileHandleForReading
         let stderrHandle = diagnostics.fileHandleForReading
         let stdoutTask = Task.detached { [self] in
@@ -235,9 +240,9 @@ private final class ModelBridgeProcessExecution: @unchecked Sendable {
         let stderrTask = Task.detached {
             Self.drainDiagnostics(from: stderrHandle)
         }
-        let terminationTask = Task.detached {
-            processBox.process.waitUntilExit()
-            return processBox.process.terminationStatus
+        let terminationTask = Task {
+            var iterator = terminationStatuses.makeAsyncIterator()
+            return await iterator.next() ?? -1
         }
 
         do {

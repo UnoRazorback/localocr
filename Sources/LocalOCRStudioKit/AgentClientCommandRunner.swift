@@ -103,6 +103,12 @@ private final class AgentClientProcessExecution: @unchecked Sendable {
         process.standardOutput = output
         process.standardError = diagnostics
         process.standardInput = FileHandle.nullDevice
+        let terminationStatuses = AsyncStream<Int32>(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            process.terminationHandler = { terminatedProcess in
+                continuation.yield(terminatedProcess.terminationStatus)
+                continuation.finish()
+            }
+        }
 
         try lock.withLock {
             if cancelled { throw CancellationError() }
@@ -117,12 +123,11 @@ private final class AgentClientProcessExecution: @unchecked Sendable {
             throw AgentClientCommandRunnerError.launchFailed
         }
 
-        let processBox = AgentClientProcessBox(process)
         let stdoutTask = readTask(handle: output.fileHandleForReading, stream: .stdout)
         let stderrTask = readTask(handle: diagnostics.fileHandleForReading, stream: .stderr)
-        let terminationTask = Task.detached {
-            processBox.process.waitUntilExit()
-            return processBox.process.terminationStatus
+        let terminationTask = Task {
+            var iterator = terminationStatuses.makeAsyncIterator()
+            return await iterator.next() ?? -1
         }
         let timeoutTask = Task.detached { [self] in
             do {

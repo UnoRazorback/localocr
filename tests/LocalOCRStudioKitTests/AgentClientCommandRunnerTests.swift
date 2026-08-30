@@ -3,7 +3,7 @@ import Foundation
 import Testing
 @testable import LocalOCRStudioKit
 
-@Suite struct AgentClientCommandRunnerTests {
+@Suite(.serialized) struct AgentClientCommandRunnerTests {
     @Test func capturesStreamsSeparatelyAndPassesExplicitArgumentsAndEnvironment() async throws {
         let fixture = try RunnerFixture(script: """
         #!/bin/sh

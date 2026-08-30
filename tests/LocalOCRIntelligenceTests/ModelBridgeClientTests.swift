@@ -5,7 +5,7 @@ import LocalOCRModelBridgeProtocol
 import LocalOCRModelCore
 import Testing
 
-@Suite("Model bridge client")
+@Suite("Model bridge client", .serialized)
 struct ModelBridgeClientTests {
     @Test
     func constructingClientDoesNotResolveOrLaunchHelper() {
