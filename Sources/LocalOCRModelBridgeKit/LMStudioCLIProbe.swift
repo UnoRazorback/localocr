@@ -418,19 +418,25 @@ struct ExecutableCodeIdentity: Equatable, Sendable {
 }
 
 protocol LMStudioSuspendedCodeInspecting: Sendable {
-    func codeIdentity(ofSuspendedProcess pid: pid_t) async throws -> ExecutableCodeIdentity
+    /// Returns `nil` while bounded inspection is still pending. Implementations
+    /// must not retain process-control capabilities or block this poll.
+    func pollCodeIdentity(
+        ofSuspendedProcess pid: pid_t
+    ) throws -> ExecutableCodeIdentity?
 }
 
 struct DarwinLMStudioSuspendedCodeInspector: LMStudioSuspendedCodeInspecting {
-    private let afterGuestIsBound: @Sendable () async throws -> Void
+    private let afterGuestIsBound: @Sendable () throws -> Void
 
     init(
-        afterGuestIsBound: @escaping @Sendable () async throws -> Void = {}
+        afterGuestIsBound: @escaping @Sendable () throws -> Void = {}
     ) {
         self.afterGuestIsBound = afterGuestIsBound
     }
 
-    func codeIdentity(ofSuspendedProcess pid: pid_t) async throws -> ExecutableCodeIdentity {
+    func pollCodeIdentity(
+        ofSuspendedProcess pid: pid_t
+    ) throws -> ExecutableCodeIdentity? {
         let attributes = [
             kSecGuestAttributePid as String: NSNumber(value: pid),
         ] as CFDictionary
@@ -445,7 +451,7 @@ struct DarwinLMStudioSuspendedCodeInspector: LMStudioSuspendedCodeInspecting {
         SecCodeCheckValidity(dynamicCode, [], nil) == errSecSuccess else {
             throw LMStudioCLIProbeError.commandFailed
         }
-        try await afterGuestIsBound()
+        try afterGuestIsBound()
         // The C API accepts either SecCodeRef or SecStaticCodeRef; Swift imports
         // the shared parameter as SecStaticCode, so preserve the CF reference here.
         let signingReference = unsafeBitCast(dynamicCode, to: SecStaticCode.self)
@@ -553,20 +559,48 @@ struct LMStudioCommandRunner: Sendable {
         }
         if command.startsSuspended {
             let loadedIdentity: ExecutableCodeIdentity
-            do {
-                loadedIdentity = try await suspendedCodeInspector.codeIdentity(
-                    ofSuspendedProcess: command.pid
-                )
-            } catch {
-                _ = try await LMStudioProcessGroupCleanup.terminateAndReap(
-                    pid: command.pid,
-                    currentStatus: nil,
-                    gracePeriod: .zero,
-                    cleanupBudget: cleanupBudget,
-                    system: system,
-                    descendants: descendants
-                )
-                throw LMStudioCLIProbeError.commandFailed
+            inspection: while true {
+                if Task.isCancelled {
+                    _ = try await LMStudioProcessGroupCleanup.terminateAndReap(
+                        pid: command.pid,
+                        currentStatus: nil,
+                        gracePeriod: .zero,
+                        cleanupBudget: cleanupBudget,
+                        system: system,
+                        descendants: descendants
+                    )
+                    throw LMStudioCLIProbeError.cancelled
+                }
+                guard clock.now < commandDeadline else {
+                    _ = try await LMStudioProcessGroupCleanup.terminateAndReap(
+                        pid: command.pid,
+                        currentStatus: nil,
+                        gracePeriod: .zero,
+                        cleanupBudget: cleanupBudget,
+                        system: system,
+                        descendants: descendants
+                    )
+                    throw LMStudioCLIProbeError.timedOut
+                }
+                do {
+                    if let identity = try suspendedCodeInspector.pollCodeIdentity(
+                        ofSuspendedProcess: command.pid
+                    ) {
+                        loadedIdentity = identity
+                        break inspection
+                    }
+                } catch {
+                    _ = try await LMStudioProcessGroupCleanup.terminateAndReap(
+                        pid: command.pid,
+                        currentStatus: nil,
+                        gracePeriod: .zero,
+                        cleanupBudget: cleanupBudget,
+                        system: system,
+                        descendants: descendants
+                    )
+                    throw LMStudioCLIProbeError.commandFailed
+                }
+                try? await Task.sleep(for: .milliseconds(5))
             }
             guard loadedIdentity == command.expectedExecutableCodeIdentity else {
                 _ = try await LMStudioProcessGroupCleanup.terminateAndReap(
@@ -627,6 +661,9 @@ struct LMStudioCommandRunner: Sendable {
             stderr.drain(descriptor: command.stderrFD)
 
             if stdout.exceededLimit || stderr.exceededLimit {
+                // Stop consuming a continuously writable pipe immediately.
+                // Cleanup terminates the producer before the command's defer
+                // closes both read sides; no further drain pass is attempted.
                 try await abort(
                     command: command,
                     currentStatus: status,
@@ -634,7 +671,8 @@ struct LMStudioCommandRunner: Sendable {
                     stderr: &stderr,
                     error: .outputTooLarge,
                     system: system,
-                    descendants: descendants
+                    descendants: descendants,
+                    drainPipes: false
                 )
             }
             if stdout.readFailed || stderr.readFailed {
@@ -717,7 +755,8 @@ struct LMStudioCommandRunner: Sendable {
         stderr: inout PipeCapture,
         error: LMStudioCLIProbeError,
         system: any LMStudioProcessSystemCalling,
-        descendants: any LMStudioDescendantTracking
+        descendants: any LMStudioDescendantTracking,
+        drainPipes: Bool = true
     ) async throws -> Never {
         _ = try await LMStudioProcessGroupCleanup.terminateAndReap(
             pid: command.pid,
@@ -727,6 +766,7 @@ struct LMStudioCommandRunner: Sendable {
             system: system,
             descendants: descendants
         )
+        guard drainPipes else { throw error }
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: pipeDrainBudget)
         repeat {
@@ -777,6 +817,10 @@ struct LMStudioProcessGroupCleanup {
         }
         do {
             try descendants?.refresh()
+        } catch {
+            descendantDiagnostic = true
+        }
+        do {
             try descendants?.sendSignalToObservedDescendants(SIGTERM)
         } catch {
             descendantDiagnostic = true
@@ -823,6 +867,10 @@ struct LMStudioProcessGroupCleanup {
         }
         do {
             try descendants?.refresh()
+        } catch {
+            descendantDiagnostic = true
+        }
+        do {
             try descendants?.sendSignalToObservedDescendants(SIGKILL)
         } catch {
             descendantDiagnostic = true
@@ -1157,8 +1205,16 @@ final class DarwinLMStudioDescendantTracker: LMStudioDescendantTracking,
     }
 
     func sendSignalToObservedDescendants(_ signal: Int32) throws {
+        var signalFailed = false
         for identity in observed.values {
-            _ = try observer.sendSignal(signal, to: identity)
+            do {
+                _ = try observer.sendSignal(signal, to: identity)
+            } catch {
+                signalFailed = true
+            }
+        }
+        if signalFailed {
+            throw LMStudioCLIProbeError.commandFailed
         }
     }
 
@@ -1501,7 +1557,9 @@ private final class SpawnedCommand: @unchecked Sendable {
     }
 }
 
-private struct PipeCapture {
+typealias LMStudioPipeRead = (Int32, UnsafeMutableRawPointer, Int) -> Int
+
+struct PipeCapture {
     private let limit: Int
     private(set) var data = Data()
     private(set) var exceededLimit = false
@@ -1512,16 +1570,27 @@ private struct PipeCapture {
         self.limit = limit
     }
 
-    mutating func drain(descriptor: Int32) {
-        guard !reachedEOF, !readFailed else { return }
+    mutating func drain(
+        descriptor: Int32,
+        readBytes: LMStudioPipeRead = { Darwin.read($0, $1, $2) }
+    ) {
+        guard !reachedEOF, !readFailed, !exceededLimit else { return }
         var buffer = [UInt8](repeating: 0, count: 16_384)
-        while true {
-            let count = Darwin.read(descriptor, &buffer, buffer.count)
+        // A writable producer can keep a nonblocking pipe continuously ready.
+        // Bound each drain pass so cancellation and the command deadline remain
+        // observable even before the byte cap is crossed.
+        for _ in 0..<64 {
+            let count = buffer.withUnsafeMutableBytes { bytes in
+                readBytes(descriptor, bytes.baseAddress!, bytes.count)
+            }
             if count > 0 {
                 let available = max(0, limit - data.count)
                 let accepted = min(available, count)
                 if accepted > 0 { data.append(buffer, count: accepted) }
-                if count > available { exceededLimit = true }
+                if count > available {
+                    exceededLimit = true
+                    return
+                }
                 continue
             }
             if count == 0 {

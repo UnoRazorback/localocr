@@ -460,28 +460,25 @@ struct LMStudioCLIProbeTests {
         #expect(pinnedFD >= 0)
         defer { Darwin.close(pinnedFD) }
         try fixture.installReplacementAtExecutablePath()
+        let inspector = ABASuspendedCodeInspector(fixture: fixture)
         let runner = fixture.runner(
-            suspendedCodeInspector: ABASuspendedCodeInspector(fixture: fixture)
+            suspendedCodeInspector: inspector
         )
-        let task = Task {
-            try await runner.run(
+
+        do {
+            _ = try await runner.run(
                 executableDescriptor: pinnedFD,
                 displayPath: fixture.executableURL.path,
                 arguments: ["--version"],
                 environment: ["HOME=\(fixture.root.path)", "PATH="]
             )
+            #expect(Bool(false), "expected loaded replacement code to be rejected")
+        } catch let error as LMStudioCLIProbeError {
+            #expect(error == .unsafeExecutable || error == .commandFailed)
+        } catch {
+            #expect(Bool(false), "unexpected error: \(error)")
         }
-        try await fixture.waitUntilSuspendedInspectionStarts()
-
-        try fixture.restoreOriginalExecutablePath()
-        try fixture.releaseSuspendedInspection()
-        try await fixture.waitUntilSuspendedCodeIsBound()
-        try fixture.reinstallReplacementAtExecutablePath()
-        try fixture.releaseSuspendedCodeInspection()
-
-        await #expect(throws: LMStudioCLIProbeError.unsafeExecutable) {
-            try await task.value
-        }
+        #expect(inspector.didReturnLoadedCodeIdentity)
         #expect(!FileManager.default.fileExists(atPath: fixture.replacementExecutedURL.path))
         let childPID = try fixture.suspendedProcessID()
         for target in [childPID, -childPID] {
@@ -540,6 +537,50 @@ struct LMStudioCLIProbeTests {
 
         #expect(start.duration(to: clock.now) < .milliseconds(300))
         #expect(!FileManager.default.fileExists(atPath: fixture.originalExecutedURL.path))
+    }
+
+    @Test
+    func suspendedCodeInspectionCannotOutliveTheHardDeadline() async throws {
+        let fixture = try MachOExecutionFixture()
+        defer { fixture.remove() }
+        let pinnedFD = Darwin.open(
+            fixture.executableURL.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+        )
+        #expect(pinnedFD >= 0)
+        defer { Darwin.close(pinnedFD) }
+        let inspector = GatedBeyondDeadlineCodeInspector()
+        let runner = fixture.runner(
+            timeout: .milliseconds(50),
+            suspendedCodeInspector: inspector
+        )
+        let clock = ContinuousClock()
+        let start = clock.now
+        let task = Task {
+            try await runner.run(
+                executableDescriptor: pinnedFD,
+                displayPath: fixture.executableURL.path,
+                arguments: ["--version"],
+                environment: ["HOME=\(fixture.root.path)", "PATH="]
+            )
+        }
+        try await inspector.waitUntilStarted()
+
+        await #expect(throws: LMStudioCLIProbeError.timedOut) {
+            try await task.value
+        }
+        #expect(start.duration(to: clock.now) < .milliseconds(300))
+        let childPID = try #require(inspector.processID)
+        let completedPolls = inspector.pollCount
+        inspector.release()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(inspector.pollCount == completedPolls)
+        #expect(!FileManager.default.fileExists(atPath: fixture.originalExecutedURL.path))
+        for target in [childPID, -childPID] {
+            errno = 0
+            #expect(kill(target, 0) == -1)
+            #expect(errno == ESRCH)
+        }
     }
 
     @Test
@@ -622,6 +663,120 @@ struct LMStudioCLIProbeTests {
         try tracker.sendSignalToObservedDescendants(SIGKILL)
 
         #expect(observer.replacementWasSignaled == false)
+    }
+
+    @Test
+    func descendantSignalFailureDoesNotSkipRemainingKnownIdentities() throws {
+        let observer = FirstSignalFailingProcessObserver()
+        let tracker = try DarwinLMStudioDescendantTracker(
+            rootPID: observer.root.pid,
+            observer: observer
+        )
+        try tracker.refresh()
+
+        #expect(throws: LMStudioCLIProbeError.commandFailed) {
+            try tracker.sendSignalToObservedDescendants(SIGKILL)
+        }
+
+        #expect(observer.signalAttempts.count == 2)
+        #expect(Set(observer.signalAttempts) == Set(observer.children.map(\.uniqueID)))
+    }
+
+    @Test
+    func knownEscapedDescendantIsKilledWhenLaterRefreshAndPeerSignalFail() async throws {
+        let fixture = try KnownEscapedDescendantFixture()
+        defer { fixture.remove() }
+        let observer = KnownEscapedDescendantObserver(fixture: fixture)
+        let executableFD = Darwin.open(
+            fixture.executableURL.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+        )
+        #expect(executableFD >= 0)
+        defer { Darwin.close(executableFD) }
+        let runner = fixture.runner { rootPID in
+            try observer.configureRoot(processID: rootPID)
+            return try DarwinLMStudioDescendantTracker(
+                rootPID: rootPID,
+                observer: observer
+            )
+        }
+        let task = Task {
+            try await runner.run(
+                executableDescriptor: executableFD,
+                displayPath: fixture.executableURL.path,
+                arguments: ["--version"],
+                environment: ["HOME=\(fixture.root.path)", "PATH="]
+            )
+        }
+        try await observer.waitUntilKnownDescendantIsObserved()
+        try fixture.releaseEscape()
+        try await fixture.waitUntilEscaped()
+        let rootPID = try fixture.rootProcessID()
+        let escapedPID = try fixture.escapedProcessID()
+        observer.failFutureRefreshes()
+        let clock = ContinuousClock()
+        let start = clock.now
+
+        await #expect(throws: LMStudioCLIProbeError.commandFailed) {
+            try await task.value
+        }
+
+        #expect(start.duration(to: clock.now) < .seconds(1))
+        #expect(observer.didAttemptFailingPeer(SIGTERM))
+        #expect(observer.didAttemptEscapedDescendant(SIGTERM))
+        #expect(observer.didAttemptFailingPeer(SIGKILL))
+        #expect(observer.didAttemptEscapedDescendant(SIGKILL))
+        for target in [rootPID, -rootPID, escapedPID, -escapedPID] {
+            errno = 0
+            #expect(kill(target, 0) == -1)
+            #expect(errno == ESRCH)
+        }
+    }
+
+    @Test
+    func continuousFloodOverflowIsBoundedAndLeavesNoReader() async throws {
+        try await assertContinuousFloodAbort(.overflow)
+    }
+
+    @Test
+    func continuousFloodCancellationIsBoundedAndLeavesNoReader() async throws {
+        try await assertContinuousFloodAbort(.cancellation)
+    }
+
+    @Test
+    func continuousFloodDeadlineIsBoundedAndLeavesNoReader() async throws {
+        try await assertContinuousFloodAbort(.deadline)
+    }
+
+    @Test
+    func pipeDrainHasHardIterationAndByteEscapes() {
+        var iterationReads = 0
+        var iterationCapture = PipeCapture(limit: 1_000_000)
+        iterationCapture.drain(descriptor: -1) { _, buffer, _ in
+            iterationReads += 1
+            if iterationReads > 10_000 {
+                errno = EAGAIN
+                return -1
+            }
+            buffer.storeBytes(of: UInt8(0x78), as: UInt8.self)
+            return 1
+        }
+
+        #expect(iterationReads == 64)
+        #expect(iterationCapture.data.count == 64)
+        #expect(!iterationCapture.exceededLimit)
+
+        var overflowReads = 0
+        var overflowCapture = PipeCapture(limit: 4)
+        overflowCapture.drain(descriptor: -1) { _, buffer, _ in
+            overflowReads += 1
+            buffer.storeBytes(of: UInt32(0x78787878), as: UInt32.self)
+            return 4
+        }
+
+        #expect(overflowReads == 2)
+        #expect(overflowCapture.data.count == 4)
+        #expect(overflowCapture.exceededLimit)
     }
 
     @Test
@@ -803,6 +958,472 @@ private final class ReusedPIDProcessObserver: LMStudioProcessIdentityObserving,
     }
 }
 
+private final class FirstSignalFailingProcessObserver:
+    LMStudioProcessIdentityObserving,
+    @unchecked Sendable {
+    let root = LMStudioObservedProcessIdentity(
+        pid: 41_001,
+        owner: getuid(),
+        uniqueID: 301,
+        parentUniqueID: 300,
+        pidVersion: 31
+    )
+    let children = [
+        LMStudioObservedProcessIdentity(
+            pid: 41_002,
+            owner: getuid(),
+            uniqueID: 302,
+            parentUniqueID: 301,
+            pidVersion: 32
+        ),
+        LMStudioObservedProcessIdentity(
+            pid: 41_003,
+            owner: getuid(),
+            uniqueID: 303,
+            parentUniqueID: 301,
+            pidVersion: 33
+        ),
+    ]
+    private let lock = NSLock()
+    private var attempts: [UInt64] = []
+
+    var signalAttempts: [UInt64] { lock.withLock { attempts } }
+
+    func identity(of pid: pid_t) throws -> LMStudioObservedProcessIdentity? {
+        if pid == root.pid { return root }
+        return children.first { $0.pid == pid }
+    }
+
+    func childIdentities(
+        of parent: LMStudioObservedProcessIdentity
+    ) throws -> [LMStudioObservedProcessIdentity] {
+        parent == root ? children : []
+    }
+
+    func sendSignal(
+        _ signal: Int32,
+        to identity: LMStudioObservedProcessIdentity
+    ) throws -> Bool {
+        let attemptNumber = lock.withLock {
+            attempts.append(identity.uniqueID)
+            return attempts.count
+        }
+        if attemptNumber == 1 { throw LMStudioCLIProbeError.commandFailed }
+        return true
+    }
+}
+
+private final class GatedBeyondDeadlineCodeInspector:
+    LMStudioSuspendedCodeInspecting,
+    @unchecked Sendable {
+    private let lock = NSLock()
+    private var startedPID: pid_t?
+    private var polls = 0
+    private var isReleased = false
+
+    var processID: pid_t? { lock.withLock { startedPID } }
+    var pollCount: Int { lock.withLock { polls } }
+
+    func pollCodeIdentity(
+        ofSuspendedProcess pid: pid_t
+    ) throws -> ExecutableCodeIdentity? {
+        let released = lock.withLock {
+            startedPID = pid
+            polls += 1
+            return isReleased
+        }
+        guard released else { return nil }
+        return try DarwinLMStudioSuspendedCodeInspector()
+            .pollCodeIdentity(ofSuspendedProcess: pid)
+    }
+
+    func waitUntilStarted() async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(1))
+        while processID == nil, clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard processID != nil else { throw RunnerFixtureError.executableDidNotStart }
+    }
+
+    func release() {
+        lock.withLock { isReleased = true }
+    }
+}
+
+private final class KnownEscapedDescendantObserver:
+    LMStudioProcessIdentityObserving,
+    @unchecked Sendable {
+    private static let rootUniqueID: UInt64 = 501
+    private static let failingUniqueID: UInt64 = 502
+    private static let escapedUniqueID: UInt64 = 503
+
+    private let fixture: KnownEscapedDescendantFixture
+    private let lock = NSLock()
+    private var root: LMStudioObservedProcessIdentity?
+    private var refreshesFail = false
+    private var descendantWasObserved = false
+    private var attempts: [(UInt64, Int32)] = []
+
+    init(fixture: KnownEscapedDescendantFixture) {
+        self.fixture = fixture
+    }
+
+    func didAttemptFailingPeer(_ signal: Int32) -> Bool {
+        lock.withLock {
+            attempts.contains { $0 == (Self.failingUniqueID, signal) }
+        }
+    }
+
+    func didAttemptEscapedDescendant(_ signal: Int32) -> Bool {
+        lock.withLock {
+            attempts.contains { $0 == (Self.escapedUniqueID, signal) }
+        }
+    }
+
+    func configureRoot(processID: pid_t) throws {
+        lock.withLock {
+            root = LMStudioObservedProcessIdentity(
+                pid: processID,
+                owner: getuid(),
+                uniqueID: Self.rootUniqueID,
+                parentUniqueID: 500,
+                pidVersion: 51
+            )
+        }
+    }
+
+    func failFutureRefreshes() {
+        lock.withLock { refreshesFail = true }
+    }
+
+    func waitUntilKnownDescendantIsObserved() async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(1))
+        while !lock.withLock({ descendantWasObserved }), clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard lock.withLock({ descendantWasObserved }) else {
+            throw RunnerFixtureError.executableDidNotStart
+        }
+    }
+
+    func identity(of pid: pid_t) throws -> LMStudioObservedProcessIdentity? {
+        if lock.withLock({ refreshesFail }) {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        if let root = lock.withLock({ root }), pid == root.pid { return root }
+        if pid == Self.fakeFailingPID { return failingIdentity }
+        guard let helperPID = fixture.helperProcessIDIfAvailable(), pid == helperPID else {
+            return nil
+        }
+        return escapedIdentity(processID: helperPID)
+    }
+
+    func childIdentities(
+        of parent: LMStudioObservedProcessIdentity
+    ) throws -> [LMStudioObservedProcessIdentity] {
+        if lock.withLock({ refreshesFail }) {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        guard parent.uniqueID == Self.rootUniqueID,
+              let helperPID = fixture.helperProcessIDIfAvailable() else {
+            return []
+        }
+        lock.withLock { descendantWasObserved = true }
+        return [failingIdentity, escapedIdentity(processID: helperPID)]
+    }
+
+    func sendSignal(
+        _ signal: Int32,
+        to identity: LMStudioObservedProcessIdentity
+    ) throws -> Bool {
+        lock.withLock { attempts.append((identity.uniqueID, signal)) }
+        if identity.uniqueID == Self.failingUniqueID {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        guard identity.uniqueID == Self.escapedUniqueID else { return false }
+        errno = 0
+        if kill(identity.pid, signal) == 0 { return true }
+        if errno == ESRCH { return false }
+        throw LMStudioCLIProbeError.commandFailed
+    }
+
+    private static let fakeFailingPID: pid_t = 49_999
+
+    private var failingIdentity: LMStudioObservedProcessIdentity {
+        LMStudioObservedProcessIdentity(
+            pid: Self.fakeFailingPID,
+            owner: getuid(),
+            uniqueID: Self.failingUniqueID,
+            parentUniqueID: Self.rootUniqueID,
+            pidVersion: 52
+        )
+    }
+
+    private func escapedIdentity(processID: pid_t) -> LMStudioObservedProcessIdentity {
+        LMStudioObservedProcessIdentity(
+            pid: processID,
+            owner: getuid(),
+            uniqueID: Self.escapedUniqueID,
+            parentUniqueID: Self.rootUniqueID,
+            pidVersion: 53
+        )
+    }
+}
+
+private struct KnownEscapedDescendantFixture: @unchecked Sendable {
+    let scriptFixture: RunnerScriptFixture
+    let rootPIDURL: URL
+    let helperPIDURL: URL
+    let escapedPIDURL: URL
+    let releaseURL: URL
+
+    var root: URL { scriptFixture.root }
+    var executableURL: URL { scriptFixture.executableURL }
+
+    init() throws {
+        let fixture = try RunnerScriptFixture(prefix: "lmstudio-known-escape")
+        scriptFixture = fixture
+        rootPIDURL = fixture.root.appendingPathComponent("root.pid")
+        helperPIDURL = fixture.root.appendingPathComponent("helper.pid")
+        escapedPIDURL = fixture.root.appendingPathComponent("escaped.pid")
+        releaseURL = fixture.root.appendingPathComponent("release")
+        let helperURL = fixture.root.appendingPathComponent("escape-helper")
+        let sourceURL = helperURL.appendingPathExtension("c")
+        let source = """
+        #include <fcntl.h>
+        #include <signal.h>
+        #include <stdio.h>
+        #include <unistd.h>
+        int main(void) {
+          signal(SIGTERM, SIG_IGN);
+          int helper = open("\(Self.cEscaped(helperPIDURL.path))", O_WRONLY | O_CREAT | O_TRUNC, 0600);
+          if (helper < 0) return 1;
+          dprintf(helper, "%d\\n", getpid());
+          close(helper);
+          while (access("\(Self.cEscaped(releaseURL.path))", F_OK) != 0) usleep(1000);
+          if (setsid() < 0) return 2;
+          int escaped = open("\(Self.cEscaped(escapedPIDURL.path))", O_WRONLY | O_CREAT | O_TRUNC, 0600);
+          if (escaped < 0) return 3;
+          dprintf(escaped, "%d\\n", getpid());
+          close(escaped);
+          while (1) pause();
+        }
+        """
+        try Data(source.utf8).write(to: sourceURL)
+        try Self.compile(sourceURL: sourceURL, executableURL: helperURL)
+        try fixture.writeScript("""
+        #!/bin/sh
+        printf '%s\n' "$$" > '\(Self.shellEscaped(rootPIDURL.path))'
+        trap '' TERM
+        '\(Self.shellEscaped(helperURL.path))' &
+        while :; do /bin/sleep 30; done
+        """)
+    }
+
+    func runner(
+        descendantTrackerFactory:
+            @escaping @Sendable (pid_t) throws -> any LMStudioDescendantTracking
+    ) -> LMStudioCommandRunner {
+        LMStudioCommandRunner(
+            commandTimeout: .seconds(2),
+            terminationGracePeriod: .milliseconds(20),
+            cleanupBudget: .milliseconds(300),
+            pipeDrainBudget: .milliseconds(100),
+            maximumOutputBytes: 1_048_576,
+            descendantTrackerFactory: descendantTrackerFactory
+        )
+    }
+
+    func helperProcessIDIfAvailable() -> pid_t? { try? readPID(helperPIDURL) }
+    func rootProcessID() throws -> pid_t { try readPID(rootPIDURL) }
+    func escapedProcessID() throws -> pid_t { try readPID(escapedPIDURL) }
+    func releaseEscape() throws { try Data().write(to: releaseURL) }
+
+    func waitUntilEscaped() async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(1))
+        while !FileManager.default.fileExists(atPath: escapedPIDURL.path),
+              clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard FileManager.default.fileExists(atPath: escapedPIDURL.path) else {
+            throw RunnerFixtureError.executableDidNotStart
+        }
+    }
+
+    func remove() { scriptFixture.remove() }
+
+    private func readPID(_ url: URL) throws -> pid_t {
+        let data = try Data(contentsOf: url)
+        guard let pid = Int32(
+            String(decoding: data, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        ) else {
+            throw RunnerFixtureError.setupFailed
+        }
+        return pid
+    }
+
+    private static func compile(sourceURL: URL, executableURL: URL) throws {
+        let compiler = Process()
+        compiler.executableURL = URL(fileURLWithPath: "/usr/bin/clang")
+        compiler.arguments = [sourceURL.path, "-o", executableURL.path]
+        compiler.standardInput = FileHandle.nullDevice
+        compiler.standardOutput = FileHandle.nullDevice
+        compiler.standardError = FileHandle.nullDevice
+        try compiler.run()
+        compiler.waitUntilExit()
+        guard compiler.terminationReason == .exit, compiler.terminationStatus == 0 else {
+            throw RunnerFixtureError.setupFailed
+        }
+    }
+
+    private static func cEscaped(_ value: String) -> String {
+        value.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    private static func shellEscaped(_ value: String) -> String {
+        value.replacingOccurrences(of: "'", with: "'\\''")
+    }
+}
+
+private enum ContinuousFloodAbortMode {
+    case overflow
+    case cancellation
+    case deadline
+}
+
+private func assertContinuousFloodAbort(_ mode: ContinuousFloodAbortMode) async throws {
+    let fixture = try ContinuousFloodExecutionFixture()
+    defer { fixture.remove() }
+    let executableFD = Darwin.open(
+        fixture.executableURL.path,
+        O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+    )
+    #expect(executableFD >= 0)
+    defer { Darwin.close(executableFD) }
+    let timeout: Duration = mode == .deadline ? .milliseconds(50) : .seconds(2)
+    let maximumBytes = mode == .overflow ? 65_536 : 268_435_456
+    let runner = fixture.runner(timeout: timeout, maximumOutputBytes: maximumBytes)
+    let clock = ContinuousClock()
+    let start = clock.now
+    let task = Task {
+        try await runner.run(
+            executableDescriptor: executableFD,
+            displayPath: fixture.executableURL.path,
+            arguments: ["--version"],
+            environment: ["HOME=\(fixture.root.path)", "PATH="]
+        )
+    }
+    try await fixture.waitUntilStarted()
+    let rootPID = try fixture.rootProcessID()
+    let descendantPID = try fixture.descendantProcessID()
+
+    switch mode {
+    case .overflow:
+        await #expect(throws: LMStudioCLIProbeError.outputTooLarge) {
+            try await task.value
+        }
+    case .cancellation:
+        task.cancel()
+        await #expect(throws: LMStudioCLIProbeError.cancelled) {
+            try await task.value
+        }
+    case .deadline:
+        await #expect(throws: LMStudioCLIProbeError.timedOut) {
+            try await task.value
+        }
+    }
+
+    #expect(start.duration(to: clock.now) < .seconds(1))
+    try assertProcessAndGroupAreGone(
+        processID: rootPID,
+        descendantID: descendantPID
+    )
+    var reusePipes = try makeNonblockingReusePipes(count: 64)
+    defer { closeReusePipes(&reusePipes) }
+    for pipe in reusePipes {
+        var byte: UInt8 = 0x6B
+        #expect(Darwin.write(pipe.write, &byte, 1) == 1)
+    }
+    try await Task.sleep(for: .milliseconds(100))
+    for pipe in reusePipes {
+        var byte: UInt8 = 0
+        #expect(Darwin.read(pipe.read, &byte, 1) == 1)
+        #expect(byte == 0x6B)
+    }
+}
+
+private struct ContinuousFloodExecutionFixture {
+    let scriptFixture: RunnerScriptFixture
+    let rootPIDURL: URL
+    let descendantPIDURL: URL
+
+    var root: URL { scriptFixture.root }
+    var executableURL: URL { scriptFixture.executableURL }
+
+    init() throws {
+        let fixture = try RunnerScriptFixture(prefix: "lmstudio-continuous-flood")
+        scriptFixture = fixture
+        rootPIDURL = fixture.root.appendingPathComponent("root.pid")
+        descendantPIDURL = fixture.root.appendingPathComponent("descendant.pid")
+        let block = String(repeating: "x", count: 1_024)
+        try fixture.writeScript("""
+        #!/bin/sh
+        printf '%s\n' "$$" > '\(Self.shellEscaped(rootPIDURL.path))'
+        trap '' TERM
+        (trap '' TERM; while :; do printf '\(block)' >&2; done) &
+        printf '%s\n' "$!" > '\(Self.shellEscaped(descendantPIDURL.path))'
+        while :; do printf '\(block)'; done
+        """)
+    }
+
+    func runner(timeout: Duration, maximumOutputBytes: Int) -> LMStudioCommandRunner {
+        LMStudioCommandRunner(
+            commandTimeout: timeout,
+            terminationGracePeriod: .milliseconds(20),
+            cleanupBudget: .milliseconds(300),
+            pipeDrainBudget: .milliseconds(100),
+            maximumOutputBytes: maximumOutputBytes
+        )
+    }
+
+    func waitUntilStarted() async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(1))
+        while clock.now < deadline {
+            if FileManager.default.fileExists(atPath: rootPIDURL.path),
+               FileManager.default.fileExists(atPath: descendantPIDURL.path) {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        throw RunnerFixtureError.executableDidNotStart
+    }
+
+    func rootProcessID() throws -> pid_t { try readPID(rootPIDURL) }
+    func descendantProcessID() throws -> pid_t { try readPID(descendantPIDURL) }
+    func remove() { scriptFixture.remove() }
+
+    private func readPID(_ url: URL) throws -> pid_t {
+        let data = try Data(contentsOf: url)
+        guard let pid = Int32(
+            String(decoding: data, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        ) else {
+            throw RunnerFixtureError.setupFailed
+        }
+        return pid
+    }
+
+    private static func shellEscaped(_ value: String) -> String {
+        value.replacingOccurrences(of: "'", with: "'\\''")
+    }
+}
+
 private struct OwnedGroupExecutionFixture {
     let scriptFixture: RunnerScriptFixture
     let processIDURL: URL
@@ -908,27 +1529,72 @@ private struct RunnerScriptFixture {
     }
 }
 
-private struct ABASuspendedCodeInspector: LMStudioSuspendedCodeInspecting {
+private final class ABASuspendedCodeInspector:
+    LMStudioSuspendedCodeInspecting,
+    @unchecked Sendable {
     let fixture: MachOExecutionFixture
+    private let lock = NSLock()
+    private var returnedIdentity = false
+    private var inspectAfter: ContinuousClock.Instant?
+    private var inspectionStarted = false
 
-    func codeIdentity(ofSuspendedProcess pid: pid_t) async throws -> ExecutableCodeIdentity {
-        try fixture.recordSuspendedInspection(processID: pid)
-        try await fixture.waitUntilSuspendedInspectionIsReleased()
-        return try await DarwinLMStudioSuspendedCodeInspector {
-            try fixture.recordSuspendedCodeIsBound()
-            try await fixture.waitUntilSuspendedCodeInspectionIsReleased()
+    init(fixture: MachOExecutionFixture) {
+        self.fixture = fixture
+    }
+
+    var didReturnLoadedCodeIdentity: Bool { lock.withLock { returnedIdentity } }
+
+    func pollCodeIdentity(
+        ofSuspendedProcess pid: pid_t
+    ) throws -> ExecutableCodeIdentity? {
+        let clock = ContinuousClock()
+        let state = lock.withLock { () -> (recordPID: Bool, inspect: Bool) in
+            if inspectAfter == nil {
+                inspectAfter = clock.now.advanced(by: .milliseconds(25))
+                return (true, false)
+            }
+            guard let inspectAfter, clock.now >= inspectAfter, !inspectionStarted else {
+                return (false, false)
+            }
+            inspectionStarted = true
+            return (false, true)
         }
-            .codeIdentity(ofSuspendedProcess: pid)
+        if state.recordPID { try fixture.recordSuspendedInspection(processID: pid) }
+        guard state.inspect else { return nil }
+        try fixture.restoreOriginalExecutablePath()
+        let identity = try DarwinLMStudioSuspendedCodeInspector {
+            try self.fixture.reinstallReplacementAtExecutablePath()
+        }
+            .pollCodeIdentity(ofSuspendedProcess: pid)
+        lock.withLock { returnedIdentity = identity != nil }
+        return identity
     }
 }
 
-private struct DelayedSuspendedCodeInspector: LMStudioSuspendedCodeInspecting {
+private final class DelayedSuspendedCodeInspector:
+    LMStudioSuspendedCodeInspecting,
+    @unchecked Sendable {
     let delay: Duration
+    private let lock = NSLock()
+    private var readyAt: ContinuousClock.Instant?
 
-    func codeIdentity(ofSuspendedProcess pid: pid_t) async throws -> ExecutableCodeIdentity {
-        try await Task.sleep(for: delay)
-        return try await DarwinLMStudioSuspendedCodeInspector()
-            .codeIdentity(ofSuspendedProcess: pid)
+    init(delay: Duration) {
+        self.delay = delay
+    }
+
+    func pollCodeIdentity(
+        ofSuspendedProcess pid: pid_t
+    ) throws -> ExecutableCodeIdentity? {
+        let clock = ContinuousClock()
+        let deadline = lock.withLock { () -> ContinuousClock.Instant in
+            if let readyAt { return readyAt }
+            let value = clock.now.advanced(by: delay)
+            readyAt = value
+            return value
+        }
+        guard clock.now >= deadline else { return nil }
+        return try DarwinLMStudioSuspendedCodeInspector()
+            .pollCodeIdentity(ofSuspendedProcess: pid)
     }
 }
 
@@ -940,10 +1606,6 @@ private struct MachOExecutionFixture {
     private let originalBackupURL: URL
     private let replacementSourceURL: URL
     private let retiredReplacementURL: URL
-    private let inspectionStartedURL: URL
-    private let inspectionReleasedURL: URL
-    private let suspendedCodeBoundURL: URL
-    private let codeInspectionReleasedURL: URL
     private let suspendedPIDURL: URL
 
     init(rejectsInheritedDescriptors: Bool = false) throws {
@@ -955,10 +1617,6 @@ private struct MachOExecutionFixture {
         retiredReplacementURL = root.appendingPathComponent("retired-replacement-lms")
         originalExecutedURL = root.appendingPathComponent("original-executed")
         replacementExecutedURL = root.appendingPathComponent("replacement-executed")
-        inspectionStartedURL = root.appendingPathComponent("inspection-started")
-        inspectionReleasedURL = root.appendingPathComponent("inspection-released")
-        suspendedCodeBoundURL = root.appendingPathComponent("suspended-code-bound")
-        codeInspectionReleasedURL = root.appendingPathComponent("code-inspection-released")
         suspendedPIDURL = root.appendingPathComponent("suspended.pid")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try Self.compileExecutable(
@@ -1007,43 +1665,6 @@ private struct MachOExecutionFixture {
 
     func recordSuspendedInspection(processID: pid_t) throws {
         try Data("\(processID)\n".utf8).write(to: suspendedPIDURL)
-        try Data().write(to: inspectionStartedURL)
-    }
-
-    func waitUntilSuspendedInspectionStarts() async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(1))
-        while !FileManager.default.fileExists(atPath: inspectionStartedURL.path),
-              clock.now < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        guard FileManager.default.fileExists(atPath: inspectionStartedURL.path) else {
-            throw RunnerFixtureError.executableDidNotStart
-        }
-    }
-
-    func waitUntilSuspendedInspectionIsReleased() async throws {
-        try await waitForFile(inspectionReleasedURL)
-    }
-
-    func releaseSuspendedInspection() throws {
-        try Data().write(to: inspectionReleasedURL)
-    }
-
-    func recordSuspendedCodeIsBound() throws {
-        try Data().write(to: suspendedCodeBoundURL)
-    }
-
-    func waitUntilSuspendedCodeIsBound() async throws {
-        try await waitForFile(suspendedCodeBoundURL)
-    }
-
-    func releaseSuspendedCodeInspection() throws {
-        try Data().write(to: codeInspectionReleasedURL)
-    }
-
-    func waitUntilSuspendedCodeInspectionIsReleased() async throws {
-        try await waitForFile(codeInspectionReleasedURL)
     }
 
     func suspendedProcessID() throws -> pid_t {
@@ -1096,17 +1717,6 @@ private struct MachOExecutionFixture {
         compiler.waitUntilExit()
         guard compiler.terminationReason == .exit, compiler.terminationStatus == 0 else {
             throw RunnerFixtureError.setupFailed
-        }
-    }
-
-    private func waitForFile(_ url: URL) async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(1))
-        while !FileManager.default.fileExists(atPath: url.path), clock.now < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            throw RunnerFixtureError.executableDidNotStart
         }
     }
 
