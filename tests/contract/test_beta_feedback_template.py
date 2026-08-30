@@ -22,7 +22,7 @@ def test_feedback_form_collects_required_beta_context():
         "privacy_confirmation",
     ):
         assert f"id: {field_id}" in text
-    assert "v0.2.0-beta.1" in text
+    assert "v0.3.0-beta.1" in text
     assert "Do not attach the source document or recognized text" in text
     assert "required: true" in text
 

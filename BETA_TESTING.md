@@ -1,16 +1,16 @@
 # LocalOCR Studio Beta Tester Guide
 
-The published prerelease is Beta 1. The separate
-[Beta 2 candidate notes](docs/release/v0.3.0-beta.1-notes.md) describe the
-next desktop batch workflow; that candidate is not yet published and has no
-downloadable archive, signing, notarization, or acceptance claim here.
+The published prerelease is
+[v0.3.0-beta.1](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.1),
+version `0.3.0`, build `2`. It includes the simple one-document desktop flow,
+an opt-in reviewed desktop batch, and the bundled local CLI and MCP server.
 
 ## Download and install
 
-Download `LocalOCR-Studio-0.2.0-1.zip` and `LocalOCR-Studio-0.2.0-1.sha256` from the [v0.2.0-beta.1 release](https://github.com/UnoRazorback/localocr/releases/tag/v0.2.0-beta.1) into the same directory. Verify the download before expanding it:
+Download `LocalOCR-Studio-0.3.0-2.zip` and `LocalOCR-Studio-0.3.0-2.sha256` from the [v0.3.0-beta.1 release](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.1) into the same directory. Verify the download before expanding it:
 
 ```bash
-shasum -a 256 -c "LocalOCR-Studio-0.2.0-1.sha256"
+shasum -a 256 -c "LocalOCR-Studio-0.3.0-2.sha256"
 ```
 
 The command must report `OK`. Expand the verified ZIP, move `LocalOCR Studio.app` to `/Applications`, then open it normally. Do not bypass Gatekeeper, remove quarantine attributes, or use an unverified build or staging copy.
@@ -21,9 +21,9 @@ Use **Open** or drag and drop to process one document at a time. LocalOCR Studio
 
 After processing, you can Copy recognized text, Save Text as a plain-text file, or Create Searchable PDF at a new destination. The source document remains unchanged. Select **Process Another Document** to return immediately to the drop/open screen without relaunching.
 
-## Beta 2 candidate: desktop batch workflow
+## Desktop batch workflow
 
-The default remains one document at a time. In the candidate, select **New
+The default remains one document at a time. Select **New
 Batch** to add files or folders, choose an output folder, and review the queue
 before selecting **Start Batch**. Folders are scanned recursively for supported
 PDFs and images. Processing is sequential. PDFs create new searchable PDFs;
@@ -33,18 +33,21 @@ chosen instead.
 
 You can cancel a running batch, retry only failed items after it completes,
 reveal the chosen output folder, or select **Start New Batch** to clear the queue.
-This candidate uses the same local-only processing boundary as Beta 1.
+The published batch uses the same local-only processing boundary as the
+single-document flow.
 
 ## Five-minute desktop test
 
-Use a non-sensitive sample document and complete these six steps:
+Use non-sensitive sample documents and complete these eight steps:
 
 1. Open one PDF and confirm useful recognized text.
 2. Create a searchable PDF at a new destination and confirm the original was not replaced.
 3. Select **Process Another Document** and confirm the drop/open screen returns without relaunching.
 4. Open one supported image and confirm recognized text.
 5. Copy or save the text.
-6. Quit and reopen the app normally.
+6. Select **New Batch**, add at least two supported files or a folder, and choose an output folder.
+7. Review supported and skipped items, select **Start Batch**, and confirm the queue processes sequentially without changing the sources.
+8. Confirm the new outputs, then select **Start New Batch** and quit and reopen the app normally.
 
 ## Privacy
 
@@ -52,18 +55,25 @@ Recognition uses Apple Vision and PDFKit locally. LocalOCR does not upload docum
 
 ## Compatibility and build provenance
 
-The published Beta 1 build (version `0.2.0`) was made with stable Xcode 26.6 (`17F113`), Swift 6, and arm64, with deployment target macOS 14.0. It is Developer ID signed with Hardened Runtime, Apple notarized, stapled, and Gatekeeper accepted. Complete downloaded-package and GUI acceptance passed on Apple M5 and Apple M4 Macs tested on macOS 27 beta build `26A5388g`.
+The published v0.3 build was made with stable Xcode 26.6 (`17F113`), Swift 6,
+and arm64, with deployment target macOS 14.0. It is Developer ID signed with
+Hardened Runtime, Apple notarized, stapled, and Gatekeeper accepted. The full
+downloaded-package verifier passed on the build Mac (Mac17,3) running
+macOS 27.0 beta build `26A5421a`. Exact-build second-Mac acceptance is pending.
 
-Release provenance: version `0.2.0` build `1` comes from source commit `2cb03cc9684ed9bb4b449a0f7d79f0588fb7ae38`; the verified ZIP SHA-256 is `3a6a1c754ee369ab9a8ffe01bcc96e7f4927ac44eb1f82b410f538aee901c0d5`.
+Release provenance: version `0.3.0` build `2` comes from source commit
+`c2ff3259e190ef5adf037c091a04b34830014131`; the verified ZIP SHA-256 is
+`620cb698b9e98d3547edca4ab3891dc8a52adaa3261d528de9f91b516838b107`.
 
-Later Apple beta builds may introduce regressions; report the exact macOS version and build number.
+Future Apple beta compatibility is not guaranteed. Report the exact macOS
+version and build number with any problem.
 
 ## Known limitations
 
 - Apple silicon only; macOS 14 or later is required.
 - No Intel, Windows, or Linux support.
-- The default desktop workflow is one document at a time. The Beta 2 batch
-  candidate has no run history, language/settings wizard, or guided MCP setup.
+- The default desktop workflow is one document at a time. The opt-in batch has
+  no run history, language/settings wizard, or guided MCP setup.
 - MCP setup is manual and uses local stdio.
 - Beta output behavior may change; retain your original documents.
 
@@ -75,9 +85,9 @@ Use the repository [beta feedback form](https://github.com/UnoRazorback/localocr
 
 ## Advanced: MCP setup
 
-This optional path is separate from the desktop flow. The published Beta 1 app
-processes one document at a time; the Beta 2 candidate keeps that flow as the
-default and adds reviewed desktop batches. Its bundled local stdio MCP server
+This optional path is separate from the desktop flow. The published v0.3 app
+keeps one-document processing as the default and adds reviewed desktop batches.
+Its bundled local stdio MCP server
 exposes the six tools below, including batch PDF OCR. The installed helper is:
 
 ```text

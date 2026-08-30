@@ -1,6 +1,6 @@
 name: LocalOCR Studio Beta feedback
-description: Report a Beta 1 bug, usability issue, question, or feature request.
-title: "[Beta 1] "
+description: Report a LocalOCR beta bug, usability issue, question, or feature request.
+title: "[Beta] "
 labels: []
 assignees: []
 body:
@@ -22,7 +22,7 @@ body:
     id: version
     attributes:
       label: LocalOCR version and build
-      value: v0.2.0-beta.1 (0.2.0 build 1)
+      value: v0.3.0-beta.1 (0.3.0 build 2)
     validations:
       required: true
   - type: input
@@ -36,7 +36,7 @@ body:
     id: macos_build
     attributes:
       label: macOS version and build number
-      placeholder: macOS 27.0 beta, build 26A5388g
+      placeholder: macOS 27.0 beta, build 26A5421a
     validations:
       required: true
   - type: input
