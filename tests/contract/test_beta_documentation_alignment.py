@@ -20,7 +20,7 @@ def test_repository_docs_link_to_beta_guide():
 def test_readme_and_studio_describe_published_beta_and_reset():
     for key in ("readme", "studio"):
         text = FILES[key].read_text()
-        assert "v0.3.0-beta.1" in text
+        assert "v0.3.0-beta.2" in text
         assert "Process Another Document" in text
         assert "Xcode 26.6" in text
         assert DEPLOYMENT_TARGET in text

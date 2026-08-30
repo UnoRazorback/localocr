@@ -9,10 +9,10 @@ LocalOCR is an open-core project for **macOS 14 or later**. The open-source
 core includes the Swift OCR engine, the `localocr` command-line tool, and the
 `localocr-mcp` stdio server. The repository also contains the release pipeline
 for a directly distributed LocalOCR Studio Mac app. The published prerelease is
-[v0.3.0-beta.1](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.1).
+[v0.3.0-beta.2](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.2).
 See the [Beta Tester Guide](BETA_TESTING.md) for the verified download,
 installation, desktop batch, privacy, and optional MCP setup. The
-[v0.3 release notes](docs/release/v0.3.0-beta.1-notes.md) describe the exact
+[v0.3 release notes](docs/release/v0.3.0-beta.2-notes.md) describe the exact
 release boundary.
 
 ## What it does
@@ -41,7 +41,7 @@ never overwritten. PDFs receive new searchable-PDF outputs and images receive
 text-file outputs. Existing output names are preserved by choosing a numbered
 name instead of overwriting. You can cancel, retry failed items, reveal the
 chosen output folder, or start a new batch. See [the Studio guide](docs/studio.md)
-for the full desktop flow and [the v0.3 release notes](docs/release/v0.3.0-beta.1-notes.md)
+for the full desktop flow and [the v0.3 release notes](docs/release/v0.3.0-beta.2-notes.md)
 for its release boundary. MCP and CLI remain advanced, local-use interfaces.
 
 ## Quick start from source
@@ -81,21 +81,22 @@ artifacts only; it does not sign, notarize, install, or publish them.
 ## Published prerelease distribution
 
 The published prerelease is
-[v0.3.0-beta.1](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.1).
-Its release identity is version `0.3.0`, build `2`, source commit
-`c2ff3259e190ef5adf037c091a04b34830014131`, and verified ZIP SHA-256
-`620cb698b9e98d3547edca4ab3891dc8a52adaa3261d528de9f91b516838b107`.
+[v0.3.0-beta.2](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.2).
+Its release identity is version `0.3.0`, build `3`, source commit
+`54828938f4b8bf23a4ae0e7a63fa9552548e7f78`, and verified ZIP SHA-256
+`a60fb34f5f9b9c19413bb2222d2846f472398c73ad4a0a7a1ac19eee09b55691`.
 It was built with stable Xcode 26.6 (`17F113`), Swift 6, and arm64, with
 deployment target macOS 14.0. The downloaded package was verified on the build
 Mac (Mac17,3) running macOS 27.0 beta build `26A5421a`. Exact-build second-Mac
-acceptance is pending. Future Apple beta compatibility is not guaranteed.
+acceptance also passed on Scott’s Mac mini running the same macOS build. Future
+Apple beta compatibility is not guaranteed.
 
-Download `LocalOCR-Studio-0.3.0-2.zip` and
-`LocalOCR-Studio-0.3.0-2.sha256` into the same directory and verify them before
+Download `LocalOCR-Studio-0.3.0-3.zip` and
+`LocalOCR-Studio-0.3.0-3.sha256` into the same directory and verify them before
 expanding the ZIP:
 
 ```bash
-shasum -a 256 -c "LocalOCR-Studio-0.3.0-2.sha256"
+shasum -a 256 -c "LocalOCR-Studio-0.3.0-3.sha256"
 ```
 
 Continue only if the command reports `OK`. Move the expanded `LocalOCR

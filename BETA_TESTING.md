@@ -1,16 +1,16 @@
 # LocalOCR Studio Beta Tester Guide
 
 The published prerelease is
-[v0.3.0-beta.1](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.1),
-version `0.3.0`, build `2`. It includes the simple one-document desktop flow,
+[v0.3.0-beta.2](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.2),
+version `0.3.0`, build `3`. It includes the simple one-document desktop flow,
 an opt-in reviewed desktop batch, and the bundled local CLI and MCP server.
 
 ## Download and install
 
-Download `LocalOCR-Studio-0.3.0-2.zip` and `LocalOCR-Studio-0.3.0-2.sha256` from the [v0.3.0-beta.1 release](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.1) into the same directory. Verify the download before expanding it:
+Download `LocalOCR-Studio-0.3.0-3.zip` and `LocalOCR-Studio-0.3.0-3.sha256` from the [v0.3.0-beta.2 release](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.2) into the same directory. Verify the download before expanding it:
 
 ```bash
-shasum -a 256 -c "LocalOCR-Studio-0.3.0-2.sha256"
+shasum -a 256 -c "LocalOCR-Studio-0.3.0-3.sha256"
 ```
 
 The command must report `OK`. Expand the verified ZIP, move `LocalOCR Studio.app` to `/Applications`, then open it normally. Do not bypass Gatekeeper, remove quarantine attributes, or use an unverified build or staging copy.
@@ -59,11 +59,12 @@ The published v0.3 build was made with stable Xcode 26.6 (`17F113`), Swift 6,
 and arm64, with deployment target macOS 14.0. It is Developer ID signed with
 Hardened Runtime, Apple notarized, stapled, and Gatekeeper accepted. The full
 downloaded-package verifier passed on the build Mac (Mac17,3) running
-macOS 27.0 beta build `26A5421a`. Exact-build second-Mac acceptance is pending.
+macOS 27.0 beta build `26A5421a`. Exact-build second-Mac acceptance passed on
+Scott’s Mac mini running the same macOS version and build.
 
-Release provenance: version `0.3.0` build `2` comes from source commit
-`c2ff3259e190ef5adf037c091a04b34830014131`; the verified ZIP SHA-256 is
-`620cb698b9e98d3547edca4ab3891dc8a52adaa3261d528de9f91b516838b107`.
+Release provenance: version `0.3.0` build `3` comes from source commit
+`54828938f4b8bf23a4ae0e7a63fa9552548e7f78`; the verified ZIP SHA-256 is
+`a60fb34f5f9b9c19413bb2222d2846f472398c73ad4a0a7a1ac19eee09b55691`.
 
 Future Apple beta compatibility is not guaranteed. Report the exact macOS
 version and build number with any problem.

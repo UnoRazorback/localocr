@@ -22,7 +22,7 @@ body:
     id: version
     attributes:
       label: LocalOCR version and build
-      value: v0.3.0-beta.1 (0.3.0 build 2)
+      value: v0.3.0-beta.2 (0.3.0 build 3)
     validations:
       required: true
   - type: input

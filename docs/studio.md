@@ -91,11 +91,11 @@ tools and client-configuration shape. The adjacent
 ## Beta status
 
 The published prerelease is
-[v0.3.0-beta.1](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.1),
-version `0.3.0`, build `2`. Follow the [Beta Tester Guide](../BETA_TESTING.md)
-to verify `LocalOCR-Studio-0.3.0-2.zip` with its matching `.sha256` file, then move the
+[v0.3.0-beta.2](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.2),
+version `0.3.0`, build `3`. Follow the [Beta Tester Guide](../BETA_TESTING.md)
+to verify `LocalOCR-Studio-0.3.0-3.zip` with its matching `.sha256` file, then move the
 expanded app to `/Applications` and open it normally. Do not use a staging
-copy or bypass Gatekeeper. The [v0.3 release notes](release/v0.3.0-beta.1-notes.md)
+copy or bypass Gatekeeper. The [v0.3 release notes](release/v0.3.0-beta.2-notes.md)
 document the desktop batch and exact release boundary.
 
 ## Compatibility and build provenance
@@ -104,5 +104,6 @@ The published v0.3 beta was built with stable Xcode 26.6 (`17F113`), Swift 6,
 and arm64, with deployment target macOS 14.0. It is Apple notarized, stapled,
 and Gatekeeper accepted. The downloaded package verifier passed on the build
 Mac (Mac17,3) running macOS 27.0 beta build `26A5421a`. Exact-build second-Mac
-acceptance is pending. Future Apple beta compatibility is not guaranteed;
+acceptance passed on Scott’s Mac mini running the same macOS build. Future
+Apple beta compatibility is not guaranteed;
 include the exact macOS version and build number in feedback.
