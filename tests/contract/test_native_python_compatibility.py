@@ -21,6 +21,7 @@ import pytest
 
 ROOT = Path(__file__).parents[2]
 NATIVE = ROOT / ".build" / "debug" / "localocr-mcp"
+NATIVE_MODEL_BRIDGE = ROOT / ".build" / "debug" / "localocr-model-bridge"
 EXPECTED = Path(__file__).with_name("expected")
 FIXTURE_NAMES = ("mixed.pdf", "image-only.pdf")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -46,6 +47,34 @@ RECEIPT_KEYS = {
     "policy_version",
     "schema_version",
 }
+
+
+def test_native_model_bridge_uses_the_same_bounded_wire_protocol() -> None:
+    assert NATIVE_MODEL_BRIDGE.is_file()
+    request = {
+        "version": 1,
+        "id": 901,
+        "action": "status",
+        "provider": "ollama",
+        "model": None,
+        "expectedIdentity": None,
+        "operation": None,
+        "prompt": None,
+        "fields": [],
+        "timeoutMilliseconds": 1000,
+    }
+    result = subprocess.run(
+        [str(NATIVE_MODEL_BRIDGE)],
+        input=json.dumps(request) + "\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    response = json.loads(result.stdout)
+    assert result.stderr == ""
+    assert response["version"] == 1
+    assert response["id"] == 901
+    assert response["error"]["code"] == "invalid_request"
 
 
 @contextmanager

@@ -35,6 +35,18 @@ validate_local_intelligence_candidate_binary() {
     }
 }
 
+validate_model_bridge_candidate_binary() {
+    local binary="$1"
+    local minimum_macos
+
+    release_validate_binary_policy "$binary" false true true || return 1
+    minimum_macos="$(release_binary_minimum_macos "$binary")" || return 1
+    [[ "$minimum_macos" == "14.0" ]] || {
+        echo "Local Intelligence model bridge must target macOS 14.0 exactly: $binary targets $minimum_macos" >&2
+        return 1
+    }
+}
+
 validate_direct_release_artifact_dir() {
     local candidate="${1:-}"
     local allow_missing_parent="${2:-false}"
@@ -156,6 +168,7 @@ validate_artifact_output_path() {
 }
 
 release_validate_mcp_source_policy "$repo_root"
+"$script_dir/validate-model-bridge-policy.py" --source-root "$repo_root" >/dev/null
 select_release_swift_toolchain
 validate_artifact_output_path
 artifact_parent="$(/usr/bin/dirname "$artifact_dir")"
@@ -262,6 +275,7 @@ copy_native_products_to_artifact_candidate() {
         }
         /bin/cp "$native_release_dir/localocr" ./localocr
         /bin/cp "$native_release_dir/localocr-mcp" ./localocr-mcp
+        /bin/cp "$native_release_dir/localocr-model-bridge" ./localocr-model-bridge
     )
 }
 
@@ -318,7 +332,12 @@ cd "$repo_root"
     --disable-automatic-resolution \
     -c release \
     --product localocr-mcp
+"$release_xcode_swift_path" build \
+    --disable-automatic-resolution \
+    -c release \
+    --product localocr-model-bridge
 release_validate_mcp_source_policy "$repo_root"
+"$script_dir/validate-model-bridge-policy.py" --source-root "$repo_root" >/dev/null
 
 [[ -d "$repo_root/.build" && ! -L "$repo_root/.build" ]] || {
     echo "SwiftPM build root is missing or symlinked" >&2
@@ -359,10 +378,14 @@ validate_native_release_identity() {
     }
 }
 
-for product in localocr localocr-mcp; do
+for product in localocr localocr-mcp localocr-model-bridge; do
     release_validate_binary_architecture_and_target \
         "$native_release_dir/$product"
-    validate_no_network_framework_dependency "$native_release_dir/$product"
+    if [[ "$product" == localocr-model-bridge ]]; then
+        release_validate_binary_dependencies "$native_release_dir/$product" true
+    else
+        validate_no_network_framework_dependency "$native_release_dir/$product"
+    fi
     product_dsym="$native_release_dir/$product.dSYM"
     if [[ -e "$product_dsym" || -L "$product_dsym" ]]; then
         release_validate_dsym_matches_binary \
@@ -383,7 +406,8 @@ sanitize_copied_artifact() {
     local binary="$1"
 
     case "$binary" in
-        "$artifact_candidate/localocr"|"$artifact_candidate/localocr-mcp") ;;
+        "$artifact_candidate/localocr"|"$artifact_candidate/localocr-mcp"|\
+        "$artifact_candidate/localocr-model-bridge") ;;
         *)
             echo "refusing to edit an unexpected artifact: $binary" >&2
             exit 1
@@ -395,8 +419,16 @@ sanitize_copied_artifact() {
 
 sanitize_copied_artifact "$artifact_candidate/localocr"
 sanitize_copied_artifact "$artifact_candidate/localocr-mcp"
+sanitize_validated_release_binary \
+    "$artifact_candidate/localocr-model-bridge" \
+    "$artifact_candidate/localocr-model-bridge" \
+    false true true
 validate_local_intelligence_candidate_binary "$artifact_candidate/localocr"
 validate_local_intelligence_candidate_binary "$artifact_candidate/localocr-mcp"
+validate_model_bridge_candidate_binary "$artifact_candidate/localocr-model-bridge"
+"$script_dir/validate-model-bridge-policy.py" \
+    --source-root "$repo_root" \
+    --binary "$artifact_candidate/localocr-model-bridge" >/dev/null
 validate_artifact_candidate_path "$artifact_candidate"
 validate_artifact_output_identity
 validate_native_release_identity
@@ -404,7 +436,7 @@ publish_artifact_candidate
 trap - EXIT
 validate_artifact_output_identity
 
-for product in localocr localocr-mcp; do
+for product in localocr localocr-mcp localocr-model-bridge; do
     product_dsym="$native_release_dir/$product.dSYM"
     if [[ -e "$product_dsym" || -L "$product_dsym" ]]; then
         release_preserve_matching_dsym \

@@ -83,6 +83,22 @@ import Testing
         #expect(result.installations.isEmpty)
         #expect(result.rejections.first?.reason == .escapedApprovedRoot)
     }
+
+    @Test func pathCandidatesTrustOnlyTheirLiteralExecutableDirectory() {
+        let candidates = AgentClientDiscovery.defaultCandidates(
+            environment: ["PATH": "/opt/homebrew/bin:/usr/local/bin"],
+            homeDirectory: URL(fileURLWithPath: "/Users/fixture")
+        )
+        let pathCandidates = candidates.filter {
+            $0.executableURL.path.hasPrefix("/opt/homebrew/bin/") ||
+                $0.executableURL.path.hasPrefix("/usr/local/bin/")
+        }
+
+        #expect(pathCandidates.count == 4)
+        #expect(pathCandidates.allSatisfy {
+            $0.approvedRootURL.path == $0.executableURL.deletingLastPathComponent().path
+        })
+    }
 }
 
 private struct DiscoveryFixture {

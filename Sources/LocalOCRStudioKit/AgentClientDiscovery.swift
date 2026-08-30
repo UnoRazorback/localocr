@@ -184,8 +184,6 @@ public struct AgentClientDiscovery {
         let path = directory.path
         let localRoot = homeDirectory.appendingPathComponent(".local", isDirectory: true).standardizedFileURL
         if isDescendant(directory, of: localRoot) { return localRoot }
-        if path == "/opt/homebrew/bin" { return URL(fileURLWithPath: "/opt/homebrew", isDirectory: true) }
-        if path == "/usr/local/bin" { return URL(fileURLWithPath: "/usr/local", isDirectory: true) }
         if path == "/usr/bin" || path == "/bin" { return URL(fileURLWithPath: "/usr", isDirectory: true) }
         return directory
     }

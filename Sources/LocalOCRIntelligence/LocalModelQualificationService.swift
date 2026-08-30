@@ -295,17 +295,11 @@ public actor LocalModelQualificationService {
     }
 
     static func loadFixture() throws -> LocalModelQualificationFixture {
-        guard let url = Bundle.module.url(
-            forResource: "local-model-qualification-v1",
-            withExtension: "json",
-            subdirectory: "Resources"
-        ) ?? Bundle.module.url(
-            forResource: "local-model-qualification-v1",
-            withExtension: "json"
-        ) else {
-            throw CocoaError(.fileNoSuchFile)
-        }
-        return try decodeFixture(Data(contentsOf: url))
+        let data = try JSONSerialization.data(
+            withJSONObject: canonicalFixtureJSONObject(),
+            options: [.sortedKeys]
+        )
+        return try decodeFixture(data)
     }
 
     static func decodeFixture(_ data: Data) throws -> LocalModelQualificationFixture {

@@ -227,6 +227,7 @@ release_is_forbidden_network_install_name() {
 
 release_validate_local_only_install_name() {
     local install_name="${1:-}"
+    local allow_system_network="${2:-false}"
 
     if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
         return 0
@@ -235,7 +236,7 @@ release_validate_local_only_install_name() {
         echo "unapproved dynamic-library install name: ${install_name:-<empty>}" >&2
         return 1
     }
-    if release_is_forbidden_network_install_name "$install_name"; then
+    if [[ "$allow_system_network" != true ]] && release_is_forbidden_network_install_name "$install_name"; then
         echo "network framework dependency is forbidden in local-only candidate: $install_name" >&2
         return 1
     fi
@@ -243,6 +244,7 @@ release_validate_local_only_install_name() {
 
 release_validate_binary_dependencies() {
     local binary="$1"
+    local allow_system_network="${2:-false}"
     local dependency_output
     local dependency_line
     local install_name
@@ -266,7 +268,7 @@ release_validate_binary_dependencies() {
             }
             continue
         fi
-        release_validate_local_only_install_name "$install_name" || return 1
+        release_validate_local_only_install_name "$install_name" "$allow_system_network" || return 1
     done < <(
         printf '%s\n' "$dependency_output" |
             /usr/bin/awk 'NR > 1 { sub(/^[[:space:]]+/, ""); print }'
@@ -481,10 +483,13 @@ release_validate_binary_policy() {
     local binary="$1"
     local allow_framework_rpath="${2:-false}"
     local reject_private_path="${3:-true}"
+    local allow_system_network="${4:-false}"
 
     release_validate_binary_architecture_and_target "$binary" || return 1
-    release_validate_binary_dependencies "$binary" || return 1
-    release_validate_no_network_symbols "$binary" || return 1
+    release_validate_binary_dependencies "$binary" "$allow_system_network" || return 1
+    if [[ "$allow_system_network" != true ]]; then
+        release_validate_no_network_symbols "$binary" || return 1
+    fi
     release_validate_binary_rpaths "$binary" "$allow_framework_rpath" || return 1
     if [[ "$reject_private_path" == true ]]; then
         release_reject_private_user_path "$binary" || return 1
@@ -694,7 +699,7 @@ release_preserve_matching_dsym() {
 
     [[ -n "$source_dsym" ]] || return 0
     case "$symbol_label" in
-        localocr|localocr-mcp|LocalOCR-Studio) ;;
+        localocr|localocr-mcp|localocr-model-bridge|LocalOCR-Studio) ;;
         *)
             echo "unexpected release symbol label: $symbol_label" >&2
             return 1
@@ -850,6 +855,7 @@ sanitize_validated_release_binary() {
     local expected_binary="${2:-}"
     local allow_framework_rpath="${3:-false}"
     local remove_non_system_rpaths="${4:-false}"
+    local allow_system_network="${5:-false}"
     local parent
     local physical_parent
     local physical_binary
@@ -934,7 +940,7 @@ sanitize_validated_release_binary() {
         return 1
     }
     release_validate_binary_policy \
-        "$working_binary" "$allow_framework_rpath" false || {
+        "$working_binary" "$allow_framework_rpath" false "$allow_system_network" || {
         cleanup_sanitize_root "$sanitize_root" || true
         return 1
     }
@@ -955,7 +961,7 @@ sanitize_validated_release_binary() {
         return 1
     }
     release_validate_binary_policy \
-        "$working_binary" "$allow_framework_rpath" true || {
+        "$working_binary" "$allow_framework_rpath" true "$allow_system_network" || {
         cleanup_sanitize_root "$sanitize_root" || true
         return 1
     }
@@ -966,7 +972,8 @@ sanitize_validated_release_binary() {
         cleanup_sanitize_root "$sanitize_root" || true
         return 1
     }
-    release_validate_binary_policy "$binary" "$allow_framework_rpath" true || {
+    release_validate_binary_policy \
+        "$binary" "$allow_framework_rpath" true "$allow_system_network" || {
         cleanup_sanitize_root "$sanitize_root" || true
         return 1
     }

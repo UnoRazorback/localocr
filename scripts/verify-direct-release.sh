@@ -40,7 +40,7 @@ validate_canonical_system_install_name() {
 }
 
 validate_install_name() {
-    release_validate_local_only_install_name "${1:-}"
+    release_validate_local_only_install_name "${1:-}" "${2:-false}"
 }
 
 validate_rpath() {
@@ -80,7 +80,7 @@ verify_binary_architecture_and_target() {
 }
 
 verify_binary_dependencies() {
-    release_validate_binary_dependencies "$1"
+    release_validate_binary_dependencies "$1" "${2:-false}"
 }
 
 verify_binary_rpaths() {
@@ -192,11 +192,16 @@ resolve_staged_main_executable() {
 }
 
 verify_binary_policy() {
-    verify_binary_architecture_and_target "$1"
-    verify_binary_dependencies "$1"
-    release_validate_no_network_symbols "$1"
-    verify_binary_rpaths "$1"
-    verify_no_private_paths "$1"
+    local binary="$1"
+    local allow_system_network="${2:-false}"
+
+    verify_binary_architecture_and_target "$binary"
+    verify_binary_dependencies "$binary" "$allow_system_network"
+    if [[ "$allow_system_network" != true ]]; then
+        release_validate_no_network_symbols "$binary"
+    fi
+    verify_binary_rpaths "$binary"
+    verify_no_private_paths "$binary"
 }
 
 verify_signed_code_object() {
@@ -212,10 +217,15 @@ verify_direct_release_signatures() {
 
     validate_release_bundle_metadata "$app_path"
     main_executable="$(resolve_staged_main_executable "$app_path")"
-    for helper in localocr localocr-mcp; do
-        verify_binary_policy "$app_path/Contents/Helpers/$helper"
+    for helper in localocr localocr-mcp localocr-model-bridge; do
+        verify_binary_policy \
+            "$app_path/Contents/Helpers/$helper" \
+            "$([[ "$helper" == localocr-model-bridge ]] && printf true || printf false)"
         verify_signed_code_object "$app_path/Contents/Helpers/$helper"
     done
+    "$verify_script_dir/validate-model-bridge-policy.py" \
+        --source-root "$verify_repo_root" \
+        --binary "$app_path/Contents/Helpers/localocr-model-bridge" >/dev/null
     verify_binary_policy "$main_executable"
     verify_signed_code_object "$app_path"
     /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"

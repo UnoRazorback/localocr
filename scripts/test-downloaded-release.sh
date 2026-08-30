@@ -27,6 +27,7 @@ download_evidence_mv="/bin/mv"
 download_cleanup_rm="/bin/rm"
 download_evidence_writer=""
 download_temp_parent="/private/tmp"
+download_model_bridge_validator="$download_script_dir/validate-model-bridge-policy.py"
 
 download_zip=""
 download_checksum_file=""
@@ -409,6 +410,7 @@ download_verify_binary_architecture_and_target() {
 
 download_verify_binary_dependencies() {
     local binary="$1"
+    local allow_system_network="${2:-false}"
     local dependency_output
     local dependency_line
     local install_name
@@ -423,7 +425,7 @@ download_verify_binary_dependencies() {
             echo "malformed dynamic-library dependency record" >&2
             return 1
         fi
-        validate_install_name "$install_name" || return
+        validate_install_name "$install_name" "$allow_system_network" || return
         if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
             [[ "$dependency_line" == *", weak)" ]] || {
                 echo "libswiftCompatibilitySpan.dylib must be weak-linked" >&2
@@ -520,10 +522,13 @@ download_verify_no_forbidden_strings() {
 }
 
 download_verify_binary_policy() {
-    download_verify_binary_architecture_and_target "$1" || return
-    download_verify_binary_dependencies "$1" || return
-    download_verify_binary_rpaths "$1" || return
-    download_verify_no_forbidden_strings "$1" || return
+    local binary="$1"
+    local allow_system_network="${2:-false}"
+
+    download_verify_binary_architecture_and_target "$binary" || return
+    download_verify_binary_dependencies "$binary" "$allow_system_network" || return
+    download_verify_binary_rpaths "$binary" || return
+    download_verify_no_forbidden_strings "$binary" || return
 }
 
 download_verify_signed_object() {
@@ -588,12 +593,17 @@ download_verify_signature_and_binary_policy() {
 
     validate_release_bundle_metadata "$download_extracted_app" || return
     main_executable="$(download_resolve_main_executable)" || return
-    for helper in localocr localocr-mcp; do
+    for helper in localocr localocr-mcp localocr-model-bridge; do
         download_verify_binary_policy \
-            "$download_extracted_app/Contents/Helpers/$helper" || return
+            "$download_extracted_app/Contents/Helpers/$helper" \
+            "$([[ "$helper" == localocr-model-bridge ]] && printf true || printf false)" || return
         download_verify_signed_object \
             "$download_extracted_app/Contents/Helpers/$helper" || return
     done
+    "$download_model_bridge_validator" \
+        --source-root "$verify_repo_root" \
+        --binary "$download_extracted_app/Contents/Helpers/localocr-model-bridge" \
+        >/dev/null || return
     download_verify_binary_policy "$main_executable" || return
     download_verify_signed_object "$download_extracted_app" || return
     "$download_codesign" --verify --deep --strict --verbose=2 \

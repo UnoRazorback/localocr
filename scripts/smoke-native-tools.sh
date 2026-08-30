@@ -7,6 +7,7 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 artifact_dir="$repo_root/dist/native-tools"
 cli="$artifact_dir/localocr"
 mcp="$artifact_dir/localocr-mcp"
+model_bridge="$artifact_dir/localocr-model-bridge"
 mcp_exchange="$script_dir/mcp-smoke-exchange.py"
 fixture="$repo_root/tests/LocalOCRCoreTests/Fixtures/mixed.pdf"
 system_swift_rpath="/usr/lib/swift"
@@ -211,6 +212,13 @@ reject_binary_content() {
         fi
     done
 
+    if [[ "$binary" == "$model_bridge" ]]; then
+        "$script_dir/validate-model-bridge-policy.py" \
+            --source-root "$repo_root" \
+            --binary "$binary" >/dev/null
+        return
+    fi
+
     if urls="$(printf '%s\n' "$raw_strings" | grep -E 'https?://')"; then
         # These two loopback-origin prefixes are retained by the pinned MCP
         # SDK's HTTPRequestValidation support. localocr-mcp starts only
@@ -229,6 +237,18 @@ reject_binary_content() {
 
 reject_binary_content "$cli"
 reject_binary_content "$mcp"
+reject_binary_content "$model_bridge"
+
+model_bridge_request='{"version":1,"id":901,"action":"status","provider":"ollama","model":null,"expectedIdentity":null,"operation":null,"prompt":null,"fields":[],"timeoutMilliseconds":1000}'
+model_bridge_response="$(printf '%s\n' "$model_bridge_request" | "$model_bridge")"
+require_json_lines "$model_bridge_response"
+require_single_response "$model_bridge_response" 901
+if ! printf '%s\n' "$model_bridge_response" | \
+    /usr/bin/grep -Fq '"code":"invalid_request"'
+then
+    echo "native model bridge did not complete the bounded wire-protocol smoke" >&2
+    exit 1
+fi
 
 [[ -d "$repo_root/.build" && ! -L "$repo_root/.build" ]] || {
     echo "native build root is missing or symlinked" >&2

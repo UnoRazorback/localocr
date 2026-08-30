@@ -313,7 +313,7 @@ validate_canonical_system_install_name() {
 }
 
 validate_install_name() {
-    release_validate_local_only_install_name "${1:-}"
+    release_validate_local_only_install_name "${1:-}" "${2:-false}"
 }
 
 validate_rpath() {
@@ -330,7 +330,7 @@ validate_release_binary() {
 }
 
 validate_binary_dependencies() {
-    release_validate_binary_dependencies "$1"
+    release_validate_binary_dependencies "$1" "${2:-false}"
 }
 
 binary_rpaths() {
@@ -442,7 +442,10 @@ validate_exact_staged_helpers() {
     }
     unexpected_helper="$(
         /usr/bin/find "$helpers_dir" -mindepth 1 -maxdepth 1 \
-            ! -name localocr ! -name localocr-mcp -print -quit
+            ! -name localocr \
+            ! -name localocr-mcp \
+            ! -name localocr-model-bridge \
+            -print -quit
     )" || {
         echo "could not inspect staged helpers" >&2
         return 1
@@ -451,12 +454,21 @@ validate_exact_staged_helpers() {
         echo "unexpected staged helper: $unexpected_helper" >&2
         return 1
     }
-    for helper in localocr localocr-mcp; do
+    for helper in localocr localocr-mcp localocr-model-bridge; do
         validate_release_binary "$helpers_dir/$helper"
-        validate_binary_dependencies "$helpers_dir/$helper"
+        if [[ "$helper" == localocr-model-bridge ]]; then
+            validate_binary_dependencies "$helpers_dir/$helper" true
+        else
+            validate_binary_dependencies "$helpers_dir/$helper"
+        fi
         validate_binary_rpaths "$helpers_dir/$helper"
-        release_validate_binary_policy "$helpers_dir/$helper" false true
+        release_validate_binary_policy \
+            "$helpers_dir/$helper" false true \
+            "$([[ "$helper" == localocr-model-bridge ]] && printf true || printf false)"
     done
+    "$stage_script_dir/validate-model-bridge-policy.py" \
+        --source-root "$stage_repo_root" \
+        --binary "$helpers_dir/localocr-model-bridge"
 }
 
 validate_nested_code_allowlist() {
@@ -481,7 +493,7 @@ validate_nested_code_allowlist() {
                 case "$relative_candidate" in
                     "Contents/MacOS/$expected_main_executable_name")
                         ;;
-                    Contents/Helpers/localocr|Contents/Helpers/localocr-mcp)
+                    Contents/Helpers/localocr|Contents/Helpers/localocr-mcp|Contents/Helpers/localocr-model-bridge)
                         [[ "$include_helpers" == true ]] || {
                             echo "unexpected nested code: $relative_candidate" >&2
                             exit 1
@@ -534,17 +546,21 @@ record_staged_pre_signing_hashes() {
     local staged_main_executable="$staged_app/Contents/MacOS/$expected_main_executable_name"
     local localocr_binary="$staged_app/Contents/Helpers/localocr"
     local localocr_mcp_binary="$staged_app/Contents/Helpers/localocr-mcp"
+    local localocr_model_bridge_binary="$staged_app/Contents/Helpers/localocr-model-bridge"
     local staged_main_hash
     local localocr_hash
     local localocr_mcp_hash
+    local localocr_model_bridge_hash
 
     staged_main_hash="$(/usr/bin/shasum -a 256 "$staged_main_executable" | /usr/bin/awk '{ print $1 }')"
     localocr_hash="$(/usr/bin/shasum -a 256 "$localocr_binary" | /usr/bin/awk '{ print $1 }')"
     localocr_mcp_hash="$(/usr/bin/shasum -a 256 "$localocr_mcp_binary" | /usr/bin/awk '{ print $1 }')"
+    localocr_model_bridge_hash="$(/usr/bin/shasum -a 256 "$localocr_model_bridge_binary" | /usr/bin/awk '{ print $1 }')"
     {
         printf '%s  %s\n' "$staged_main_hash" "staged/LocalOCR Studio.app/Contents/MacOS/$expected_main_executable_name"
         printf '%s  %s\n' "$localocr_hash" "staged/LocalOCR Studio.app/Contents/Helpers/localocr"
         printf '%s  %s\n' "$localocr_mcp_hash" "staged/LocalOCR Studio.app/Contents/Helpers/localocr-mcp"
+        printf '%s  %s\n' "$localocr_model_bridge_hash" "staged/LocalOCR Studio.app/Contents/Helpers/localocr-model-bridge"
     } > "$evidence_dir/pre-signing-sha256.txt"
 }
 
@@ -587,7 +603,7 @@ stage_direct_release() {
 
     configure_release_developer_dir
     "$stage_script_dir/build-native-tools.sh" --artifact-dir "$native_tools_dir"
-    for helper in localocr localocr-mcp; do
+    for helper in localocr localocr-mcp localocr-model-bridge; do
         [[ -f "$native_tools_dir/$helper" ]] || {
             echo "native helper not found after build: $helper" >&2
             return 1
@@ -599,20 +615,23 @@ stage_direct_release() {
     /bin/mkdir -p "$staged_app/Contents/Helpers"
     /usr/bin/ditto "$native_tools_dir/localocr" "$staged_app/Contents/Helpers/localocr"
     /usr/bin/ditto "$native_tools_dir/localocr-mcp" "$staged_app/Contents/Helpers/localocr-mcp"
+    /usr/bin/ditto "$native_tools_dir/localocr-model-bridge" "$staged_app/Contents/Helpers/localocr-model-bridge"
     /bin/chmod 0755 \
         "$staged_app/Contents/Helpers/localocr" \
-        "$staged_app/Contents/Helpers/localocr-mcp"
+        "$staged_app/Contents/Helpers/localocr-mcp" \
+        "$staged_app/Contents/Helpers/localocr-model-bridge"
     remove_removable_framework_rpath \
         "$staged_app/Contents/MacOS/$expected_main_executable_name"
     sanitize_validated_release_binary \
         "$staged_app/Contents/MacOS/$expected_main_executable_name" \
         "$release_root/staged/LocalOCR Studio.app/Contents/MacOS/$expected_main_executable_name" \
         false
-    for helper in localocr localocr-mcp; do
+    for helper in localocr localocr-mcp localocr-model-bridge; do
         sanitize_validated_release_binary \
             "$staged_app/Contents/Helpers/$helper" \
             "$release_root/staged/LocalOCR Studio.app/Contents/Helpers/$helper" \
-            false
+            false false \
+            "$([[ "$helper" == localocr-model-bridge ]] && printf true || printf false)"
     done
     reject_tree_symlinks "$staged_app"
     clear_staged_app_xattrs "$staged_app"
@@ -646,6 +665,10 @@ stage_direct_release() {
         false \
         true
     validate_exact_staged_helpers "$staged_app"
+    "$stage_script_dir/validate-model-bridge-policy.py" \
+        --source-root "$stage_repo_root" \
+        --binary "$staged_app/Contents/Helpers/localocr-model-bridge" \
+        > "$evidence_dir/model-bridge-policy.json"
     validate_nested_code_allowlist "$staged_app" true
     reject_private_user_paths "$staged_app"
     record_staged_pre_signing_hashes

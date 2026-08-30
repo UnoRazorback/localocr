@@ -22,7 +22,7 @@ ROOT = Path(__file__).parents[2]
 SCRIPTS = ROOT / "scripts"
 EXPECTED_IDENTITY = "Developer ID Application: John Scott Ray (DZ8B5454ZN)"
 EXPECTED_TEAM = "DZ8B5454ZN"
-EXPECTED_HELPERS = ("localocr", "localocr-mcp")
+EXPECTED_HELPERS = ("localocr", "localocr-mcp", "localocr-model-bridge")
 EXPECTED_NOTARY_PROFILE_REFERENCES = {
     "$LOCALOCR_NOTARY_PROFILE",
     "${LOCALOCR_NOTARY_PROFILE}",
@@ -120,6 +120,87 @@ def _script(name: str) -> str:
     return path.read_text()
 
 
+def test_release_scripts_enforce_exact_three_helper_inventory_and_signing_order() -> None:
+    build = (SCRIPTS / "build-native-tools.sh").read_text()
+    stage = _script("stage")
+    sign = _script("sign")
+    verify = _script("verify")
+    download = _script("download")
+
+    for helper in EXPECTED_HELPERS:
+        assert f'--product {helper}' in build
+        assert f'Contents/Helpers/{helper}' in stage
+        assert f'Contents/Helpers/{helper}' in sign
+        assert f'Contents/Helpers/{helper}' in verify
+        assert f'Contents/Helpers/$helper' in download or f'Contents/Helpers/{helper}' in download
+
+    signing_body = sign[sign.index("record_signing_order()") :]
+    helper_positions = [
+        signing_body.index(f'Contents/Helpers/{helper}') for helper in EXPECTED_HELPERS
+    ]
+    app_position = signing_body.index('execute_codesign_command "$app_path"')
+    assert helper_positions == sorted(helper_positions)
+    assert all(position < app_position for position in helper_positions)
+
+    assert "localocr_model_bridge_hash" in stage
+    assert "Contents/Helpers/localocr-model-bridge" in stage
+
+
+def test_model_bridge_policy_validator_accepts_only_bounded_loopback_source() -> None:
+    validator = SCRIPTS / "validate-model-bridge-policy.py"
+    result = subprocess.run(
+        [str(validator), "--source-root", str(ROOT)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    evidence = json.loads(result.stdout)
+    assert evidence["status"] == "pass"
+    assert evidence["allowed_hosts"] == ["127.0.0.1", "::1"]
+    assert evidence["redirects"] == "rejected"
+    assert evidence["proxy_environment"] == "disabled"
+    assert evidence["maximum_response_bytes"] == 1_048_576
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement"),
+    (
+        ("http://127.0.0.1:11434/api/version", "http://example.com/api/version"),
+        ("http://127.0.0.1:11434/api/version", "http://0.0.0.0:11434/api/version"),
+        ("configuration.connectionProxyDictionary = [:]", "// proxy inheritance restored"),
+        ("completionHandler(nil)", "completionHandler(request)"),
+        (
+            "public static let maximumResponseBytes = ModelBridgeLimits.maximumMessageBytes",
+            "public static let maximumResponseBytes = Int.max",
+        ),
+    ),
+)
+def test_model_bridge_policy_validator_rejects_unsafe_source_mutations(
+    tmp_path: Path,
+    needle: str,
+    replacement: str,
+) -> None:
+    source_root = tmp_path / "candidate"
+    shutil.copytree(ROOT / "Sources", source_root / "Sources")
+    loopback = source_root / "Sources" / "LocalOCRModelBridgeKit" / "LoopbackHTTPClient.swift"
+    source = loopback.read_text()
+    assert needle in source
+    loopback.write_text(source.replace(needle, replacement, 1))
+
+    result = subprocess.run(
+        [str(SCRIPTS / "validate-model-bridge-policy.py"), "--source-root", str(source_root)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    evidence = json.loads(result.stdout)
+    assert evidence["status"] == "fail"
+
+
 def _copy_release_policy_repo(tmp_path: Path) -> Path:
     copy = tmp_path / "policy-repo"
     shutil.copytree(
@@ -128,6 +209,25 @@ def _copy_release_policy_repo(tmp_path: Path) -> Path:
         ignore=shutil.ignore_patterns(".build", ".git", ".venv", "dist"),
     )
     return copy
+
+
+def _copy_native_build_policy_scripts(destination: Path) -> None:
+    for source in (
+        SCRIPTS / "build-native-tools.sh",
+        SCRIPTS / "release-toolchain.sh",
+        RELEASE_PATH_GUARD,
+        SCRIPTS / "validate-mcp-stdio-policy.py",
+        SCRIPTS / "validate-model-bridge-policy.py",
+    ):
+        shutil.copy2(source, destination)
+    shutil.copy2(ROOT / "Package.swift", destination.parent)
+    shutil.copy2(ROOT / "Package.resolved", destination.parent)
+    shutil.copytree(ROOT / "Sources", destination.parent / "Sources")
+    test_root = destination.parent / "tests"
+    test_root.mkdir()
+    for source in (ROOT / "tests").iterdir():
+        if source.is_dir() and source.name != "contract":
+            shutil.copytree(source, test_root / source.name)
 
 
 def _install_stable_swift_fixture(repo: Path, swift_fixture: Path) -> Path:
@@ -761,6 +861,10 @@ def test_signing_dry_run_records_nested_first_invocation_order(tmp_path: Path) -
     assert invocations == [
         [*expected_prefix, str(staged_app / "Contents" / "Helpers" / "localocr")],
         [*expected_prefix, str(staged_app / "Contents" / "Helpers" / "localocr-mcp")],
+        [
+            *expected_prefix,
+            str(staged_app / "Contents" / "Helpers" / "localocr-model-bridge"),
+        ],
         [*expected_prefix, str(staged_app)],
     ]
 
@@ -787,6 +891,7 @@ def _nested_code_fixture(tmp_path: Path) -> Path:
         macos_dir / "LocalOCR",
         helpers_dir / "localocr",
         helpers_dir / "localocr-mcp",
+        helpers_dir / "localocr-model-bridge",
     ):
         shutil.copyfile("/usr/bin/true", destination)
         destination.chmod(0o755)
@@ -2005,14 +2110,12 @@ def test_real_unsigned_studio_app_stages_under_exact_release_policy(
     assert staged_plist["CFBundleVersion"] == "3"
 
     helpers = real_staged_studio_app / "Contents" / "Helpers"
-    assert sorted(path.name for path in helpers.iterdir()) == [
-        "localocr",
-        "localocr-mcp",
-    ]
+    assert sorted(path.name for path in helpers.iterdir()) == sorted(EXPECTED_HELPERS)
     expected_code = {
         Path("Contents/MacOS/LocalOCR Studio"),
         Path("Contents/Helpers/localocr"),
         Path("Contents/Helpers/localocr-mcp"),
+        Path("Contents/Helpers/localocr-model-bridge"),
     }
     actual_code = {
         path.relative_to(real_staged_studio_app)
@@ -2090,6 +2193,12 @@ def test_pre_signing_evidence_hashes_exact_staged_binaries(
         "staged/LocalOCR Studio.app/Contents/Helpers/localocr-mcp": (
             real_staged_studio_app / "Contents" / "Helpers" / "localocr-mcp"
         ),
+        "staged/LocalOCR Studio.app/Contents/Helpers/localocr-model-bridge": (
+            real_staged_studio_app
+            / "Contents"
+            / "Helpers"
+            / "localocr-model-bridge"
+        ),
     }
 
     assert evidence.keys() == expected_paths.keys()
@@ -2150,8 +2259,8 @@ def test_stage_rejects_unapproved_dependencies_and_rpaths_in_each_staged_helper(
         architecture="arm64",
         minimum_macos="14.0",
     )
-    shutil.copy2(fixture_helper, helpers / "localocr")
-    shutil.copy2(fixture_helper, helpers / "localocr-mcp")
+    for expected_helper in EXPECTED_HELPERS:
+        shutil.copy2(fixture_helper, helpers / expected_helper)
     helper = candidate / "Contents" / "Helpers" / helper_name
     if mutation == "private_dependency":
         command = [
@@ -2809,10 +2918,8 @@ def test_build_native_tools_publishes_both_helpers_to_selected_directory(
     isolated_scripts.mkdir(parents=True)
     direct_release_root.mkdir(parents=True)
     stub_bin.mkdir()
+    _copy_native_build_policy_scripts(isolated_scripts)
     build_script = isolated_scripts / "build-native-tools.sh"
-    shutil.copy2(SCRIPTS / "build-native-tools.sh", build_script)
-    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
-    shutil.copy2(RELEASE_PATH_GUARD, isolated_scripts)
     source_fixture = tmp_path / "source-fixture" / "localocr"
     _compile_macos_debug_path_fixture(source_fixture)
     source_fixture_bytes = source_fixture.read_bytes()
@@ -2902,9 +3009,7 @@ def test_build_native_tools_preserves_matching_dsyms_by_uuid_outside_artifacts(
     isolated_scripts.mkdir(parents=True)
     direct_release_root.mkdir(parents=True)
     stub_bin.mkdir()
-    shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
-    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
-    shutil.copy2(RELEASE_PATH_GUARD, isolated_scripts)
+    _copy_native_build_policy_scripts(isolated_scripts)
     source_fixture = tmp_path / "source-fixture" / "localocr"
     source_dsym = tmp_path / "source-fixture" / "localocr.dSYM"
     _compile_macos_debug_path_fixture(source_fixture)
@@ -2974,9 +3079,7 @@ def test_build_native_tools_rejects_a_mismatched_dsym(tmp_path: Path) -> None:
     isolated_scripts.mkdir(parents=True)
     (isolated_repo / "dist").mkdir()
     stub_bin.mkdir()
-    shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
-    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
-    shutil.copy2(RELEASE_PATH_GUARD, isolated_scripts)
+    _copy_native_build_policy_scripts(isolated_scripts)
     source_fixture = tmp_path / "source-fixture" / "localocr"
     other_fixture = tmp_path / "other-fixture" / "localocr"
     mismatched_dsym = tmp_path / "other-fixture" / "localocr.dSYM"
@@ -3044,9 +3147,7 @@ def test_build_native_tools_rejects_a_symlinked_release_symbols_root(
         outside_symbols,
         target_is_directory=True,
     )
-    shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
-    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
-    shutil.copy2(RELEASE_PATH_GUARD, isolated_scripts)
+    _copy_native_build_policy_scripts(isolated_scripts)
     source_fixture = tmp_path / "source-fixture" / "localocr"
     source_dsym = tmp_path / "source-fixture" / "localocr.dSYM"
     _compile_macos_debug_path_fixture(source_fixture)
@@ -3106,9 +3207,7 @@ def test_build_native_tools_rejects_a_symlinked_default_dist_before_cleanup(
     sentinel = outside_artifacts / "must-survive.txt"
     sentinel.write_text("outside release data")
     (isolated_repo / "dist").symlink_to(outside_dist, target_is_directory=True)
-    shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
-    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
-    shutil.copy2(RELEASE_PATH_GUARD, isolated_scripts)
+    _copy_native_build_policy_scripts(isolated_scripts)
     source_fixture = tmp_path / "source-fixture" / "localocr"
     _compile_macos_debug_path_fixture(source_fixture)
 
@@ -3164,9 +3263,7 @@ def test_build_native_tools_fails_closed_when_dist_is_swapped_during_the_build(
     outside_marker = outside_artifacts / "must-survive.txt"
     original_marker.write_text("preserve original release output")
     outside_marker.write_text("preserve outside release data")
-    shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
-    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
-    shutil.copy2(RELEASE_PATH_GUARD, isolated_scripts)
+    _copy_native_build_policy_scripts(isolated_scripts)
     source_fixture = tmp_path / "source-fixture" / "localocr"
     _compile_macos_debug_path_fixture(source_fixture)
 
@@ -3239,8 +3336,7 @@ def test_build_native_tools_rejects_a_post_validation_artifact_leaf_swap(
     replacement_marker.write_bytes(b"preserve replacement artifact output")
     outside_marker.write_bytes(b"preserve outside data")
     (replacement / "outside-link").symlink_to(outside, target_is_directory=True)
-    shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
-    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
+    _copy_native_build_policy_scripts(isolated_scripts)
     _write_publish_pausing_path_guard(isolated_scripts / "release-path-guard.swift")
     source_fixture = tmp_path / "source" / "localocr"
     source_fixture.parent.mkdir()
@@ -3718,9 +3814,7 @@ def test_native_candidate_policy_failure_preserves_known_good_artifacts(
     stub_bin.mkdir()
     known_good = artifacts / "known-good.txt"
     known_good.write_text("preserve known-good native artifacts")
-    shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
-    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
-    shutil.copy2(RELEASE_PATH_GUARD, isolated_scripts)
+    _copy_native_build_policy_scripts(isolated_scripts)
     source_fixture = tmp_path / "source" / "localocr"
     source_fixture.parent.mkdir()
     _compile_macos_embedded_marker_fixture(
@@ -3856,7 +3950,11 @@ def test_native_build_uses_stable_xcode_swift_when_path_is_shadowed(
     )
 
     result = subprocess.run(
-        [str(SCRIPTS / "build-native-tools.sh")],
+        [
+            str(SCRIPTS / "build-native-tools.sh"),
+            "--artifact-dir",
+            str(ROOT / "dist" / "direct-release" / "native-tools"),
+        ],
         cwd=ROOT,
         check=False,
         capture_output=True,
@@ -4449,6 +4547,9 @@ EOF
         fi
         printf '%s: %s\n' "$1" "$2" >> "$3"
         ;;
+    model-bridge-validator)
+        printf '{"status":"pass"}\n'
+        ;;
     *)
         exit 64
         ;;
@@ -4477,6 +4578,7 @@ esac
         "evidence-mv",
         "cleanup-rm",
         "evidence-writer",
+        "model-bridge-validator",
     ):
         (tool_dir / tool).symlink_to(dispatcher)
 
@@ -4567,6 +4669,9 @@ printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabi
 """
     )
     mcp.chmod(0o755)
+    bridge = helpers / "localocr-model-bridge"
+    bridge.write_text("#!/bin/bash\nexit 0\n")
+    bridge.chmod(0o755)
 
     archive = tmp_path / "downloaded candidate.zip"
     subprocess.run(
@@ -4646,6 +4751,7 @@ download_evidence_awk="$tool_dir/evidence-awk"
 download_evidence_mv="$tool_dir/evidence-mv"
 download_cleanup_rm="$tool_dir/cleanup-rm"
 download_evidence_writer="$tool_dir/evidence-writer"
+download_model_bridge_validator="$tool_dir/model-bridge-validator"
 download_temp_parent="$LOCALOCR_TEST_TEMP_PARENT"
 download_main "$@"
 """
@@ -4721,14 +4827,19 @@ def test_downloaded_release_verifies_checksum_before_fresh_extraction_and_runs_a
         if line.startswith("ditto -x -k ")
     )
     assert checksum_index < extraction_index
-    assert sum(line.startswith("file -b ") for line in trace) == 3
-    assert sum(line.startswith("lipo -archs ") for line in trace) == 3
-    assert sum(line.startswith("otool -L ") for line in trace) == 3
-    assert sum(line.startswith("otool -l ") for line in trace) == 6
-    assert sum(line.startswith("strings -a ") for line in trace) == 3
+    assert sum(line.startswith("file -b ") for line in trace) == 4
+    assert sum(line.startswith("lipo -archs ") for line in trace) == 4
+    assert sum(line.startswith("otool -L ") for line in trace) == 4
+    assert sum(line.startswith("otool -l ") for line in trace) == 8
+    assert sum(line.startswith("strings -a ") for line in trace) == 4
     assert any("stapler validate" in line for line in trace)
     assert any(line.startswith("spctl --assess --type execute") for line in trace)
-    for code_object in ("localocr", "localocr-mcp", "LocalOCR\\ Studio.app"):
+    for code_object in (
+        "localocr",
+        "localocr-mcp",
+        "localocr-model-bridge",
+        "LocalOCR\\ Studio.app",
+    ):
         assert any(
             line.startswith("codesign -dv --verbose=4 ")
             and line.endswith(code_object)

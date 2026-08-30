@@ -367,6 +367,13 @@ def test_unsigned_studio_build_rejects_source_policy_drift_before_xcodebuild(
     assert not xcode_marker.exists(), "Xcode build began before source policy passed"
 
 
+def test_unsigned_release_build_compiles_ui_tests_without_requiring_automation_mode() -> None:
+    script = _read(BUILD_SCRIPT)
+
+    assert '"$release_xcodebuild_path" build-for-testing' in script
+    assert '"$release_xcodebuild_path" test \\' not in script
+
+
 def test_project_enables_hardening_without_network_or_debug_entitlements() -> None:
     project_sources = "\n".join(
         (

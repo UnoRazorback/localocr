@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import subprocess
@@ -17,6 +18,7 @@ ARTIFACTS = ROOT / "dist" / "native-tools"
 SMOKE_SCRIPT = ROOT / "scripts" / "smoke-native-tools.sh"
 MCP_SMOKE_EXCHANGE = ROOT / "scripts" / "mcp-smoke-exchange.py"
 VERSION = "0.3.0"
+BRIDGE = ARTIFACTS / "localocr-model-bridge"
 SYSTEM_LIBRARY_PREFIXES = ("/System/Library/", "/usr/lib/")
 COMPATIBILITY_SPAN_INSTALL_NAME = "@rpath/libswiftCompatibilitySpan.dylib"
 SYSTEM_SWIFT_RPATH = "/usr/lib/swift"
@@ -117,7 +119,9 @@ def _is_forbidden_network_install_name(install_name: str) -> bool:
     )
 
 
-def _assert_allowed_install_names(install_names: list[str]) -> None:
+def _assert_allowed_install_names(
+    install_names: list[str], *, allow_system_network: bool = False
+) -> None:
     unexpected = [
         install_name
         for install_name in install_names
@@ -130,7 +134,7 @@ def _assert_allowed_install_names(install_names: list[str]) -> None:
         for install_name in install_names
         if _is_forbidden_network_install_name(install_name)
     ]
-    assert not network_libraries, (
+    assert allow_system_network or not network_libraries, (
         f"network libraries are forbidden in local-only release artifacts: {network_libraries}"
     )
 
@@ -183,7 +187,7 @@ def test_release_artifacts_are_native_standalone_executables() -> None:
     cli = ARTIFACTS / "localocr"
     mcp = ARTIFACTS / "localocr-mcp"
 
-    for binary in (cli, mcp):
+    for binary in (cli, mcp, BRIDGE):
         assert binary.is_file(), f"missing release artifact: {binary}"
         assert os.access(binary, os.X_OK), f"release artifact is not executable: {binary}"
         assert "Mach-O" in _run("file", "-b", str(binary)), f"not a Mach-O executable: {binary}"
@@ -210,6 +214,28 @@ def test_release_artifacts_are_native_standalone_executables() -> None:
         "organize_document",
         "extract_document_fields",
     ]
+
+    bridge_request = json.dumps({
+        "version": 1,
+        "id": 77,
+        "action": "status",
+        "provider": "ollama",
+        "model": None,
+        "expectedIdentity": None,
+        "operation": None,
+        "prompt": None,
+        "fields": [],
+        "timeoutMilliseconds": 1000,
+    }) + "\n"
+    bridge_response = subprocess.run(
+        [str(BRIDGE)],
+        input=bridge_request,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert bridge_response.stderr == ""
+    assert json.loads(bridge_response.stdout)["id"] == 77
 
 
 def test_native_smoke_script_handles_repository_paths_with_spaces() -> None:
@@ -261,12 +287,16 @@ IFS= read -r _ || true
 
 
 def test_release_artifacts_expose_only_system_dylibs_and_safe_rpaths() -> None:
-    for binary in (ARTIFACTS / "localocr", ARTIFACTS / "localocr-mcp"):
+    for binary in (ARTIFACTS / "localocr", ARTIFACTS / "localocr-mcp", BRIDGE):
         assert _minimum_macos(_run("otool", "-l", str(binary))) == "14.0"
         install_names = _install_names(_dependencies(binary))
         assert install_names
-        _assert_allowed_install_names(install_names)
-        _assert_no_forbidden_network_symbols(_run("nm", "-u", str(binary)), binary)
+        _assert_allowed_install_names(
+            install_names,
+            allow_system_network=binary == BRIDGE,
+        )
+        if binary != BRIDGE:
+            _assert_no_forbidden_network_symbols(_run("nm", "-u", str(binary)), binary)
 
         rpaths = _rpaths(_run("otool", "-l", str(binary)))
         _assert_allowed_rpaths(rpaths)
@@ -278,7 +308,7 @@ def test_release_artifacts_expose_only_system_dylibs_and_safe_rpaths() -> None:
 
 
 def test_release_artifacts_do_not_ship_absolute_user_paths_or_dsyms() -> None:
-    for binary in (ARTIFACTS / "localocr", ARTIFACTS / "localocr-mcp"):
+    for binary in (ARTIFACTS / "localocr", ARTIFACTS / "localocr-mcp", BRIDGE):
         assert b"/Users/" not in binary.read_bytes(), (
             f"release artifact embeds an absolute user path: {binary}"
         )

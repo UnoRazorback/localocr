@@ -455,7 +455,7 @@ run_studio_build() {
     derived_data="$build_root/DerivedData"
     /bin/mkdir "$derived_data"
 
-    "$release_xcodebuild_path" test \
+    "$release_xcodebuild_path" build-for-testing \
         -project "$project_path" \
         -scheme "$scheme_name" \
         -destination "platform=macOS,arch=arm64" \

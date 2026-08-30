@@ -113,11 +113,19 @@ APPROVED_MCP_STDIO_PRODUCTS = {
     ("Logging", "swift-log"),
 }
 EXPECTED_TARGET_DEPENDENCIES = {
+    "LocalOCRModelCore": (),
+    "LocalOCRModelBridgeProtocol": (("target", "LocalOCRModelCore"),),
     "LocalOCRCore": (),
     "LocalOCRService": (("target", "LocalOCRCore"),),
-    "LocalOCRIntelligence": (("target", "LocalOCRService"),),
+    "LocalOCRIntelligence": (
+        ("target", "LocalOCRModelCore"),
+        ("target", "LocalOCRModelBridgeProtocol"),
+        ("target", "LocalOCRService"),
+    ),
+    "LocalOCRModelBridgeKit": (("target", "LocalOCRModelBridgeProtocol"),),
     "LocalOCRStudioKit": (
         ("target", "LocalOCRIntelligence"),
+        ("target", "LocalOCRModelCore"),
         ("target", "LocalOCRService"),
         ("target", "LocalOCRCore"),
     ),
@@ -137,10 +145,23 @@ EXPECTED_TARGET_DEPENDENCIES = {
     ),
     "LocalOCRCLIExecutable": (("target", "LocalOCRCommandKit"),),
     "LocalOCRMCPExecutable": (("target", "LocalOCRMCP"),),
+    "LocalOCRModelBridgeExecutable": (("target", "LocalOCRModelBridgeKit"),),
+    "LocalOCRModelCoreTests": (("target", "LocalOCRModelCore"),),
+    "LocalOCRModelBridgeProtocolTests": (
+        ("target", "LocalOCRModelBridgeProtocol"),
+        ("target", "LocalOCRModelCore"),
+    ),
+    "LocalOCRModelBridgeKitTests": (
+        ("target", "LocalOCRModelBridgeKit"),
+        ("target", "LocalOCRModelBridgeProtocol"),
+        ("target", "LocalOCRModelCore"),
+    ),
     "LocalOCRCoreTests": (("target", "LocalOCRCore"),),
     "LocalOCRServiceTests": (("target", "LocalOCRService"),),
     "LocalOCRStudioKitTests": (
         ("target", "LocalOCRStudioKit"),
+        ("target", "LocalOCRIntelligence"),
+        ("target", "LocalOCRModelCore"),
         ("target", "LocalOCRService"),
         ("target", "LocalOCRCore"),
     ),
@@ -154,6 +175,8 @@ EXPECTED_TARGET_DEPENDENCIES = {
     "MCPStdioTests": (("target", "MCPStdio"),),
     "LocalOCRIntelligenceTests": (
         ("target", "LocalOCRIntelligence"),
+        ("target", "LocalOCRModelCore"),
+        ("target", "LocalOCRModelBridgeProtocol"),
         ("target", "LocalOCRService"),
         ("target", "LocalOCRCore"),
     ),
@@ -161,7 +184,11 @@ EXPECTED_TARGET_DEPENDENCIES = {
 EXPECTED_TARGET_TYPES = {
     name: (
         "executable"
-        if name in {"LocalOCRCLIExecutable", "LocalOCRMCPExecutable"}
+        if name in {
+            "LocalOCRCLIExecutable",
+            "LocalOCRMCPExecutable",
+            "LocalOCRModelBridgeExecutable",
+        }
         else "test"
         if name.endswith("Tests")
         else "regular"
@@ -174,9 +201,12 @@ EXPECTED_TARGET_SETTINGS = [
         "tool": "swift",
     }
 ]
-REVIEWED_PACKAGE_PRODUCTS_SHA256 = "841cea785136ea50ce2a2e745d08a391f3a01d030ffe78c93c386345b7aeae8f"
-REVIEWED_PACKAGE_TARGETS_SHA256 = "4d4f789d81e1d8c11ff61fe4ae1501702045bc3611f38928ea4623b6c0798212"
-REVIEWED_TARGET_SOURCE_INVENTORY_SHA256 = "06ff46889e1308981df651c02c2b9d52a53cb3f80540ba1446c3e031cfd1c9a7"
+REVIEWED_PACKAGE_PRODUCTS_SHA256 = "2d56d41ce0e14ab086ab25d5915904b26cb035c89f1fbc43a6c5fbd42a007ff2"
+REVIEWED_PACKAGE_TARGETS_SHA256 = "a7d676f5ce425e33514254fdf50dff50bcb8eeffa3e04baac1d3e8d68c0eafec"
+REVIEWED_TARGET_SOURCE_INVENTORY_SHA256 = "e54bde057fbcce4238d5b1fabfd75b6e6c21009609bbad7b9b2456d0d86822cc"
+APPROVED_LOOPBACK_NETWORK_SOURCE = Path(
+    "Sources/LocalOCRModelBridgeKit/LoopbackHTTPClient.swift"
+)
 EXPECTED_RESOLVED_ORIGIN_HASH = "e70a6db1047b5f47cbfc6632ad66bb3063a23696616bd25aca75b3d59d4e6505"
 EXPECTED_RESOLVED_PINS = {
     "swift-argument-parser": {
@@ -800,6 +830,9 @@ def validate_package_policy(repo_root: Path) -> None:
     for source_path in shipping_sources:
         require(not source_path.is_symlink(), f"shipping source must not be symlinked: {source_path}")
         source = source_path.read_text()
+        relative_source = source_path.relative_to(repo_root)
+        if relative_source == APPROVED_LOOPBACK_NETWORK_SOURCE:
+            continue
         for pattern in FORBIDDEN_SHIPPING_NETWORK_SOURCE:
             require(
                 pattern.search(source) is None,
