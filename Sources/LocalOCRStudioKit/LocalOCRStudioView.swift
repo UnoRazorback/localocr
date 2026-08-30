@@ -53,6 +53,7 @@ final class StudioWorkspaceSession {
 public struct LocalOCRStudioView: View {
     @State private var model: StudioViewModel
     @State private var intelligenceModel: StudioIntelligenceViewModel
+    @State private var localModelManager: StudioLocalModelManagerViewModel
     @State private var workspaceSession: StudioWorkspaceSession
     private let actions: StudioDocumentActions
 
@@ -71,10 +72,14 @@ public struct LocalOCRStudioView: View {
         intelligenceModel: StudioIntelligenceViewModel = StudioIntelligenceViewModel(
             provider: UnavailableIntelligenceProvider(.requiresMacOS26),
             availability: .requiresMacOS26
+        ),
+        localModelManager: StudioLocalModelManagerViewModel = StudioLocalModelManagerViewModel(
+            manager: StudioUnavailableLocalIntelligenceManager()
         )
     ) {
         self._model = State(initialValue: model)
         self._intelligenceModel = State(initialValue: intelligenceModel)
+        self._localModelManager = State(initialValue: localModelManager)
         self._workspaceSession = State(initialValue: StudioWorkspaceSession(
             batchCoordinator: batchCoordinator
         ))
@@ -91,12 +96,16 @@ public struct LocalOCRStudioView: View {
             provider: UnavailableIntelligenceProvider(.requiresMacOS26),
             availability: .requiresMacOS26
         ),
+        localModelManager: StudioLocalModelManagerViewModel = StudioLocalModelManagerViewModel(
+            manager: StudioUnavailableLocalIntelligenceManager()
+        ),
         workspaceMode: StudioWorkspaceMode = .single,
         isCreatingSearchablePDF: Bool,
         searchableProgress: StudioProgress?
     ) {
         self._model = State(initialValue: model)
         self._intelligenceModel = State(initialValue: intelligenceModel)
+        self._localModelManager = State(initialValue: localModelManager)
         self._workspaceSession = State(initialValue: StudioWorkspaceSession(
             batchCoordinator: batchCoordinator,
             initialMode: workspaceMode
@@ -138,6 +147,7 @@ public struct LocalOCRStudioView: View {
                                 isCreatingSearchablePDF: isCreatingSearchablePDF,
                                 searchableProgress: searchableProgress,
                                 intelligenceModel: intelligenceModel,
+                                localModelManager: localModelManager,
                                 onProcessAnother: resetToEmpty,
                                 onCopy: { actions.copy(result) },
                                 onSaveText: { showTextSavePanel(for: result) },
@@ -185,9 +195,6 @@ public struct LocalOCRStudioView: View {
         .onDisappear(perform: handleDisappearance)
         .onChange(of: currentIntelligenceResultIdentity, initial: true) {
             synchronizeIntelligenceResult()
-        }
-        .task {
-            await intelligenceModel.refreshAvailability()
         }
     }
 

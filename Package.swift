@@ -61,7 +61,7 @@ let package = Package(
         ),
         .target(
             name: "LocalOCRStudioKit",
-            dependencies: ["LocalOCRIntelligence", "LocalOCRService", "LocalOCRCore"],
+            dependencies: ["LocalOCRIntelligence", "LocalOCRModelCore", "LocalOCRService", "LocalOCRCore"],
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
         .target(
@@ -140,7 +140,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LocalOCRStudioKitTests",
-            dependencies: ["LocalOCRStudioKit", "LocalOCRService", "LocalOCRCore"],
+            dependencies: ["LocalOCRStudioKit", "LocalOCRIntelligence", "LocalOCRModelCore", "LocalOCRService", "LocalOCRCore"],
             path: "tests/LocalOCRStudioKitTests",
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),

@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import XCTest
 
 final class LocalOCRStudioUITests: XCTestCase {
@@ -356,6 +357,154 @@ final class LocalOCRStudioUITests: XCTestCase {
         XCTAssertTrue(error.buttons["studio.intelligence.summarize"].isEnabled)
     }
 
+    func testManageLocalModelsUsesDeterministicDetectionQualificationConfirmationAndReset() {
+        let app = launch(state: "modelManager")
+        let manage = app.buttons["studio.intelligence.manage-models"]
+        XCTAssertTrue(manage.waitForExistence(timeout: 5))
+        manage.click()
+
+        XCTAssertTrue(element("studio.models.sheet", in: app).waitForExistence(timeout: 5))
+        for provider in ["apple_foundation_models", "ollama", "lm_studio"] {
+            XCTAssertTrue(element("studio.models.provider.\(provider)", in: app).exists)
+        }
+        XCTAssertTrue(element("studio.models.discovery-explanation", in: app).exists)
+
+        let ollamaKey = modelAccessibilityKey(
+            provider: "ollama",
+            model: "gemma4:8b",
+            fingerprint: "sha256:ui-fixture",
+            harnessVersion: "0.11.0"
+        )
+        let blockedKey = modelAccessibilityKey(
+            provider: "ollama",
+            model: "cloud-model",
+            fingerprint: "sha256:blocked",
+            harnessVersion: "0.11.0"
+        )
+        let unverifiedKey = modelAccessibilityKey(
+            provider: "lm_studio",
+            model: "local-metadata-missing",
+            fingerprint: "sha256:unverified",
+            harnessVersion: "0.3.20"
+        )
+
+        XCTAssertTrue(element("studio.models.row.\(blockedKey)", in: app).exists)
+        XCTAssertFalse(app.buttons["studio.models.select.\(blockedKey)"].isEnabled)
+        XCTAssertTrue(element("studio.models.row.\(unverifiedKey)", in: app).exists)
+        XCTAssertFalse(app.buttons["studio.models.select.\(unverifiedKey)"].isEnabled)
+
+        let test = app.buttons["studio.models.test.\(ollamaKey)"]
+        XCTAssertTrue(test.isEnabled)
+        test.click()
+        let select = app.buttons["studio.models.select.\(ollamaKey)"]
+        XCTAssertTrue(select.waitForExistence(timeout: 5))
+        let selectEnabled = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "enabled == true"),
+            object: select
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [selectEnabled], timeout: 5), .completed)
+
+        select.click()
+        XCTAssertTrue(element("studio.models.confirmation", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["gemma4:8b"].exists)
+        let approvedStatement = "LocalOCR will send OCR text to the selected third-party model harness over loopback on this Mac. The harness may keep its own logs or history. Review its privacy settings before continuing."
+        XCTAssertTrue(
+            app.staticTexts.matching(
+                NSPredicate(format: "value == %@", approvedStatement)
+            ).firstMatch.exists
+        )
+        app.buttons["Cancel"].click()
+        XCTAssertFalse(element("studio.models.confirmation", in: app).waitForExistence(timeout: 1))
+        XCTAssertTrue(element("studio.models.active-route", in: app).label.contains("Apple system model"))
+
+        select.click()
+        XCTAssertTrue(element("studio.models.confirmation", in: app).waitForExistence(timeout: 5))
+        app.buttons["Continue"].click()
+        XCTAssertTrue(
+            element("studio.models.selected.\(ollamaKey)", in: app)
+                .waitForExistence(timeout: 5)
+        )
+
+        let screenshot = XCTAttachment(
+            screenshot: element("studio.models.sheet", in: app).screenshot()
+        )
+        screenshot.name = "Manage Local Models — qualified Ollama selected"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+
+        app.buttons["studio.models.reset"].click()
+        XCTAssertTrue(element("studio.models.selection-message", in: app).waitForExistence(timeout: 5))
+
+        let appleKey = modelAccessibilityKey(
+            provider: "apple_foundation_models",
+            model: "SystemLanguageModel.default",
+            fingerprint: "",
+            harnessVersion: ""
+        )
+        let appleSelect = app.buttons["studio.models.select.\(appleKey)"]
+        XCTAssertTrue(appleSelect.waitForExistence(timeout: 5))
+        XCTAssertTrue(appleSelect.isEnabled)
+        appleSelect.click()
+        XCTAssertTrue(
+            element("studio.models.selected.\(appleKey)", in: app)
+                .waitForExistence(timeout: 5)
+        )
+        app.buttons["studio.models.done"].click()
+        XCTAssertFalse(element("studio.models.sheet", in: app).waitForExistence(timeout: 1))
+    }
+
+    func testExternalResultShowsActualLoopbackProvenanceAfterConfirmedSelection() {
+        let app = launch(state: "modelManager")
+        app.buttons["studio.intelligence.manage-models"].click()
+        XCTAssertTrue(element("studio.models.sheet", in: app).waitForExistence(timeout: 5))
+
+        let ollamaKey = modelAccessibilityKey(
+            provider: "ollama",
+            model: "gemma4:8b",
+            fingerprint: "sha256:ui-fixture",
+            harnessVersion: "0.11.0"
+        )
+        app.buttons["studio.models.test.\(ollamaKey)"].click()
+        let select = app.buttons["studio.models.select.\(ollamaKey)"]
+        let enabled = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "enabled == true"),
+            object: select
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed)
+        select.click()
+        XCTAssertTrue(element("studio.models.confirmation", in: app).waitForExistence(timeout: 5))
+        app.buttons["Continue"].click()
+        XCTAssertTrue(element("studio.models.selected.\(ollamaKey)", in: app).waitForExistence(timeout: 5))
+        app.buttons["studio.models.done"].click()
+
+        app.buttons["studio.intelligence.summarize"].click()
+        let route = element("studio.intelligence.summary-route", in: app)
+        XCTAssertTrue(route.waitForExistence(timeout: 5))
+        XCTAssertTrue(route.label.contains("loopback on this Mac"), route.debugDescription)
+        XCTAssertTrue(route.label.contains("Ollama — gemma4:8b"), route.debugDescription)
+        XCTAssertTrue(route.label.contains("On device via loopback"), route.debugDescription)
+        XCTAssertTrue(app.buttons["studio.copy"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.create-searchable"].isEnabled)
+    }
+
+    func testStoppedSelectedModelOffersOnlyExplicitRecoveryActions() {
+        let app = launch(state: "modelRecovery")
+        let recovery = element("studio.intelligence.recovery", in: app)
+        XCTAssertTrue(recovery.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["studio.intelligence.recovery.retry"].exists)
+        XCTAssertTrue(app.buttons["studio.intelligence.recovery.choose"].exists)
+        XCTAssertTrue(app.buttons["studio.intelligence.recovery.apple"].exists)
+        XCTAssertTrue(app.buttons["studio.copy"].isEnabled)
+        XCTAssertTrue(app.buttons["studio.create-searchable"].isEnabled)
+
+        let resultScrollView = app.scrollViews.firstMatch
+        resultScrollView.swipeUp()
+        app.buttons["studio.intelligence.recovery.choose"].click()
+        XCTAssertTrue(element("studio.models.sheet", in: app).waitForExistence(timeout: 5))
+        app.buttons["studio.models.done"].click()
+        XCTAssertTrue(recovery.exists)
+    }
+
     func testBatchScreensNeverExposeLocalIntelligenceActions() {
         for state in ["batchReview", "batchProcessing", "batchComplete"] {
             let app = launch(state: state)
@@ -481,6 +630,19 @@ final class LocalOCRStudioUITests: XCTestCase {
         ]
         app.launch()
         return app
+    }
+
+    private func modelAccessibilityKey(
+        provider: String,
+        model: String,
+        fingerprint: String,
+        harnessVersion: String
+    ) -> String {
+        let exact = [provider, model, fingerprint, harnessVersion]
+            .joined(separator: "\u{0}")
+        return SHA256.hash(data: Data(exact.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     private func openAgentConnectionGuide(in app: XCUIApplication) {

@@ -13,6 +13,7 @@ struct StudioResultView: View {
     let isCreatingSearchablePDF: Bool
     let searchableProgress: StudioProgress?
     @Bindable var intelligenceModel: StudioIntelligenceViewModel
+    @Bindable var localModelManager: StudioLocalModelManagerViewModel
     let onProcessAnother: () -> Void
     let onCopy: () -> Void
     let onSaveText: () -> Void
@@ -69,7 +70,10 @@ struct StudioResultView: View {
                         }
                         .accessibilityIdentifier("studio.result-text")
 
-                    StudioLocalIntelligenceView(model: intelligenceModel)
+                    StudioLocalIntelligenceView(
+                        model: intelligenceModel,
+                        managerModel: localModelManager
+                    )
                 }
             }
             .shadow(color: .black.opacity(0.045), radius: 12, y: 4)

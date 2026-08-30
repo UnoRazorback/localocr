@@ -1,11 +1,25 @@
 import Foundation
 import LocalOCRIntelligence
+import LocalOCRModelCore
 import Observation
 
 public enum StudioIntelligenceOperation: Sendable, Equatable {
     case summary
     case organization
     case fields
+}
+
+public enum StudioIntelligenceRecoveryAction: Sendable, Equatable {
+    case retry
+    case chooseAnotherLocalModel
+    case useAppleSystemModel
+}
+
+public struct StudioIntelligenceRecovery: Sendable, Equatable {
+    public let failedOperation: StudioIntelligenceOperation
+    public let failure: LocalIntelligenceSelectionFailure
+    public let message: String
+    public let actions: [StudioIntelligenceRecoveryAction]
 }
 
 public enum StudioIntelligenceState<Value: Sendable & Equatable>: Sendable, Equatable {
@@ -23,6 +37,10 @@ public final class StudioIntelligenceViewModel {
     public private(set) var summaryState: StudioIntelligenceState<IntelligenceSummary> = .idle
     public private(set) var organizationState: StudioIntelligenceState<OrganizationSuggestion> = .idle
     public private(set) var fieldsState: StudioIntelligenceState<[ExtractedDocumentField]> = .idle
+    public private(set) var summaryModel: LocalModelProvenance?
+    public private(set) var organizationModel: LocalModelProvenance?
+    public private(set) var fieldsModel: LocalModelProvenance?
+    public private(set) var recovery: StudioIntelligenceRecovery?
 
     @ObservationIgnored private let provider: any DocumentIntelligenceProviding
     @ObservationIgnored private var document: IntelligenceDocument?
@@ -77,6 +95,7 @@ public final class StudioIntelligenceViewModel {
         let operationID = UUID()
         summaryOperationID = operationID
         summaryState = .running
+        recovery = nil
 
         let provider = provider
         summaryTask = Task { [weak self] in
@@ -85,6 +104,7 @@ public final class StudioIntelligenceViewModel {
                 try Task.checkCancellation()
                 self?.finishSummary(
                     .result(result.value),
+                    model: result.model,
                     generation: context.generation,
                     operationID: operationID
                 )
@@ -101,6 +121,12 @@ public final class StudioIntelligenceViewModel {
             } catch let IntelligenceError.unavailable(reason) {
                 self?.finishSummary(
                     .unavailable(reason),
+                    generation: context.generation,
+                    operationID: operationID
+                )
+            } catch let IntelligenceError.selection(failure) {
+                self?.finishSummarySelectionFailure(
+                    failure,
                     generation: context.generation,
                     operationID: operationID
                 )
@@ -120,6 +146,7 @@ public final class StudioIntelligenceViewModel {
         let operationID = UUID()
         organizationOperationID = operationID
         organizationState = .running
+        recovery = nil
 
         let provider = provider
         organizationTask = Task { [weak self] in
@@ -128,6 +155,7 @@ public final class StudioIntelligenceViewModel {
                 try Task.checkCancellation()
                 self?.finishOrganization(
                     .result(result.value),
+                    model: result.model,
                     generation: context.generation,
                     operationID: operationID
                 )
@@ -144,6 +172,12 @@ public final class StudioIntelligenceViewModel {
             } catch let IntelligenceError.unavailable(reason) {
                 self?.finishOrganization(
                     .unavailable(reason),
+                    generation: context.generation,
+                    operationID: operationID
+                )
+            } catch let IntelligenceError.selection(failure) {
+                self?.finishOrganizationSelectionFailure(
+                    failure,
                     generation: context.generation,
                     operationID: operationID
                 )
@@ -163,6 +197,7 @@ public final class StudioIntelligenceViewModel {
         let operationID = UUID()
         fieldsOperationID = operationID
         fieldsState = .running
+        recovery = nil
 
         let provider = provider
         fieldsTask = Task { [weak self] in
@@ -174,6 +209,7 @@ public final class StudioIntelligenceViewModel {
                 try Task.checkCancellation()
                 self?.finishFields(
                     .result(result.value),
+                    model: result.model,
                     generation: context.generation,
                     operationID: operationID
                 )
@@ -190,6 +226,12 @@ public final class StudioIntelligenceViewModel {
             } catch let IntelligenceError.unavailable(reason) {
                 self?.finishFields(
                     .unavailable(reason),
+                    generation: context.generation,
+                    operationID: operationID
+                )
+            } catch let IntelligenceError.selection(failure) {
+                self?.finishFieldsSelectionFailure(
+                    failure,
                     generation: context.generation,
                     operationID: operationID
                 )
@@ -235,6 +277,19 @@ public final class StudioIntelligenceViewModel {
         clear()
     }
 
+    public func retryRecovery() {
+        guard let operation = recovery?.failedOperation else { return }
+        switch operation {
+        case .summary: summarize()
+        case .organization: organize()
+        case .fields: extractFields()
+        }
+    }
+
+    public func clearRecovery() {
+        recovery = nil
+    }
+
     private struct OperationContext {
         let document: IntelligenceDocument
         let generation: UUID
@@ -270,12 +325,14 @@ public final class StudioIntelligenceViewModel {
 
     private func finishSummary(
         _ state: StudioIntelligenceState<IntelligenceSummary>,
+        model: LocalModelProvenance? = nil,
         generation: UUID,
         operationID: UUID
     ) {
         guard self.generation == generation, summaryOperationID == operationID else { return }
         summaryTask = nil
         summaryState = state
+        if let model { summaryModel = model }
         if case let .unavailable(reason) = state {
             setStateUnavailableIfNeeded(reason)
         }
@@ -283,12 +340,14 @@ public final class StudioIntelligenceViewModel {
 
     private func finishOrganization(
         _ state: StudioIntelligenceState<OrganizationSuggestion>,
+        model: LocalModelProvenance? = nil,
         generation: UUID,
         operationID: UUID
     ) {
         guard self.generation == generation, organizationOperationID == operationID else { return }
         organizationTask = nil
         organizationState = state
+        if let model { organizationModel = model }
         if case let .unavailable(reason) = state {
             setStateUnavailableIfNeeded(reason)
         }
@@ -296,12 +355,14 @@ public final class StudioIntelligenceViewModel {
 
     private func finishFields(
         _ state: StudioIntelligenceState<[ExtractedDocumentField]>,
+        model: LocalModelProvenance? = nil,
         generation: UUID,
         operationID: UUID
     ) {
         guard self.generation == generation, fieldsOperationID == operationID else { return }
         fieldsTask = nil
         fieldsState = state
+        if let model { fieldsModel = model }
         if case let .unavailable(reason) = state {
             setStateUnavailableIfNeeded(reason)
         }
@@ -317,6 +378,39 @@ public final class StudioIntelligenceViewModel {
 
     private func finishFieldsCancellation(generation: UUID, operationID: UUID) {
         finishFields(.idle, generation: generation, operationID: operationID)
+    }
+
+    private func finishSummarySelectionFailure(
+        _ failure: LocalIntelligenceSelectionFailure,
+        generation: UUID,
+        operationID: UUID
+    ) {
+        guard self.generation == generation, summaryOperationID == operationID else { return }
+        summaryTask = nil
+        summaryState = .failure(Self.presentedSelectionFailure(failure))
+        recovery = Self.recovery(for: .summary, failure: failure)
+    }
+
+    private func finishOrganizationSelectionFailure(
+        _ failure: LocalIntelligenceSelectionFailure,
+        generation: UUID,
+        operationID: UUID
+    ) {
+        guard self.generation == generation, organizationOperationID == operationID else { return }
+        organizationTask = nil
+        organizationState = .failure(Self.presentedSelectionFailure(failure))
+        recovery = Self.recovery(for: .organization, failure: failure)
+    }
+
+    private func finishFieldsSelectionFailure(
+        _ failure: LocalIntelligenceSelectionFailure,
+        generation: UUID,
+        operationID: UUID
+    ) {
+        guard self.generation == generation, fieldsOperationID == operationID else { return }
+        fieldsTask = nil
+        fieldsState = .failure(Self.presentedSelectionFailure(failure))
+        recovery = Self.recovery(for: .fields, failure: failure)
     }
 
     private func clear() {
@@ -343,6 +437,46 @@ public final class StudioIntelligenceViewModel {
         summaryState = .idle
         organizationState = .idle
         fieldsState = .idle
+        summaryModel = nil
+        organizationModel = nil
+        fieldsModel = nil
+        recovery = nil
+    }
+
+    private static func recovery(
+        for operation: StudioIntelligenceOperation,
+        failure: LocalIntelligenceSelectionFailure
+    ) -> StudioIntelligenceRecovery {
+        StudioIntelligenceRecovery(
+            failedOperation: operation,
+            failure: failure,
+            message: presentedSelectionFailure(failure).message,
+            actions: [.retry, .chooseAnotherLocalModel, .useAppleSystemModel]
+        )
+    }
+
+    private static func presentedSelectionFailure(
+        _ failure: LocalIntelligenceSelectionFailure
+    ) -> StudioPresentedError {
+        let message: String = switch failure {
+        case .corruptReceipt:
+            "Choose a local model before using Local Intelligence."
+        case .providerUnavailable, .modelUnavailable:
+            "The selected local model is not available. Your OCR result is unchanged."
+        case .localityUnverified, .localityBlocked:
+            "LocalOCR can no longer verify that the selected model runs only on this Mac."
+        case .qualificationRequired:
+            "The selected model must pass the synthetic Local Intelligence test again."
+        case .acknowledgmentRequired:
+            "Review and confirm the selected model again before sending OCR text."
+        case .identityChanged:
+            "The selected model identity changed. Detect and test the exact model again."
+        }
+        return StudioPresentedError(
+            title: "Local Model Needs Attention",
+            message: message,
+            details: nil
+        )
     }
 
     private static let presentedFailure = StudioPresentedError(

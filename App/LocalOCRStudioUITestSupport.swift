@@ -1,6 +1,7 @@
 #if DEBUG
 import Foundation
 import LocalOCRIntelligence
+import LocalOCRModelCore
 @_spi(Testing) @_spi(UITesting) import LocalOCRStudioKit
 
 @MainActor
@@ -33,6 +34,8 @@ enum LocalOCRStudioUITestSupport {
         case intelligenceNotReady
         case intelligenceUnsupportedLanguage
         case intelligenceError
+        case modelManager
+        case modelRecovery
         case error
         case batchReview
         case batchProcessing
@@ -49,7 +52,8 @@ enum LocalOCRStudioUITestSupport {
                  .intelligenceRunning, .intelligenceResults,
                  .intelligenceMacOSUnavailable, .intelligenceDeviceIneligible,
                  .intelligenceDisabled, .intelligenceNotReady,
-                 .intelligenceUnsupportedLanguage, .intelligenceError, .error:
+                 .intelligenceUnsupportedLanguage, .intelligenceError,
+                 .modelManager, .modelRecovery, .error:
                 false
             }
         }
@@ -64,7 +68,8 @@ enum LocalOCRStudioUITestSupport {
                  .intelligenceRunning, .intelligenceResults,
                  .intelligenceMacOSUnavailable, .intelligenceDeviceIneligible,
                  .intelligenceDisabled, .intelligenceNotReady,
-                 .intelligenceUnsupportedLanguage, .intelligenceError, .error,
+                 .intelligenceUnsupportedLanguage, .intelligenceError,
+                 .modelManager, .modelRecovery, .error,
                  .batchSkippedOnly, .batchPlanningFailure:
                 .review
             }
@@ -91,6 +96,19 @@ enum LocalOCRStudioUITestSupport {
         )
         let batchCoordinator = makeBatchCoordinator(for: state)
         let intelligenceModel = makeIntelligenceModel(for: state)
+        let usesRecoverySelection = state == .modelRecovery
+        let fixtureLocalModelManager = FixtureLocalIntelligenceManager(
+            usesRecoverySelection: usesRecoverySelection
+        )
+        let localModelManager = StudioLocalModelManagerViewModel(
+            manager: fixtureLocalModelManager,
+            initialModels: FixtureLocalIntelligenceManager.seedDescriptors(
+                usesRecoverySelection: usesRecoverySelection
+            ),
+            initialSelection: FixtureLocalIntelligenceManager.initialSelection(
+                usesRecoverySelection: usesRecoverySelection
+            )
+        )
 
         switch state {
         case .empty:
@@ -99,7 +117,8 @@ enum LocalOCRStudioUITestSupport {
              .intelligenceRunning, .intelligenceResults,
              .intelligenceMacOSUnavailable, .intelligenceDeviceIneligible,
              .intelligenceDisabled, .intelligenceNotReady,
-             .intelligenceUnsupportedLanguage, .intelligenceError, .error:
+             .intelligenceUnsupportedLanguage, .intelligenceError,
+             .modelManager, .modelRecovery, .error:
             model.open(fixtureSourceURL)
         case .batchReview, .batchProcessing, .batchComplete,
              .batchSkippedOnly, .batchPlanningFailure:
@@ -112,6 +131,7 @@ enum LocalOCRStudioUITestSupport {
                 actions: actions,
                 batchCoordinator: batchCoordinator,
                 intelligenceModel: intelligenceModel,
+                localModelManager: localModelManager,
                 isCreatingSearchablePDF: true,
                 searchableProgress: .assembling
             )
@@ -123,6 +143,7 @@ enum LocalOCRStudioUITestSupport {
                 actions: actions,
                 batchCoordinator: batchCoordinator,
                 intelligenceModel: intelligenceModel,
+                localModelManager: localModelManager,
                 workspaceMode: .batch,
                 isCreatingSearchablePDF: false,
                 searchableProgress: nil
@@ -133,7 +154,8 @@ enum LocalOCRStudioUITestSupport {
             model: model,
             actions: actions,
             batchCoordinator: batchCoordinator,
-            intelligenceModel: intelligenceModel
+            intelligenceModel: intelligenceModel,
+            localModelManager: localModelManager
         )
     }
 
@@ -156,7 +178,8 @@ enum LocalOCRStudioUITestSupport {
                  .intelligenceRunning, .intelligenceResults,
                  .intelligenceMacOSUnavailable, .intelligenceDeviceIneligible,
                  .intelligenceDisabled, .intelligenceNotReady,
-                 .intelligenceUnsupportedLanguage, .intelligenceError:
+                 .intelligenceUnsupportedLanguage, .intelligenceError,
+                 .modelManager, .modelRecovery:
                 progress(.recognizing(page: 2, total: 2))
                 return StudioDocumentResult(
                     sourceURL: sourceURL,
@@ -228,6 +251,12 @@ enum LocalOCRStudioUITestSupport {
         case .intelligenceError:
             providerMode = .failure
             availability = .available
+        case .modelManager:
+            providerMode = .externalResults
+            availability = .available
+        case .modelRecovery:
+            providerMode = .selectionFailure
+            availability = .available
         case .intelligenceMacOSUnavailable:
             providerMode = .results
             availability = .requiresMacOS26
@@ -270,6 +299,8 @@ enum LocalOCRStudioUITestSupport {
             model.extractFields()
         case .intelligenceError:
             model.summarize()
+        case .modelRecovery:
+            model.summarize()
         default:
             break
         }
@@ -287,37 +318,43 @@ enum LocalOCRStudioUITestSupport {
     private struct FixtureIntelligenceProvider: DocumentIntelligenceProviding {
         enum Mode: Sendable {
             case results
+            case externalResults
             case running
             case failure
+            case selectionFailure
         }
 
         let mode: Mode
         let availability: IntelligenceAvailability
 
-        func summarize(_ document: IntelligenceDocument) async throws -> IntelligenceSummary {
+        func summarize(
+            _ document: IntelligenceDocument
+        ) async throws -> ProvenancedIntelligenceResult<IntelligenceSummary> {
             try await waitOrFailIfNeeded()
-            return IntelligenceSummary(
+            return ProvenancedIntelligenceResult(value: IntelligenceSummary(
                 text: "Quarterly planning is complete",
                 citations: [IntelligenceCitation(page: 2, quote: "Quarterly planning is complete.")]
-            )
+            ), model: provenance)
         }
 
-        func organize(_ document: IntelligenceDocument) async throws -> OrganizationSuggestion {
+        func organize(
+            _ document: IntelligenceDocument
+        ) async throws -> ProvenancedIntelligenceResult<OrganizationSuggestion> {
             try await waitOrFailIfNeeded()
-            return OrganizationSuggestion(
+            return ProvenancedIntelligenceResult(value: OrganizationSuggestion(
                 title: "Quarterly Planning",
                 category: "Business",
                 tags: ["planning", "quarterly"],
                 citations: [IntelligenceCitation(page: 2, quote: "Quarterly planning is complete.")]
-            )
+            ), model: provenance)
         }
 
         func extract(
             _ names: [String],
             from document: IntelligenceDocument
-        ) async throws -> [ExtractedDocumentField] {
+        ) async throws -> ProvenancedIntelligenceResult<[ExtractedDocumentField]> {
             try await waitOrFailIfNeeded()
-            return [
+            return ProvenancedIntelligenceResult(value: [
                 ExtractedDocumentField(
                     name: "date",
                     value: "2026-08-27",
@@ -336,18 +373,255 @@ enum LocalOCRStudioUITestSupport {
                     sourcePage: 2,
                     evidence: "Reference: QP-27"
                 ),
-            ]
+            ], model: provenance)
+        }
+
+        private var provenance: LocalModelProvenance {
+            mode == .externalResults
+                ? LocalModelProvenance(
+                    provider: .ollama,
+                    providerDisplayName: "Ollama",
+                    model: "gemma4:8b",
+                    processing: .onDeviceLoopback,
+                    fingerprint: "sha256:ui-fixture",
+                    qualifiedAt: Date(timeIntervalSince1970: 1_788_050_400)
+                )
+                : .appleSystemDefault
         }
 
         private func waitOrFailIfNeeded() async throws {
             switch mode {
-            case .results:
+            case .results, .externalResults:
                 return
             case .running:
                 try await Task.sleep(for: .seconds(3_600))
             case .failure:
                 throw FixtureError.expectedFailure
+            case .selectionFailure:
+                throw IntelligenceError.selection(.modelUnavailable(Self.ollamaIdentity))
             }
+        }
+
+        private static let ollamaIdentity = LocalModelIdentity(
+            provider: .ollama,
+            model: "gemma4:8b",
+            fingerprint: "sha256:ui-fixture",
+            harnessVersion: "0.11.0"
+        )
+    }
+
+    private actor FixtureLocalIntelligenceManager: LocalIntelligenceManaging {
+        private static let testedAt = Date(timeIntervalSince1970: 1_788_050_400)
+        private static let ollama = LocalModelIdentity(
+            provider: .ollama,
+            model: "gemma4:8b",
+            fingerprint: "sha256:ui-fixture",
+            harnessVersion: "0.11.0"
+        )
+        private static let blocked = LocalModelIdentity(
+            provider: .ollama,
+            model: "cloud-model",
+            fingerprint: "sha256:blocked",
+            harnessVersion: "0.11.0"
+        )
+        private static let unverified = LocalModelIdentity(
+            provider: .lmStudio,
+            model: "local-metadata-missing",
+            fingerprint: "sha256:unverified",
+            harnessVersion: "0.3.20"
+        )
+        private static let qualifiedLMStudio = LocalModelIdentity(
+            provider: .lmStudio,
+            model: "qwen2.5-7b-instruct",
+            fingerprint: "sha256:lm-fixture",
+            harnessVersion: "0.3.20"
+        )
+
+        private var selection: LocalIntelligenceSelectionState
+        private var ollamaQualification: LocalModelQualificationStatus
+
+        init(usesRecoverySelection: Bool) {
+            selection = Self.initialSelection(usesRecoverySelection: usesRecoverySelection)
+            ollamaQualification = usesRecoverySelection ? .passed : .untested
+        }
+
+        nonisolated static func initialSelection(
+            usesRecoverySelection: Bool
+        ) -> LocalIntelligenceSelectionState {
+            guard usesRecoverySelection else { return .selected(.appleSystemDefault) }
+            return .selected(.external(
+                identity: ollama,
+                qualification: qualificationReceipt(ollama),
+                acknowledgment: ExternalLocalModelAcknowledgment(
+                    policyVersion: ExternalLocalModelAcknowledgment.currentPolicyVersion,
+                    identity: ollama,
+                    acceptedAt: testedAt
+                )
+            ))
+        }
+
+        nonisolated static func seedDescriptors(
+            usesRecoverySelection: Bool
+        ) -> [LocalModelDescriptor] {
+            let externalSelected = usesRecoverySelection
+            return [
+                LocalModelDescriptor(
+                    identity: .appleSystemDefault,
+                    displayName: "Apple Foundation Models — system default",
+                    locality: .verifiedLocal,
+                    localityReason: "Built into macOS and runs on device.",
+                    qualification: .passed,
+                    available: true,
+                    selected: !externalSelected
+                ),
+                LocalModelDescriptor(
+                    identity: ollama,
+                    displayName: ollama.model,
+                    locality: .verifiedLocal,
+                    localityReason: "Inference is local to this Mac.",
+                    qualification: externalSelected ? .passed : .untested,
+                    available: true,
+                    selected: externalSelected,
+                    qualifiedAt: externalSelected ? testedAt : nil
+                ),
+                LocalModelDescriptor(
+                    identity: blocked,
+                    displayName: blocked.model,
+                    locality: .blocked,
+                    localityReason: "cloud or remote execution",
+                    qualification: .untested,
+                    available: true,
+                    selected: false
+                ),
+                LocalModelDescriptor(
+                    identity: unverified,
+                    displayName: unverified.model,
+                    locality: .unverified,
+                    localityReason: "local execution could not be verified",
+                    qualification: .untested,
+                    available: true,
+                    selected: false
+                ),
+                LocalModelDescriptor(
+                    identity: qualifiedLMStudio,
+                    displayName: qualifiedLMStudio.model,
+                    locality: .verifiedLocal,
+                    localityReason: "Inference is local to this Mac.",
+                    qualification: .passed,
+                    available: true,
+                    selected: false,
+                    qualifiedAt: testedAt
+                ),
+            ]
+        }
+
+        func models() async -> [LocalModelDescriptor] {
+            [
+                descriptor(
+                    identity: .appleSystemDefault,
+                    locality: .verifiedLocal,
+                    reason: "Built into macOS and runs on device.",
+                    qualification: .passed,
+                    available: true
+                ),
+                descriptor(
+                    identity: Self.ollama,
+                    locality: .verifiedLocal,
+                    reason: "Inference is local to this Mac.",
+                    qualification: ollamaQualification,
+                    available: true
+                ),
+                descriptor(
+                    identity: Self.blocked,
+                    locality: .blocked,
+                    reason: "cloud or remote execution",
+                    qualification: .untested,
+                    available: true
+                ),
+                descriptor(
+                    identity: Self.unverified,
+                    locality: .unverified,
+                    reason: "local execution could not be verified",
+                    qualification: .untested,
+                    available: true
+                ),
+                descriptor(
+                    identity: Self.qualifiedLMStudio,
+                    locality: .verifiedLocal,
+                    reason: "Inference is local to this Mac.",
+                    qualification: .passed,
+                    available: true
+                ),
+            ]
+        }
+
+        func qualify(_ identity: LocalModelIdentity) async throws -> LocalModelQualificationOutcome {
+            guard identity == Self.ollama else {
+                throw IntelligenceError.selection(.qualificationRequired(identity))
+            }
+            ollamaQualification = .passed
+            let receipt = Self.qualificationReceipt(identity)
+            return LocalModelQualificationOutcome(status: .passed, receipt: receipt, failures: [])
+        }
+
+        func selectApple() async throws { selection = .selected(.appleSystemDefault) }
+
+        func selectExternal(
+            _ identity: LocalModelIdentity,
+            acknowledgmentAcceptedAt: Date
+        ) async throws {
+            guard identity == Self.ollama, ollamaQualification == .passed else {
+                throw IntelligenceError.selection(.qualificationRequired(identity))
+            }
+            selection = .selected(.external(
+                identity: identity,
+                qualification: Self.qualificationReceipt(identity),
+                acknowledgment: ExternalLocalModelAcknowledgment(
+                    policyVersion: ExternalLocalModelAcknowledgment.currentPolicyVersion,
+                    identity: identity,
+                    acceptedAt: acknowledgmentAcceptedAt
+                )
+            ))
+        }
+
+        func status() async -> LocalIntelligenceSelectionState { selection }
+        func reset() async throws { selection = .reset(at: Self.testedAt) }
+
+        private func descriptor(
+            identity: LocalModelIdentity,
+            locality: LocalModelLocality,
+            reason: String,
+            qualification: LocalModelQualificationStatus,
+            available: Bool
+        ) -> LocalModelDescriptor {
+            let selected: Bool = switch selection {
+            case .selected(.appleSystemDefault): identity == .appleSystemDefault
+            case let .selected(.external(selectedIdentity, _, _)): identity == selectedIdentity
+            case .none, .reset, .invalid: false
+            }
+            return LocalModelDescriptor(
+                identity: identity,
+                displayName: identity.model,
+                locality: locality,
+                localityReason: reason,
+                qualification: qualification,
+                available: available,
+                selected: selected,
+                qualifiedAt: qualification == .passed && identity != .appleSystemDefault
+                    ? Self.testedAt : nil
+            )
+        }
+
+        private nonisolated static func qualificationReceipt(
+            _ identity: LocalModelIdentity
+        ) -> LocalModelQualificationReceipt {
+            LocalModelQualificationReceipt(
+                policyVersion: LocalModelQualificationReceipt.currentPolicyVersion,
+                fixtureVersion: LocalModelQualificationReceipt.currentFixtureVersion,
+                identity: identity,
+                passedActions: Set(LocalIntelligenceAction.allCases),
+                qualifiedAt: Self.testedAt
+            )
         }
     }
 

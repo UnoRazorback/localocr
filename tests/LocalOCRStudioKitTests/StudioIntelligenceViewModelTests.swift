@@ -1,5 +1,6 @@
 import Foundation
 import LocalOCRIntelligence
+import LocalOCRModelCore
 import LocalOCRStudioKit
 import Testing
 
@@ -27,8 +28,75 @@ import Testing
         await flushIntelligenceStateUpdates()
 
         #expect(model.summaryState == .result(summary))
+        #expect(model.summaryModel == .appleSystemDefault)
         #expect(model.organizationState == .idle)
         #expect(model.fieldsState == .idle)
+    }
+
+    @Test @MainActor func everyOperationRetainsActualResultProvenanceAfterFutureSelectionChanges() async {
+        let firstModel = LocalModelProvenance(
+            provider: .ollama,
+            providerDisplayName: "Ollama",
+            model: "gemma4:8b",
+            processing: .onDeviceLoopback,
+            fingerprint: "sha256:first",
+            qualifiedAt: Date(timeIntervalSince1970: 1_788_050_400)
+        )
+        let provider = ControlledIntelligenceProvider(provenance: firstModel)
+        let model = StudioIntelligenceViewModel(provider: provider, availability: .available)
+        model.setDocument(document("Invoice 1048"), identity: "invoice-hash")
+
+        model.summarize()
+        model.organize()
+        model.extractFields()
+        await provider.waitForRequest(.summary)
+        await provider.waitForRequest(.organization)
+        await provider.waitForRequest(.fields)
+        await provider.succeedSummary(IntelligenceSummary(
+            text: "An invoice.",
+            citations: [IntelligenceCitation(page: 1, quote: "Invoice 1048")]
+        ))
+        await provider.succeedOrganization(OrganizationSuggestion(
+            title: "Invoice 1048",
+            category: "Finance",
+            tags: ["invoice"],
+            citations: [IntelligenceCitation(page: 1, quote: "Invoice 1048")]
+        ))
+        await provider.succeedFields([ExtractedDocumentField(
+            name: "reference_number",
+            value: "1048",
+            sourcePage: 1,
+            evidence: "Invoice 1048"
+        )])
+        await flushIntelligenceStateUpdates()
+
+        await provider.changeFutureProvenance(to: .appleSystemDefault)
+
+        #expect(model.summaryModel == firstModel)
+        #expect(model.organizationModel == firstModel)
+        #expect(model.fieldsModel == firstModel)
+    }
+
+    @Test @MainActor func selectionFailureOffersExplicitRecoveryWithoutReplacingDocumentOrFallingBack() async {
+        let identity = LocalModelIdentity(
+            provider: .ollama,
+            model: "gemma4:8b",
+            fingerprint: "sha256:first",
+            harnessVersion: "1.0.0"
+        )
+        let provider = ControlledIntelligenceProvider()
+        let model = StudioIntelligenceViewModel(provider: provider, availability: .available)
+        model.setDocument(document("Invoice 1048"), identity: "invoice-hash")
+
+        model.summarize()
+        await provider.waitForRequest(.summary)
+        await provider.failSummary(IntelligenceError.selection(.modelUnavailable(identity)))
+        await flushIntelligenceStateUpdates()
+
+        #expect(model.recovery?.failedOperation == .summary)
+        #expect(model.recovery?.actions == [.retry, .chooseAnotherLocalModel, .useAppleSystemModel])
+        #expect(model.summaryModel == nil)
+        #expect(await provider.requests() == [.summary])
     }
 
     @Test @MainActor func organizationFailureDoesNotReplaceOtherOperationState() async {
@@ -149,6 +217,8 @@ private enum TestIntelligenceError: Error {
 private actor ControlledIntelligenceProvider: DocumentIntelligenceProviding {
     let availability: IntelligenceAvailability = .available
 
+    private var provenance: LocalModelProvenance
+
     private var recordedRequests: [IntelligenceOperationRequest] = []
     private var fieldNames: [String] = []
     private var summaryContinuation: CheckedContinuation<IntelligenceSummary, any Error>?
@@ -157,6 +227,10 @@ private actor ControlledIntelligenceProvider: DocumentIntelligenceProviding {
     private var requestWaiters: [IntelligenceOperationRequest: [CheckedContinuation<Void, Never>]] = [:]
     private var cancellations: Set<IntelligenceOperationRequest> = []
     private var cancellationWaiters: [IntelligenceOperationRequest: [CheckedContinuation<Void, Never>]] = [:]
+
+    init(provenance: LocalModelProvenance = .appleSystemDefault) {
+        self.provenance = provenance
+    }
 
     func summarize(
         _ document: IntelligenceDocument
@@ -168,7 +242,7 @@ private actor ControlledIntelligenceProvider: DocumentIntelligenceProviding {
         }, onCancel: {
             Task { await self.recordCancellation(.summary) }
         })
-        return ProvenancedIntelligenceResult(value: value, model: .appleSystemDefault)
+        return ProvenancedIntelligenceResult(value: value, model: provenance)
     }
 
     func organize(
@@ -181,7 +255,7 @@ private actor ControlledIntelligenceProvider: DocumentIntelligenceProviding {
         }, onCancel: {
             Task { await self.recordCancellation(.organization) }
         })
-        return ProvenancedIntelligenceResult(value: value, model: .appleSystemDefault)
+        return ProvenancedIntelligenceResult(value: value, model: provenance)
     }
 
     func extract(
@@ -196,7 +270,7 @@ private actor ControlledIntelligenceProvider: DocumentIntelligenceProviding {
         }, onCancel: {
             Task { await self.recordCancellation(.fields) }
         })
-        return ProvenancedIntelligenceResult(value: value, model: .appleSystemDefault)
+        return ProvenancedIntelligenceResult(value: value, model: provenance)
     }
 
     func requests() -> [IntelligenceOperationRequest] { recordedRequests }
@@ -215,6 +289,25 @@ private actor ControlledIntelligenceProvider: DocumentIntelligenceProviding {
     func succeedSummary(_ result: IntelligenceSummary) {
         summaryContinuation?.resume(returning: result)
         summaryContinuation = nil
+    }
+
+    func failSummary(_ error: any Error) {
+        summaryContinuation?.resume(throwing: error)
+        summaryContinuation = nil
+    }
+
+    func succeedOrganization(_ result: OrganizationSuggestion) {
+        organizationContinuation?.resume(returning: result)
+        organizationContinuation = nil
+    }
+
+    func succeedFields(_ result: [ExtractedDocumentField]) {
+        fieldsContinuation?.resume(returning: result)
+        fieldsContinuation = nil
+    }
+
+    func changeFutureProvenance(to provenance: LocalModelProvenance) {
+        self.provenance = provenance
     }
 
     func succeedSummaryIgnoringCancellation(_ result: IntelligenceSummary) {
@@ -244,6 +337,5 @@ private func document(_ text: String) -> IntelligenceDocument {
 
 @MainActor
 private func flushIntelligenceStateUpdates() async {
-    await Task.yield()
-    await Task.yield()
+    for _ in 0..<10 { await Task.yield() }
 }

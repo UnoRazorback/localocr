@@ -14,6 +14,10 @@ public protocol LocalIntelligenceManaging: Sendable {
     func reset() async throws
 }
 
+public protocol LocalIntelligenceAppleDescribing: Sendable {
+    func appleModel() async -> LocalModelDescriptor
+}
+
 public struct LocalModelDescriptor: Sendable, Equatable {
     public let identity: LocalModelIdentity
     public let displayName: String
@@ -22,6 +26,7 @@ public struct LocalModelDescriptor: Sendable, Equatable {
     public let qualification: LocalModelQualificationStatus
     public let available: Bool
     public let selected: Bool
+    public let qualifiedAt: Date?
 
     public init(
         identity: LocalModelIdentity,
@@ -32,6 +37,28 @@ public struct LocalModelDescriptor: Sendable, Equatable {
         available: Bool,
         selected: Bool
     ) {
+        self.init(
+            identity: identity,
+            displayName: displayName,
+            locality: locality,
+            localityReason: localityReason,
+            qualification: qualification,
+            available: available,
+            selected: selected,
+            qualifiedAt: nil
+        )
+    }
+
+    public init(
+        identity: LocalModelIdentity,
+        displayName: String,
+        locality: LocalModelLocality,
+        localityReason: String,
+        qualification: LocalModelQualificationStatus,
+        available: Bool,
+        selected: Bool,
+        qualifiedAt: Date?
+    ) {
         self.identity = identity
         self.displayName = displayName
         self.locality = locality
@@ -39,10 +66,11 @@ public struct LocalModelDescriptor: Sendable, Equatable {
         self.qualification = qualification
         self.available = available
         self.selected = selected
+        self.qualifiedAt = qualifiedAt
     }
 }
 
-public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging {
+public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging, LocalIntelligenceAppleDescribing {
     public typealias AppleProviderFactory = @Sendable () -> any DocumentIntelligenceProviding
 
     private let transport: any ModelBridgeTransporting
@@ -68,16 +96,7 @@ public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging {
 
     public func models() async -> [LocalModelDescriptor] {
         let selectionState = await selectionStore.state()
-        let appleAvailable = await appleProviderFactory().availability == .available
-        var result = [LocalModelDescriptor(
-            identity: .appleSystemDefault,
-            displayName: "Apple Foundation Models — system default",
-            locality: .verifiedLocal,
-            localityReason: "Built into macOS and runs on device.",
-            qualification: .passed,
-            available: appleAvailable,
-            selected: selectionState == .selected(.appleSystemDefault)
-        )]
+        var result = [await appleDescriptor(selectionState: selectionState)]
 
         var discovered: [BridgeModelCandidate] = []
         for provider in [LocalModelProviderID.ollama, .lmStudio] {
@@ -98,7 +117,8 @@ public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging {
                 localityReason: candidate.localityReason,
                 qualification: state.qualification,
                 available: true,
-                selected: state.selected
+                selected: state.selected,
+                qualifiedAt: state.qualifiedAt
             ))
         }
 
@@ -118,12 +138,33 @@ public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging {
                         receipt: qualification
                     ),
                     available: false,
-                    selected: true
+                    selected: true,
+                    qualifiedAt: qualification.qualifiedAt
                 ))
             }
         }
 
         return result.sorted(by: Self.descriptorOrder)
+    }
+
+    public func appleModel() async -> LocalModelDescriptor {
+        await appleDescriptor(selectionState: selectionStore.state())
+    }
+
+    private func appleDescriptor(
+        selectionState: LocalIntelligenceSelectionState
+    ) async -> LocalModelDescriptor {
+        let appleAvailable = await appleProviderFactory().availability == .available
+        return LocalModelDescriptor(
+            identity: .appleSystemDefault,
+            displayName: "Apple Foundation Models — system default",
+            locality: .verifiedLocal,
+            localityReason: "Built into macOS and runs on device.",
+            qualification: .passed,
+            available: appleAvailable,
+            selected: selectionState == .selected(.appleSystemDefault),
+            qualifiedAt: nil
+        )
     }
 
     public func qualify(
@@ -172,7 +213,7 @@ public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging {
     private func descriptorState(
         for candidate: BridgeModelCandidate,
         selectionState: LocalIntelligenceSelectionState
-    ) async -> (qualification: LocalModelQualificationStatus, selected: Bool) {
+    ) async -> (qualification: LocalModelQualificationStatus, selected: Bool, qualifiedAt: Date?) {
         if case let .selected(.external(identity, qualification, acknowledgment)) = selectionState {
             if identity == candidate.identity {
                 let qualificationStatus = qualificationService.status(
@@ -186,15 +227,17 @@ public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging {
                     acknowledgmentCurrent ? qualificationStatus : .stale,
                     candidate.locality == .verifiedLocal &&
                         qualificationStatus == .passed &&
-                        acknowledgmentCurrent
+                        acknowledgmentCurrent,
+                    qualification.qualifiedAt
                 )
             }
             if identity.provider == candidate.identity.provider,
                identity.model == candidate.identity.model {
-                return (.stale, false)
+                return (.stale, false, nil)
             }
         }
-        return (await qualificationService.cachedOutcome(for: candidate.identity)?.status ?? .untested, false)
+        let cached = await qualificationService.cachedOutcome(for: candidate.identity)
+        return (cached?.status ?? .untested, false, cached?.receipt?.qualifiedAt)
     }
 
     private func verifiedCandidate(

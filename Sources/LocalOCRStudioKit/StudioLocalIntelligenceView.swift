@@ -1,11 +1,12 @@
 import LocalOCRIntelligence
+import LocalOCRModelCore
 import SwiftUI
 
 struct StudioLocalIntelligenceContract {
     let availability: IntelligenceAvailability
 
     let title = "Local Intelligence"
-    let modelDisclosure = "Model: Apple Foundation Models (system default)"
+    let manageModelsLabel = "Manage Local Models"
     let modelExplanation = "Apple selects the installed system model. macOS does not expose its specific model name or version."
     let summaryActionLabel = "Summarize document with Local Intelligence"
     let organizationActionLabel = "Suggest document name and tags with Local Intelligence"
@@ -31,6 +32,8 @@ struct StudioLocalIntelligenceContract {
 
 struct StudioLocalIntelligenceView: View {
     @Bindable var model: StudioIntelligenceViewModel
+    @Bindable var managerModel: StudioLocalModelManagerViewModel
+    @State private var isManagingModels = false
 
     private var contract: StudioLocalIntelligenceContract {
         StudioLocalIntelligenceContract(availability: model.availability)
@@ -42,19 +45,30 @@ struct StudioLocalIntelligenceView: View {
                 Label(contract.title, systemImage: "apple.intelligence")
                     .font(.system(.headline, design: .rounded, weight: .semibold))
                 Spacer()
-                Text("On device")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.localOCRStudioOlive)
+                Button(contract.manageModelsLabel) { isManagingModels = true }
+                    .controlSize(.small)
+                    .accessibilityIdentifier("studio.intelligence.manage-models")
             }
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(contract.modelDisclosure)
-                    .font(.caption.weight(.semibold))
-                Text(contract.modelExplanation)
+            if let route = StudioProcessingRoute(selection: managerModel.selection) {
+                StudioProcessingRouteDisclosure(
+                    route: route,
+                    accessibilityIdentifier: "studio.intelligence.active-route"
+                )
+                if route.location == "On device" {
+                    Text(contract.modelExplanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("No local model is selected for future Local Intelligence actions.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            .fixedSize(horizontal: false, vertical: true)
+
+            if let recovery = model.recovery {
+                recoveryView(recovery)
+            }
 
             if let guidance = contract.unavailableGuidance {
                 Label(guidance, systemImage: "info.circle")
@@ -105,6 +119,10 @@ struct StudioLocalIntelligenceView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("studio.local-intelligence")
+        .task { await managerModel.refreshSelection() }
+        .sheet(isPresented: $isManagingModels) {
+            StudioLocalModelManagerView(model: managerModel)
+        }
     }
 
     @ViewBuilder
@@ -136,7 +154,15 @@ struct StudioLocalIntelligenceView: View {
             case .idle, .running, .unavailable:
                 EmptyView()
             case let .result(value):
-                result(value)
+                VStack(alignment: .leading, spacing: 8) {
+                    result(value)
+                    if let provenance = provenance(for: state) {
+                        StudioProcessingRouteDisclosure(
+                            route: StudioProcessingRoute(provenance: provenance),
+                            accessibilityIdentifier: resultRouteIdentifier(for: state)
+                        )
+                    }
+                }
             case let .failure(error):
                 Text(error.message)
                     .font(.callout)
@@ -144,6 +170,48 @@ struct StudioLocalIntelligenceView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private func provenance<Value>(for state: StudioIntelligenceState<Value>) -> LocalModelProvenance? {
+        if Value.self == IntelligenceSummary.self { return model.summaryModel }
+        if Value.self == OrganizationSuggestion.self { return model.organizationModel }
+        return model.fieldsModel
+    }
+
+    private func resultRouteIdentifier<Value>(for state: StudioIntelligenceState<Value>) -> String {
+        if Value.self == IntelligenceSummary.self { return "studio.intelligence.summary-route" }
+        if Value.self == OrganizationSuggestion.self { return "studio.intelligence.organization-route" }
+        return "studio.intelligence.fields-route"
+    }
+
+    private func recoveryView(_ recovery: StudioIntelligenceRecovery) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label(recovery.message, systemImage: "exclamationmark.circle")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Button("Retry", action: model.retryRecovery)
+                    .accessibilityIdentifier("studio.intelligence.recovery.retry")
+                Button("Choose Another Local Model") { isManagingModels = true }
+                    .accessibilityIdentifier("studio.intelligence.recovery.choose")
+                if managerModel.models.contains(where: {
+                    $0.identity.provider == .appleFoundationModels && $0.available
+                }) {
+                    Button("Use Apple System Model") {
+                        Task {
+                            await managerModel.selectApple()
+                            await model.refreshAvailability()
+                        }
+                    }
+                    .accessibilityIdentifier("studio.intelligence.recovery.apple")
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.localOCRStudioOlive.opacity(0.075), in: RoundedRectangle(cornerRadius: 11))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("studio.intelligence.recovery")
     }
 
     private func isRunning<Value>(_ state: StudioIntelligenceState<Value>) -> Bool {
