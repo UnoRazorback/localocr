@@ -34,7 +34,7 @@ struct ModelBridgeServerTests {
     func productionCompositionRoutesLMStudioDiscovery() async {
         let http = CompositionFixtureHTTP(responses: [
             Data(
-                #"{"models":[{"type":"llm","publisher":"lmstudio-community","key":"lmstudio-community/gemma-3-4b-it-GGUF","display_name":"Gemma 3 4B IT","architecture":"gemma3","quantization":{"name":"Q4_K_M","bits_per_weight":4},"size_bytes":4294967296,"params_string":"4B","loaded_instances":[],"max_context_length":131072,"format":"gguf","capabilities":{"vision":false,"trained_for_tool_use":false},"description":null,"variants":["lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m"],"selected_variant":"lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m"}]}"#.utf8
+                #"{"models":[{"type":"llm","publisher":"lmstudio-community","key":"lmstudio-community/gemma-3-4b-it-GGUF","display_name":"Gemma 3 4B IT","architecture":"gemma3","quantization":{"name":"Q4_K_M","bits_per_weight":4},"size_bytes":4294967296,"params_string":"4B","loaded_instances":[{"id":"gemma-instance","config":{"context_length":4096}}],"max_context_length":131072,"format":"gguf","capabilities":{"vision":false,"trained_for_tool_use":false},"description":null,"variants":["lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m"],"selected_variant":"lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m"}]}"#.utf8
             )
         ])
         let handler = ModelBridgeProductionComposition.handler(

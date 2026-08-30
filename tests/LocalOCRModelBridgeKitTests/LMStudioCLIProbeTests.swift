@@ -3,7 +3,7 @@ import Foundation
 @testable import LocalOCRModelBridgeKit
 import Testing
 
-@Suite("Fixed LM Studio CLI probe")
+@Suite("Fixed LM Studio CLI probe", .serialized)
 struct LMStudioCLIProbeTests {
     @Test
     func fixedCommandsParseDisabledLinkAndLocalDownloadedModel() async throws {
@@ -26,6 +26,25 @@ struct LMStudioCLIProbeTests {
             "link status --json",
             "ls --llm --json",
             "--version"
+        ])
+    }
+
+    @Test
+    func fullSnapshotRunsLinkLastAndKeepsAllEvidenceTogether() async throws {
+        let fixture = try LMStudioExecutableFixture(
+            linkJSON: disabledLinkJSON,
+            modelsJSON: downloadedModelsJSON,
+            versionOutput: "CLI commit: fixture-commit"
+        )
+        defer { fixture.remove() }
+
+        let snapshot = try await LMStudioCLIProbe(homeDirectory: fixture.homeDirectory).snapshot()
+
+        #expect(snapshot.version == "fixture-commit")
+        #expect(snapshot.models.count == 1)
+        #expect(snapshot.link == LMStudioLinkStatus(enabled: false, connectedPeerCount: 0))
+        #expect(try fixture.recordedArguments() == [
+            "--version", "ls --llm --json", "link status --json"
         ])
     }
 
@@ -57,7 +76,73 @@ struct LMStudioCLIProbeTests {
     }
 
     @Test
-    func remoteDownloadedModelIsNotReturnedAsLocalEvidence() async throws {
+    func executableReplacementOrSymlinkSwapDuringInvocationFailsClosed() async throws {
+        for swap in [ExecutableSwap.replacement, .escapingSymlink] {
+            let fixture = try LMStudioExecutableFixture(
+                linkJSON: disabledLinkJSON,
+                modelsJSON: downloadedModelsJSON,
+                versionOutput: "CLI commit: fixture-commit",
+                executableSwap: swap
+            )
+            defer { fixture.remove() }
+
+            await #expect(throws: LMStudioCLIProbeError.unsafeExecutable) {
+                try await LMStudioCLIProbe(homeDirectory: fixture.homeDirectory).version()
+            }
+        }
+    }
+
+    @Test
+    func envInterpreterShebangIsRejectedWithoutPATHLookup() async throws {
+        let fixture = try LMStudioExecutableFixture(
+            linkJSON: disabledLinkJSON,
+            modelsJSON: downloadedModelsJSON,
+            versionOutput: "CLI commit: fixture-commit",
+            usesEnvironmentShebang: true
+        )
+        defer { fixture.remove() }
+
+        await #expect(throws: LMStudioCLIProbeError.unsafeExecutable) {
+            try await LMStudioCLIProbe(homeDirectory: fixture.homeDirectory).version()
+        }
+    }
+
+    @Test
+    func childReceivesOnlyFixedHomeAndNoInheritedSensitiveEnvironment() async throws {
+        let sentinelName = "LOCALOCR_LMSTUDIO_SENTINEL"
+        let oldSentinel = getenv(sentinelName).map { String(cString: $0) }
+        setenv(sentinelName, "must-not-leak", 1)
+        defer {
+            if let oldSentinel {
+                setenv(sentinelName, oldSentinel, 1)
+            } else {
+                unsetenv(sentinelName)
+            }
+        }
+        let fixture = try LMStudioExecutableFixture(
+            linkJSON: disabledLinkJSON,
+            modelsJSON: downloadedModelsJSON,
+            versionOutput: "CLI commit: fixture-commit",
+            recordsEnvironment: true
+        )
+        defer { fixture.remove() }
+
+        _ = try await LMStudioCLIProbe(homeDirectory: fixture.homeDirectory).version()
+
+        let environment = try fixture.recordedEnvironment()
+        #expect(environment == [
+            "HOME=\(fixture.homeDirectory.path)",
+            "PATH=",
+            "HTTP_PROXY=unset",
+            "HTTPS_PROXY=unset",
+            "ALL_PROXY=unset",
+            "DYLD_INSERT_LIBRARIES=unset",
+            "SENTINEL=unset"
+        ])
+    }
+
+    @Test
+    func remoteDownloadedModelRowIsPreservedAsConflictingEvidence() async throws {
         let remoteModels = downloadedModelsJSON.replacingOccurrences(
             of: #""deviceIdentifier":null"#,
             with: #""deviceIdentifier":"remote-device""#
@@ -71,7 +156,7 @@ struct LMStudioCLIProbeTests {
 
         let models = try await LMStudioCLIProbe(homeDirectory: fixture.homeDirectory).localModels()
 
-        #expect(models.isEmpty)
+        #expect(models.count == 1)
     }
 
     @Test
@@ -221,11 +306,109 @@ struct LMStudioCLIProbeTests {
         #expect(kill(pid, 0) == -1)
         #expect(errno == ESRCH)
     }
+
+    @Test
+    func timeoutKillsAndReapsTheEntireIsolatedProcessGroupWithinBudget() async throws {
+        let fixture = try LMStudioExecutableFixture(
+            linkJSON: disabledLinkJSON,
+            modelsJSON: downloadedModelsJSON,
+            versionOutput: "CLI commit: fixture-commit",
+            processTree: .hang
+        )
+        defer { fixture.remove() }
+        let probe = LMStudioCLIProbe(
+            homeDirectory: fixture.homeDirectory,
+            commandTimeout: .milliseconds(250),
+            terminationGracePeriod: .milliseconds(100)
+        )
+        let clock = ContinuousClock()
+        let start = clock.now
+
+        await #expect(throws: LMStudioCLIProbeError.timedOut) {
+            try await probe.version()
+        }
+
+        #expect(start.duration(to: clock.now) < .seconds(1))
+        try assertProcessAndGroupAreGone(
+            processID: Int32(try fixture.recordedPID()),
+            descendantID: Int32(try fixture.recordedDescendantPID())
+        )
+    }
+
+    @Test
+    func outputOverflowKillsTheEntireProcessGroupBeforeCommandTimeout() async throws {
+        let fixture = try LMStudioExecutableFixture(
+            linkJSON: disabledLinkJSON,
+            modelsJSON: downloadedModelsJSON,
+            versionOutput: "CLI commit: fixture-commit",
+            processTree: .flood
+        )
+        defer { fixture.remove() }
+        let probe = LMStudioCLIProbe(
+            homeDirectory: fixture.homeDirectory,
+            commandTimeout: .seconds(2),
+            terminationGracePeriod: .milliseconds(100)
+        )
+        let clock = ContinuousClock()
+        let start = clock.now
+
+        await #expect(throws: LMStudioCLIProbeError.outputTooLarge) {
+            try await probe.version()
+        }
+
+        #expect(start.duration(to: clock.now) < .seconds(1))
+        try assertProcessAndGroupAreGone(
+            processID: Int32(try fixture.recordedPID()),
+            descendantID: Int32(try fixture.recordedDescendantPID())
+        )
+    }
+
+    @Test
+    func cancellationKillsTheEntireProcessGroupAndReturnsPromptly() async throws {
+        let fixture = try LMStudioExecutableFixture(
+            linkJSON: disabledLinkJSON,
+            modelsJSON: downloadedModelsJSON,
+            versionOutput: "CLI commit: fixture-commit",
+            processTree: .hang
+        )
+        defer { fixture.remove() }
+        let probe = LMStudioCLIProbe(
+            homeDirectory: fixture.homeDirectory,
+            commandTimeout: .seconds(2),
+            terminationGracePeriod: .milliseconds(100)
+        )
+        let clock = ContinuousClock()
+        let start = clock.now
+        let task = Task { try await probe.version() }
+        try await Task.sleep(for: .milliseconds(100))
+
+        task.cancel()
+
+        await #expect(throws: LMStudioCLIProbeError.cancelled) {
+            try await task.value
+        }
+        #expect(start.duration(to: clock.now) < .seconds(1))
+        try assertProcessAndGroupAreGone(
+            processID: Int32(try fixture.recordedPID()),
+            descendantID: Int32(try fixture.recordedDescendantPID())
+        )
+    }
 }
 
-private let disabledLinkJSON = #"{"status":"offline","issues":["deviceDisabled"],"peers":[],"deviceIdentifier":null,"deviceName":"This Mac"}"#
+private func assertProcessAndGroupAreGone(
+    processID: Int32,
+    descendantID: Int32
+) throws {
+    for target in [processID, descendantID, -processID] {
+        errno = 0
+        #expect(kill(target, 0) == -1)
+        #expect(errno == ESRCH)
+    }
+}
 
-private let downloadedModelsJSON = #"[{"type":"llm","modelKey":"lmstudio-community/gemma-3-4b-it-GGUF","format":"gguf","displayName":"Gemma 3 4B IT","publisher":"lmstudio-community","path":"lmstudio-community/gemma-3-4b-it-GGUF/gemma-3-4b-it-Q4_K_M.gguf","sizeBytes":4294967296,"indexedModelIdentifier":"lmstudio-community/gemma-3-4b-it-GGUF/gemma-3-4b-it-Q4_K_M.gguf","deviceIdentifier":null,"paramsString":"4B","architecture":"gemma3","quantization":{"name":"Q4_K_M","bits":4},"variants":["lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m"],"selectedVariant":"lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m","vision":false,"trainedForToolUse":false,"maxContextLength":131072}]"#
+let disabledLinkJSON = #"{"status":"offline","issues":["deviceDisabled"],"peers":[],"deviceIdentifier":null,"deviceName":"This Mac"}"#
+
+let downloadedModelsJSON = #"[{"type":"llm","modelKey":"lmstudio-community/gemma-3-4b-it-GGUF","format":"gguf","displayName":"Gemma 3 4B IT","publisher":"lmstudio-community","path":"lmstudio-community/gemma-3-4b-it-GGUF/gemma-3-4b-it-Q4_K_M.gguf","sizeBytes":4294967296,"indexedModelIdentifier":"lmstudio-community/gemma-3-4b-it-GGUF/gemma-3-4b-it-Q4_K_M.gguf","deviceIdentifier":null,"paramsString":"4B","architecture":"gemma3","quantization":{"name":"Q4_K_M","bits":4},"variants":["lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m"],"selectedVariant":"lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m","vision":false,"trainedForToolUse":false,"maxContextLength":131072}]"#
 
 private let fixtureLocalModel = LMStudioLocalModel(
     key: "lmstudio-community/gemma-3-4b-it-GGUF",
@@ -236,16 +419,28 @@ private let fixtureLocalModel = LMStudioLocalModel(
     sizeBytes: 4_294_967_296
 )
 
-private enum OversizedStream {
+enum OversizedStream {
     case stdout
     case stderr
 }
 
-private struct LMStudioExecutableFixture {
+enum ExecutableSwap {
+    case replacement
+    case escapingSymlink
+}
+
+enum ProcessTreeFixture {
+    case hang
+    case flood
+}
+
+struct LMStudioExecutableFixture {
     let root: URL
     let homeDirectory: URL
     private let argumentsURL: URL
     private let pidURL: URL
+    private let descendantPIDURL: URL
+    private let environmentURL: URL
 
     init(
         linkJSON: String,
@@ -253,7 +448,11 @@ private struct LMStudioExecutableFixture {
         versionOutput: String,
         executableOutsideBin: Bool = false,
         oversizedStream: OversizedStream? = nil,
-        hangsIgnoringTERM: Bool = false
+        hangsIgnoringTERM: Bool = false,
+        executableSwap: ExecutableSwap? = nil,
+        usesEnvironmentShebang: Bool = false,
+        recordsEnvironment: Bool = false,
+        processTree: ProcessTreeFixture? = nil
     ) throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("lmstudio-cli-\(UUID().uuidString)", isDirectory: true)
@@ -261,6 +460,8 @@ private struct LMStudioExecutableFixture {
         let bin = homeDirectory.appendingPathComponent(".lmstudio/bin", isDirectory: true)
         argumentsURL = root.appendingPathComponent("arguments.txt")
         pidURL = root.appendingPathComponent("pid.txt")
+        descendantPIDURL = root.appendingPathComponent("descendant-pid.txt")
+        environmentURL = root.appendingPathComponent("environment.txt")
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         try Data().write(to: argumentsURL)
 
@@ -278,12 +479,56 @@ private struct LMStudioExecutableFixture {
         let hangCommand = hangsIgnoringTERM
             ? "printf '%s\\n' \"$$\" > '\(Self.shellEscaped(pidURL.path))'; trap '' TERM; exec /bin/sleep 30"
             : ":"
+        let processTreeCommand = switch processTree {
+        case .hang?: """
+        printf '%s\\n' "$$" > '\(Self.shellEscaped(pidURL.path))'
+        trap '' TERM
+        (trap '' TERM; /bin/sleep 3) &
+        printf '%s\\n' "$!" > '\(Self.shellEscaped(descendantPIDURL.path))'
+        while :; do /bin/sleep 3; done
+        """
+        case .flood?: """
+        printf '%s\\n' "$$" > '\(Self.shellEscaped(pidURL.path))'
+        trap '' TERM
+        (trap '' TERM; /bin/sleep 3) &
+        printf '%s\\n' "$!" > '\(Self.shellEscaped(descendantPIDURL.path))'
+        while :; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; done
+        """
+        case nil: ":"
+        }
+        let environmentCommand = recordsEnvironment ? """
+        printf '%s\\n' \\
+          "HOME=${HOME-unset}" \\
+          "PATH=${PATH-unset}" \\
+          "HTTP_PROXY=${HTTP_PROXY-unset}" \\
+          "HTTPS_PROXY=${HTTPS_PROXY-unset}" \\
+          "ALL_PROXY=${ALL_PROXY-unset}" \\
+          "DYLD_INSERT_LIBRARIES=${DYLD_INSERT_LIBRARIES-unset}" \\
+          "SENTINEL=${LOCALOCR_LMSTUDIO_SENTINEL-unset}" \\
+          > '\(Self.shellEscaped(environmentURL.path))'
+        """ : ":"
+        let replacementURL = root.appendingPathComponent("replacement-lms")
+        let escapingURL = root.appendingPathComponent("escaping-lms")
+        let replacementScript = "#!/bin/sh\\nprintf '%s\\n' 'CLI commit: replacement'\\n"
+        try Data(replacementScript.utf8).write(to: replacementURL)
+        try Data(replacementScript.utf8).write(to: escapingURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: replacementURL.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: escapingURL.path)
+        let swapCommand = switch executableSwap {
+        case .replacement?: "/bin/mv -f '\(Self.shellEscaped(replacementURL.path))' '\(Self.shellEscaped(physicalExecutable.path))'"
+        case .escapingSymlink?: "/bin/rm -f '\(Self.shellEscaped(physicalExecutable.path))'; /bin/ln -s '\(Self.shellEscaped(escapingURL.path))' '\(Self.shellEscaped(physicalExecutable.path))'"
+        case nil: ":"
+        }
+        let shebang = usesEnvironmentShebang ? "#!/usr/bin/env sh" : "#!/bin/sh"
         let script = """
-        #!/bin/sh
+        \(shebang)
         printf '%s\\n' "$*" >> '\(Self.shellEscaped(argumentsURL.path))'
         if [ "$*" = "--version" ]; then
+          \(environmentCommand)
+          \(swapCommand)
           \(streamCommand)
           \(hangCommand)
+          \(processTreeCommand)
         fi
         case "$*" in
           "link status --json") printf '%s\\n' '\(Self.shellEscaped(linkJSON))' ;;
@@ -315,6 +560,18 @@ private struct LMStudioExecutableFixture {
     func recordedPID() throws -> Int {
         let data = try Data(contentsOf: pidURL)
         return try #require(Int(String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)))
+    }
+
+    func recordedDescendantPID() throws -> Int {
+        let data = try Data(contentsOf: descendantPIDURL)
+        return try #require(Int(String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)))
+    }
+
+    func recordedEnvironment() throws -> [String] {
+        let data = try Data(contentsOf: environmentURL)
+        return String(decoding: data, as: UTF8.self)
+            .split(separator: "\n")
+            .map(String.init)
     }
 
     func remove() {

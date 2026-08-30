@@ -94,7 +94,136 @@ struct LMStudioBridgeAdapterTests {
         #expect(await http.requests.map(\.endpoint) == [.lmStudioModels])
         #expect(await http.requests.first?.body == nil)
         #expect(await http.requests.first?.timeoutMilliseconds == 2_500)
-        #expect(await cli.calls == [.linkStatus, .localModels, .version])
+        #expect(await cli.calls == [.version, .localModels, .linkStatus])
+    }
+
+    @Test
+    func linkEnabledBetweenPreflightProbeCallsPreventsOCRTextFromBeingSent() async {
+        let http = FixtureLMStudioHTTP(
+            responses: [modelsFixture, chatFixture(content: #"{"items":[]}"#), modelsFixture]
+        )
+        let cli = InterleavingLinkCLIProbe(enableDuringLocalModelsCall: 1)
+
+        let response = await LMStudioBridgeAdapter(http: http, cli: cli).generate(summaryRequest)
+
+        #expect(response.error?.code == .generationFailed)
+        #expect(response.payloadJSON == nil)
+        #expect(await http.requests.map(\.endpoint) == [.lmStudioModels])
+        #expect(await http.requests.allSatisfy { $0.body == nil })
+        #expect(await cli.calls == [.version, .localModels, .linkStatus])
+    }
+
+    @Test
+    func linkEnabledBetweenPostflightProbeCallsDiscardsGeneratedOutput() async {
+        let http = FixtureLMStudioHTTP(
+            responses: [modelsFixture, chatFixture(content: #"{"items":[]}"#), modelsFixture]
+        )
+        let cli = InterleavingLinkCLIProbe(enableDuringLocalModelsCall: 2)
+
+        let response = await LMStudioBridgeAdapter(http: http, cli: cli).generate(summaryRequest)
+
+        #expect(response.error?.code == .modelIdentityChanged)
+        #expect(response.payloadJSON == nil)
+        #expect(response.identity == nil)
+        #expect(await http.requests.map(\.endpoint) == [
+            .lmStudioModels, .lmStudioChat, .lmStudioModels
+        ])
+        #expect(await cli.calls == [
+            .version, .localModels, .linkStatus,
+            .version, .localModels, .linkStatus
+        ])
+    }
+
+    @Test
+    func localAndRemoteDuplicateCLIRowsCannotBecomeVerified() async throws {
+        let remoteRow = downloadedModelsJSON
+            .dropFirst()
+            .dropLast()
+            .replacingOccurrences(
+                of: #""deviceIdentifier":null"#,
+                with: #""deviceIdentifier":"remote-device""#
+            )
+        let localRow = String(downloadedModelsJSON.dropFirst().dropLast())
+        let fixture = try LMStudioExecutableFixture(
+            linkJSON: disabledLinkJSON,
+            modelsJSON: "[\(localRow),\(remoteRow)]",
+            versionOutput: "CLI commit: fixture-commit"
+        )
+        defer { fixture.remove() }
+        let adapter = LMStudioBridgeAdapter(
+            http: FixtureLMStudioHTTP(responses: [modelsFixture]),
+            cli: LMStudioCLIProbe(homeDirectory: fixture.homeDirectory)
+        )
+
+        let candidate = try #require(try await adapter.discover().first)
+
+        #expect(candidate.locality == .unverified)
+        #expect(candidate.identity.fingerprint == nil)
+    }
+
+    @Test
+    func anyReportedLinkPeerBlocksVerificationEvenWhenDisconnected() async throws {
+        let disconnectedPeer = #"{"deviceIdentifier":"peer","deviceName":"Remote Mac","status":"disconnected","loadedModels":[]}"#
+        let linkJSON = disabledLinkJSON.replacingOccurrences(
+            of: #""peers":[]"#,
+            with: #""peers":[\#(disconnectedPeer)]"#
+        )
+        let fixture = try LMStudioExecutableFixture(
+            linkJSON: linkJSON,
+            modelsJSON: downloadedModelsJSON,
+            versionOutput: "CLI commit: fixture-commit"
+        )
+        defer { fixture.remove() }
+        let adapter = LMStudioBridgeAdapter(
+            http: FixtureLMStudioHTTP(responses: [modelsFixture]),
+            cli: LMStudioCLIProbe(homeDirectory: fixture.homeDirectory)
+        )
+
+        let candidate = try #require(try await adapter.discover().first)
+
+        #expect(candidate.locality == .blocked)
+        #expect(candidate.identity.fingerprint == nil)
+    }
+
+    @Test
+    func duplicateRESTCandidateAndVariantContradictionCannotBecomeVerified() async throws {
+        let fixtures = [
+            modelsFixtureData(duplicateCandidate: true),
+            modelsFixtureData(variants: ["different@variant"])
+        ]
+
+        for fixture in fixtures {
+            let candidates = try await LMStudioBridgeAdapter(
+                http: FixtureLMStudioHTTP(responses: [fixture]),
+                cli: FixtureLMStudioCLIProbe()
+            ).discover()
+
+            #expect(!candidates.isEmpty)
+            #expect(candidates.allSatisfy { $0.locality == .unverified })
+            #expect(candidates.allSatisfy { $0.identity.fingerprint == nil })
+        }
+    }
+
+    @Test
+    func missingDuplicateOrCrossModelLoadedInstanceCannotBecomeVerified() async throws {
+        let fixtures = [
+            modelsFixtureData(loadedInstanceIDs: []),
+            modelsFixtureData(loadedInstanceIDs: [fixtureInstanceID, "second-instance"]),
+            modelsFixtureData(
+                loadedInstanceIDs: [fixtureInstanceID],
+                otherModelLoadedInstanceIDs: [fixtureInstanceID]
+            )
+        ]
+
+        for fixture in fixtures {
+            let candidate = try #require(try await LMStudioBridgeAdapter(
+                http: FixtureLMStudioHTTP(responses: [fixture]),
+                cli: FixtureLMStudioCLIProbe()
+            ).discover().first)
+
+            #expect(candidate.locality == .unverified)
+            #expect(candidate.identity.fingerprint == nil)
+        }
     }
 
     @Test
@@ -144,8 +273,8 @@ struct LMStudioBridgeAdapterTests {
             .lmStudioModels, .lmStudioChat, .lmStudioModels
         ])
         #expect(await cli.calls == [
-            .linkStatus, .localModels, .version,
-            .linkStatus, .localModels, .version
+            .version, .localModels, .linkStatus,
+            .version, .localModels, .linkStatus
         ])
 
         let body = try jsonObject(try #require(await http.requests[1].body))
@@ -314,6 +443,52 @@ struct LMStudioBridgeAdapterTests {
     }
 
     @Test
+    func responseInstanceMustMatchUniquePreAndPostAttestedInstance() async {
+        let fixtures: [(pre: Data, chat: Data, post: Data, expected: ModelBridgeWireErrorCode)] = [
+            (
+                modelsFixtureData(loadedInstanceIDs: []),
+                chatFixture(content: #"{"items":[]}"#),
+                modelsFixture,
+                .generationFailed
+            ),
+            (
+                modelsFixtureData(loadedInstanceIDs: [fixtureInstanceID, "second-instance"]),
+                chatFixture(content: #"{"items":[]}"#),
+                modelsFixture,
+                .generationFailed
+            ),
+            (
+                modelsFixtureData(otherModelLoadedInstanceIDs: ["other-model-instance"]),
+                chatFixture(content: #"{"items":[]}"#, modelInstanceID: "other-model-instance"),
+                modelsFixtureData(otherModelLoadedInstanceIDs: ["other-model-instance"]),
+                .modelIdentityChanged
+            ),
+            (
+                modelsFixture,
+                chatFixture(content: #"{"items":[]}"#),
+                modelsFixtureData(loadedInstanceIDs: ["changed-instance"]),
+                .modelIdentityChanged
+            )
+        ]
+
+        for fixture in fixtures {
+            let http = FixtureLMStudioHTTP(responses: [fixture.pre, fixture.chat, fixture.post])
+            let response = await LMStudioBridgeAdapter(
+                http: http,
+                cli: FixtureLMStudioCLIProbe(snapshots: [.init(), .init()])
+            ).generate(summaryRequest)
+
+            #expect(response.error?.code == fixture.expected)
+            #expect(response.payloadJSON == nil)
+            #expect(response.identity == nil)
+            if fixture.expected == .generationFailed {
+                #expect(await http.requests.map(\.endpoint) == [.lmStudioModels])
+                #expect(await http.requests.allSatisfy { $0.body == nil })
+            }
+        }
+    }
+
+    @Test
     func unverifiedSelectionNeverReceivesOCRText() async {
         let http = FixtureLMStudioHTTP(responses: [modelsFixture])
         let response = await LMStudioBridgeAdapter(
@@ -425,12 +600,6 @@ private actor FixtureLMStudioCLIProbe: LMStudioCLIProbing {
         self.error = error
     }
 
-    func linkStatus() async throws -> LMStudioLinkStatus {
-        calls.append(.linkStatus)
-        if let error { throw error }
-        return snapshots[min(snapshotIndex, snapshots.count - 1)].link
-    }
-
     func localModels() async throws -> [LMStudioLocalModel] {
         calls.append(.localModels)
         if let error { throw error }
@@ -440,14 +609,53 @@ private actor FixtureLMStudioCLIProbe: LMStudioCLIProbing {
     func version() async throws -> String {
         calls.append(.version)
         if let error { throw error }
-        let value = snapshots[min(snapshotIndex, snapshots.count - 1)].version
+        return snapshots[min(snapshotIndex, snapshots.count - 1)].version
+    }
+
+    func linkStatus() async throws -> LMStudioLinkStatus {
+        calls.append(.linkStatus)
+        if let error { throw error }
+        let value = snapshots[min(snapshotIndex, snapshots.count - 1)].link
         snapshotIndex += 1
         return value
     }
 }
 
+private actor InterleavingLinkCLIProbe: LMStudioCLIProbing {
+    typealias Call = FixtureLMStudioCLIProbe.Call
+
+    private let enableDuringLocalModelsCall: Int
+    private var localModelsCallCount = 0
+    private var linkEnabled = false
+    private(set) var calls: [Call] = []
+
+    init(enableDuringLocalModelsCall: Int) {
+        self.enableDuringLocalModelsCall = enableDuringLocalModelsCall
+    }
+
+    func version() async throws -> String {
+        calls.append(.version)
+        return "fixture-commit"
+    }
+
+    func localModels() async throws -> [LMStudioLocalModel] {
+        calls.append(.localModels)
+        localModelsCallCount += 1
+        if localModelsCallCount == enableDuringLocalModelsCall {
+            linkEnabled = true
+        }
+        return [fixtureLocalModel()]
+    }
+
+    func linkStatus() async throws -> LMStudioLinkStatus {
+        calls.append(.linkStatus)
+        return LMStudioLinkStatus(enabled: linkEnabled, connectedPeerCount: 0)
+    }
+}
+
 private let fixtureModelKey = "lmstudio-community/gemma-3-4b-it-GGUF"
 private let fixtureSelectedVariant = "lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m"
+private let fixtureInstanceID = "gemma-instance"
 
 private struct LocalModelChanges {
     var selectedVariant: String? = fixtureSelectedVariant
@@ -468,9 +676,60 @@ private func fixtureLocalModel(changes: LocalModelChanges = .init()) -> LMStudio
     )
 }
 
-private let modelsFixture = Data(
-    #"{"models":[{"type":"llm","publisher":"lmstudio-community","key":"lmstudio-community/gemma-3-4b-it-GGUF","display_name":"Gemma 3 4B IT","architecture":"gemma3","quantization":{"name":"Q4_K_M","bits_per_weight":4},"size_bytes":4294967296,"params_string":"4B","loaded_instances":[],"max_context_length":131072,"format":"gguf","capabilities":{"vision":false,"trained_for_tool_use":false},"description":null,"variants":["lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m"],"selected_variant":"lmstudio-community/gemma-3-4b-it-GGUF@q4_k_m"}]}"#.utf8
-)
+private let modelsFixture = modelsFixtureData()
+
+private func modelsFixtureData(
+    loadedInstanceIDs: [String] = [fixtureInstanceID],
+    variants: [String] = [fixtureSelectedVariant],
+    duplicateCandidate: Bool = false,
+    otherModelLoadedInstanceIDs: [String] = []
+) -> Data {
+    func instance(_ id: String) -> [String: Any] {
+        ["id": id, "config": ["context_length": 4_096]]
+    }
+    let selected: [String: Any] = [
+        "type": "llm",
+        "publisher": "lmstudio-community",
+        "key": fixtureModelKey,
+        "display_name": "Gemma 3 4B IT",
+        "architecture": "gemma3",
+        "quantization": ["name": "Q4_K_M", "bits_per_weight": 4],
+        "size_bytes": 4_294_967_296,
+        "params_string": "4B",
+        "loaded_instances": loadedInstanceIDs.map(instance),
+        "max_context_length": 131_072,
+        "format": "gguf",
+        "capabilities": ["vision": false, "trained_for_tool_use": false],
+        "description": NSNull(),
+        "variants": variants,
+        "selected_variant": fixtureSelectedVariant
+    ]
+    var models = [selected]
+    if duplicateCandidate {
+        models.append(selected)
+    }
+    if !otherModelLoadedInstanceIDs.isEmpty {
+        models.append([
+            "type": "llm",
+            "publisher": "other",
+            "key": "other/model",
+            "display_name": "Other model",
+            "architecture": "other",
+            "quantization": ["name": "Q4_K_M", "bits_per_weight": 4],
+            "size_bytes": 1_024,
+            "params_string": "1B",
+            "loaded_instances": otherModelLoadedInstanceIDs.map(instance),
+            "max_context_length": 4_096,
+            "format": "gguf",
+            "capabilities": ["vision": false, "trained_for_tool_use": false],
+            "description": NSNull()
+        ])
+    }
+    return try! JSONSerialization.data(
+        withJSONObject: ["models": models],
+        options: [.sortedKeys]
+    )
+}
 
 private let summaryRequest = ModelBridgeRequest.generate(
     id: 66,
@@ -480,16 +739,23 @@ private let summaryRequest = ModelBridgeRequest.generate(
     prompt: "summarize"
 )
 
-private func chatFixture(content: String) -> Data {
-    chatFixture(output: [["type": "message", "content": content]])
+private func chatFixture(
+    content: String,
+    modelInstanceID: String = fixtureInstanceID
+) -> Data {
+    chatFixture(
+        output: [["type": "message", "content": content]],
+        modelInstanceID: modelInstanceID
+    )
 }
 
 private func chatFixture(
     output: [[String: Any]],
-    responseID: String? = nil
+    responseID: String? = nil,
+    modelInstanceID: String = fixtureInstanceID
 ) -> Data {
     var object: [String: Any] = [
-        "model_instance_id": fixtureModelKey,
+        "model_instance_id": modelInstanceID,
         "output": output,
         "stats": [
             "input_tokens": 10,
