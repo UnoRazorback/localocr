@@ -6,6 +6,18 @@ import LocalOCRModelCore
 
 @MainActor
 enum LocalOCRStudioUITestSupport {
+    static func helpTopicIfRequested(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> HelpTopicID? {
+        guard let testSession = environment["LOCALOCR_STUDIO_UI_TEST_SESSION"],
+              !testSession.isEmpty,
+              let rawTopic = environment["LOCALOCR_STUDIO_HELP_TOPIC"]
+        else {
+            return nil
+        }
+        return HelpTopicID(rawValue: rawTopic)
+    }
+
     static func makeAgentConnectionGuideModelIfRequested(
         bundleURL: URL,
         environment: [String: String] = ProcessInfo.processInfo.environment

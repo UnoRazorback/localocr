@@ -19,9 +19,17 @@ struct LocalOCRStudioApp: App {
             CommandGroup(replacing: .appSettings) {
                 EmptyView()
             }
-            CommandGroup(after: .help) {
-                Button("Connect to Your Agent") {
+            CommandGroup(replacing: .help) {
+                Button(HelpMenuContract.helpTitle) {
+                    appDelegate.showHelpCenter()
+                }
+                .keyboardShortcut("?", modifiers: .command)
+                Button(HelpMenuContract.agentTitle) {
                     appDelegate.showAgentConnectionGuide()
+                }
+                Divider()
+                Button(HelpMenuContract.feedbackTitle) {
+                    NSWorkspace.shared.open(HelpMenuContract.feedbackURL)
                 }
             }
         }
@@ -31,11 +39,17 @@ struct LocalOCRStudioApp: App {
 @MainActor
 final class LocalOCRStudioAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var mainWindow: NSWindow?
-    private var helpWindow: NSWindow?
-    private var helpModel: AgentConnectionGuideModel?
+    private var helpCenterWindow: NSWindow?
+    private var agentGuideWindow: NSWindow?
+    private var agentGuideModel: AgentConnectionGuideModel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         showMainWindow()
+        #if DEBUG
+        if let topic = LocalOCRStudioUITestSupport.helpTopicIfRequested() {
+            showHelpCenter(initialTopic: topic)
+        }
+        #endif
     }
 
     func applicationShouldHandleReopen(
@@ -71,12 +85,41 @@ final class LocalOCRStudioAppDelegate: NSObject, NSApplicationDelegate, NSWindow
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func showHelpCenter(initialTopic: HelpTopicID = .gettingStarted) {
+        let window: NSWindow
+        if let helpCenterWindow {
+            window = helpCenterWindow
+        } else {
+            window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 960, height: 680),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = HelpMenuContract.helpTitle
+            window.contentViewController = NSHostingController(
+                rootView: HelpCenterView(
+                    model: HelpCenterModel(bundle: .main),
+                    initialTopic: initialTopic
+                )
+            )
+            window.minSize = NSSize(width: 760, height: 520)
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.center()
+            helpCenterWindow = window
+        }
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     func showAgentConnectionGuide() {
         let model: AgentConnectionGuideModel
         let window: NSWindow
-        if let helpWindow, let helpModel {
-            window = helpWindow
-            model = helpModel
+        if let agentGuideWindow, let agentGuideModel {
+            window = agentGuideWindow
+            model = agentGuideModel
         } else {
             #if DEBUG
             model = LocalOCRStudioUITestSupport.makeAgentConnectionGuideModelIfRequested(
@@ -98,8 +141,8 @@ final class LocalOCRStudioAppDelegate: NSObject, NSApplicationDelegate, NSWindow
             window.isReleasedWhenClosed = false
             window.delegate = self
             window.center()
-            helpWindow = window
-            helpModel = model
+            agentGuideWindow = window
+            agentGuideModel = model
         }
 
         model.resetSessionAcknowledgments()

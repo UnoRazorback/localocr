@@ -283,6 +283,34 @@ final class LocalOCRStudioUITests: XCTestCase {
         XCTAssertTrue(dropZone.exists)
     }
 
+    func testOfflineHelpMenuOpensSearchableReusableHelpCenter() {
+        let app = launch(state: "empty")
+        XCTAssertTrue(element("studio.drop-zone", in: app).waitForExistence(timeout: 5))
+        XCTAssertEqual(app.windows.count, 1)
+
+        let helpMenu = app.menuBars.menuBarItems["Help"]
+        helpMenu.click()
+        let helpItem = helpMenu.menus.menuItems["LocalOCR Studio Help"]
+        XCTAssertTrue(helpItem.exists)
+        XCTAssertTrue(helpMenu.menus.menuItems["Connect to Your Agent"].exists)
+        XCTAssertTrue(helpMenu.menus.menuItems["Report Beta Feedback"].exists)
+        helpItem.click()
+
+        XCTAssertTrue(element("studio.help-center", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["studio.help.search"].exists)
+        let privacy = app.buttons["studio.help.topic.privacy"]
+        XCTAssertTrue(privacy.exists)
+        privacy.click()
+        XCTAssertTrue(
+            app.staticTexts["Privacy and Data Boundaries"].waitForExistence(timeout: 5)
+        )
+        XCTAssertEqual(app.windows.count, 2)
+
+        helpMenu.click()
+        helpMenu.menus.menuItems["LocalOCR Studio Help"].click()
+        XCTAssertEqual(app.windows.count, 2)
+    }
+
     func testResultStateExposesReadableTextAndDocumentActions() {
         let app = launch(state: "result")
 
