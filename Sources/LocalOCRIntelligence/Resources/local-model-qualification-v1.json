@@ -1,0 +1,8 @@
+{
+  "fixture_version": 1,
+  "pages": [
+    {"number": 1, "text": "Invoice Q-104. Date: 2026-08-29. Total: $144.17."},
+    {"number": 2, "text": "Project: LocalOCR Qualification. Status: synthetic test only."}
+  ],
+  "fields": ["date", "total", "reference_number"]
+}

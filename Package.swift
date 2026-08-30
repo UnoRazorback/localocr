@@ -51,6 +51,7 @@ let package = Package(
         .target(
             name: "LocalOCRIntelligence",
             dependencies: ["LocalOCRModelCore", "LocalOCRModelBridgeProtocol", "LocalOCRService"],
+            resources: [.copy("Resources")],
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
         .target(
