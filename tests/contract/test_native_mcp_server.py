@@ -271,8 +271,13 @@ def test_opt_in_native_foundation_models_subprocess_uses_local_fixture(tmp_path)
                 )
                 assert result.isError is not True, _result_json(result)
                 payload = _result_json(result)
-                assert set(payload) == {"citations", "text"}
+                assert set(payload) == {"citations", "local_model", "text"}
                 assert payload["text"]
+                assert payload["local_model"] == {
+                    "model": "SystemLanguageModel.default",
+                    "processing": "on_device",
+                    "provider": "Apple Foundation Models",
+                }
 
     with _isolated_test_home(root / ".build") as home:
         _install_test_receipt(home)
