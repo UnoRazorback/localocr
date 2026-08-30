@@ -172,6 +172,26 @@ import Testing
         #expect(await ExternalDataConsentStore(receiptURL: fixture.receiptURL).status() == .required)
     }
 
+    @Test func hardLinkedReceiptRequiresConsentAndMutationsRefuseIt() async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        try fixture.writeReceipt(acceptedAt: firstDate)
+        let hardLink = fixture.baseURL.appending(path: "linked-consent.json")
+        try FileManager.default.linkItem(at: fixture.receiptURL, to: hardLink)
+        let original = try Data(contentsOf: fixture.receiptURL)
+        let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL)
+
+        #expect(await store.status() == .required)
+        await #expect(throws: (any Error).self) {
+            try await store.acceptBothStatements(at: secondDate)
+        }
+        await #expect(throws: (any Error).self) {
+            try await store.revoke()
+        }
+        #expect(try Data(contentsOf: fixture.receiptURL) == original)
+        #expect(try Data(contentsOf: hardLink) == original)
+    }
+
     @Test(arguments: [mode_t(0o4600), mode_t(0o2600), mode_t(0o1600)])
     func receiptWithSpecialPermissionBitsRequiresConsent(mode: mode_t) async throws {
         let fixture = try ConsentFixture()
@@ -396,6 +416,30 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: fixture.receiptURL.path))
         #expect(try directoryContainsFile(with: replacementData, at: applicationDirectory))
         #expect(FileManager.default.fileExists(atPath: preservedOwnedTemporary.path))
+    }
+
+    @Test func acceptRejectsTemporaryHardLinkedAtTheFinalMutationInterval() async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        try fixture.createApplicationDirectory()
+        let hardLink = fixture.baseURL.appending(path: "linked-temporary.json")
+        let applicationDirectory = fixture.applicationDirectory
+        let hooks = ExternalDataConsentStoreHooks(
+            beforeAcceptFinalMutation: {
+                let candidate = try temporaryReceipt(in: applicationDirectory)
+                let temporaryURL = try #require(candidate)
+                try FileManager.default.linkItem(at: temporaryURL, to: hardLink)
+            }
+        )
+        let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL, hooks: hooks)
+
+        await #expect(throws: (any Error).self) {
+            try await store.acceptBothStatements(at: firstDate)
+        }
+
+        #expect(await store.status() == .required)
+        #expect(!FileManager.default.fileExists(atPath: fixture.receiptURL.path))
+        #expect(FileManager.default.fileExists(atPath: hardLink.path))
     }
 
     @Test func acceptQuarantinesDestinationSubstitutedAtTheFinalMutationInterval() async throws {

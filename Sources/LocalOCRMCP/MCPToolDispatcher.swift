@@ -251,6 +251,25 @@ public struct MCPToolDispatcher: Sendable {
             case .available:
                 ("local_intelligence_generation_failed", "Local Intelligence could not process this document. Ordinary OCR tools remain available.")
             }
+        case let .selection(failure):
+            switch failure {
+            case .corruptReceipt:
+                ("local_intelligence_selection_required", "No valid Local Intelligence model selection is available. Open Manage Local Models in LocalOCR Studio or run `localocr intelligence status`, then retry. Ordinary OCR tools remain available.")
+            case .providerUnavailable:
+                ("local_intelligence_provider_unavailable", "The selected Local Intelligence provider is unavailable. Open Manage Local Models in LocalOCR Studio or run `localocr intelligence status`, then retry. Ordinary OCR tools remain available.")
+            case .modelUnavailable:
+                ("local_intelligence_model_unavailable", "The selected Local Intelligence model is unavailable. Open Manage Local Models in LocalOCR Studio or run `localocr intelligence models`, then retry. Ordinary OCR tools remain available.")
+            case .localityUnverified:
+                ("local_intelligence_locality_unverified", "LocalOCR cannot verify that the selected model runs only on this Mac. Open Manage Local Models in LocalOCR Studio or run `localocr intelligence models` to review it. Ordinary OCR tools remain available.")
+            case .localityBlocked:
+                ("local_intelligence_locality_blocked", "The selected model is blocked because it is not verified-local. Choose another model in LocalOCR Studio or with `localocr intelligence select`. Ordinary OCR tools remain available.")
+            case .qualificationRequired:
+                ("local_intelligence_qualification_required", "The selected model must pass all Local Intelligence compatibility tests again. Open Manage Local Models in LocalOCR Studio or run `localocr intelligence test`, then retry. Ordinary OCR tools remain available.")
+            case .acknowledgmentRequired:
+                ("local_intelligence_acknowledgment_required", "The selected external model requires a current privacy acknowledgment. Confirm it in LocalOCR Studio or with `localocr intelligence select`, then retry. Ordinary OCR tools remain available.")
+            case .identityChanged:
+                ("local_intelligence_identity_changed", "The selected model identity has changed or cannot be verified. Recheck and explicitly select the model again in LocalOCR Studio or with `localocr intelligence`. Ordinary OCR tools remain available.")
+            }
         case .emptyDocument, .invalidFields:
             ("local_intelligence_invalid_input", "The document does not contain usable OCR text or the requested fields are invalid. Ordinary OCR tools remain available.")
         case .contextOverflow:

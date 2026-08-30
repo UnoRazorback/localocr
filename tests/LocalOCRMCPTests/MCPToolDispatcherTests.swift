@@ -1,6 +1,7 @@
 import Foundation
 import LocalOCRCore
 import LocalOCRIntelligence
+import LocalOCRModelCore
 import LocalOCRService
 import MCPStdio
 @testable import LocalOCRMCP
@@ -457,6 +458,14 @@ import Testing
             (.unavailable(.appleIntelligenceNotEnabled), "apple_intelligence_not_enabled", "Enable Apple Intelligence in System Settings, then retry. Ordinary OCR tools remain available."),
             (.unavailable(.modelNotReady), "local_intelligence_model_not_ready", "Apple Intelligence is not ready. Finish downloading or preparing the model, then retry. Ordinary OCR tools remain available."),
             (.unavailable(.unsupportedLanguage), "local_intelligence_language_not_supported", "Apple Intelligence does not support this document language. Ordinary OCR tools remain available."),
+            (.selection(.corruptReceipt), "local_intelligence_selection_required", "No valid Local Intelligence model selection is available. Open Manage Local Models in LocalOCR Studio or run `localocr intelligence status`, then retry. Ordinary OCR tools remain available."),
+            (.selection(.providerUnavailable(.ollama)), "local_intelligence_provider_unavailable", "The selected Local Intelligence provider is unavailable. Open Manage Local Models in LocalOCR Studio or run `localocr intelligence status`, then retry. Ordinary OCR tools remain available."),
+            (.selection(.modelUnavailable(mcpSelectionIdentity)), "local_intelligence_model_unavailable", "The selected Local Intelligence model is unavailable. Open Manage Local Models in LocalOCR Studio or run `localocr intelligence models`, then retry. Ordinary OCR tools remain available."),
+            (.selection(.localityUnverified(mcpSelectionIdentity)), "local_intelligence_locality_unverified", "LocalOCR cannot verify that the selected model runs only on this Mac. Open Manage Local Models in LocalOCR Studio or run `localocr intelligence models` to review it. Ordinary OCR tools remain available."),
+            (.selection(.localityBlocked(mcpSelectionIdentity)), "local_intelligence_locality_blocked", "The selected model is blocked because it is not verified-local. Choose another model in LocalOCR Studio or with `localocr intelligence select`. Ordinary OCR tools remain available."),
+            (.selection(.qualificationRequired(mcpSelectionIdentity)), "local_intelligence_qualification_required", "The selected model must pass all Local Intelligence compatibility tests again. Open Manage Local Models in LocalOCR Studio or run `localocr intelligence test`, then retry. Ordinary OCR tools remain available."),
+            (.selection(.acknowledgmentRequired(mcpSelectionIdentity)), "local_intelligence_acknowledgment_required", "The selected external model requires a current privacy acknowledgment. Confirm it in LocalOCR Studio or with `localocr intelligence select`, then retry. Ordinary OCR tools remain available."),
+            (.selection(.identityChanged(expected: mcpSelectionIdentity, actual: nil)), "local_intelligence_identity_changed", "The selected model identity has changed or cannot be verified. Recheck and explicitly select the model again in LocalOCR Studio or with `localocr intelligence`. Ordinary OCR tools remain available."),
             (.emptyDocument, "local_intelligence_invalid_input", "The document does not contain usable OCR text or the requested fields are invalid. Ordinary OCR tools remain available."),
             (.invalidFields, "local_intelligence_invalid_input", "The document does not contain usable OCR text or the requested fields are invalid. Ordinary OCR tools remain available."),
             (.contextOverflow, "local_intelligence_generation_failed", "Local Intelligence could not process this document. Ordinary OCR tools remain available."),
@@ -511,6 +520,13 @@ import Testing
         #expect(await consent.statusReadCount() == 0)
     }
 }
+
+private let mcpSelectionIdentity = LocalModelIdentity(
+    provider: .ollama,
+    model: "fixture:8b",
+    fingerprint: "sha256:fixture",
+    harnessVersion: "0.11.8"
+)
 
 private let currentConsentReceipt = ExternalDataConsentReceipt(
     schemaVersion: ExternalDataConsentReceipt.currentSchemaVersion,
