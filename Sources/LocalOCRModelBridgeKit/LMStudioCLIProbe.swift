@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import MachO
 
 public protocol LMStudioCLIProbing: Sendable {
     func linkStatus() async throws -> LMStudioLinkStatus
@@ -403,12 +404,67 @@ private final class PinnedExecutable {
     }
 }
 
-private struct ExecutableIdentity: Equatable {
+struct ExecutableIdentity: Equatable, Sendable {
     let device: UInt64
     let inode: UInt64
     let owner: uid_t
     let mode: mode_t
     let size: off_t
+}
+
+protocol LMStudioSuspendedExecutableInspecting: Sendable {
+    func executableIdentity(ofSuspendedProcess pid: pid_t) async throws -> ExecutableIdentity
+}
+
+struct DarwinLMStudioSuspendedExecutableInspector: LMStudioSuspendedExecutableInspecting {
+    func executableIdentity(ofSuspendedProcess pid: pid_t) async throws -> ExecutableIdentity {
+        let firstPath = try executablePath(pid: pid)
+        let descriptor = Darwin.open(firstPath, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw LMStudioCLIProbeError.commandFailed }
+        defer { Darwin.close(descriptor) }
+        let identity = try identity(descriptor: descriptor, path: firstPath)
+        guard try executablePath(pid: pid) == firstPath else {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        return identity
+    }
+
+    private func executablePath(pid: pid_t) throws -> String {
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        let count = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard count > 0,
+              let terminator = buffer.firstIndex(of: 0),
+              terminator > 0 else {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        let pathBytes = buffer[..<terminator].map { UInt8(bitPattern: $0) }
+        guard let path = String(bytes: pathBytes, encoding: .utf8),
+              path.hasPrefix("/"), path.utf8.count < buffer.count else {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        return path
+    }
+
+    private func identity(descriptor: Int32, path: String) throws -> ExecutableIdentity {
+        var descriptorStat = stat()
+        var pathStat = stat()
+        guard fstat(descriptor, &descriptorStat) == 0,
+              lstat(path, &pathStat) == 0,
+              descriptorStat.st_dev == pathStat.st_dev,
+              descriptorStat.st_ino == pathStat.st_ino,
+              (descriptorStat.st_mode & S_IFMT) == S_IFREG,
+              descriptorStat.st_uid == getuid() || descriptorStat.st_uid == 0,
+              access(path, X_OK) == 0 else {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        return ExecutableIdentity(
+            device: UInt64(descriptorStat.st_dev),
+            inode: UInt64(descriptorStat.st_ino),
+            owner: descriptorStat.st_uid,
+            mode: descriptorStat.st_mode,
+            size: descriptorStat.st_size
+        )
+    }
 }
 
 struct LMStudioCommandRunner: Sendable {
@@ -417,6 +473,24 @@ struct LMStudioCommandRunner: Sendable {
     let cleanupBudget: Duration
     let pipeDrainBudget: Duration
     let maximumOutputBytes: Int
+    private let suspendedInspector: any LMStudioSuspendedExecutableInspecting
+
+    init(
+        commandTimeout: Duration,
+        terminationGracePeriod: Duration,
+        cleanupBudget: Duration,
+        pipeDrainBudget: Duration,
+        maximumOutputBytes: Int,
+        suspendedInspector: any LMStudioSuspendedExecutableInspecting =
+            DarwinLMStudioSuspendedExecutableInspector()
+    ) {
+        self.commandTimeout = commandTimeout
+        self.terminationGracePeriod = terminationGracePeriod
+        self.cleanupBudget = cleanupBudget
+        self.pipeDrainBudget = pipeDrainBudget
+        self.maximumOutputBytes = maximumOutputBytes
+        self.suspendedInspector = suspendedInspector
+    }
 
     func run(
         executableDescriptor: Int32,
@@ -439,6 +513,46 @@ struct LMStudioCommandRunner: Sendable {
         }
 
         let system = DarwinLMStudioProcessSystem()
+        if command.startsSuspended {
+            let loadedIdentity: ExecutableIdentity
+            do {
+                loadedIdentity = try await suspendedInspector.executableIdentity(
+                    ofSuspendedProcess: command.pid
+                )
+            } catch {
+                _ = try await LMStudioProcessGroupCleanup.terminateAndReap(
+                    pid: command.pid,
+                    currentStatus: nil,
+                    gracePeriod: .zero,
+                    cleanupBudget: cleanupBudget,
+                    system: system
+                )
+                throw LMStudioCLIProbeError.commandFailed
+            }
+            guard loadedIdentity == command.expectedExecutableIdentity else {
+                _ = try await LMStudioProcessGroupCleanup.terminateAndReap(
+                    pid: command.pid,
+                    currentStatus: nil,
+                    gracePeriod: .zero,
+                    cleanupBudget: cleanupBudget,
+                    system: system
+                )
+                throw LMStudioCLIProbeError.unsafeExecutable
+            }
+            do {
+                try command.resumeSuspendedProcess()
+            } catch {
+                _ = try await LMStudioProcessGroupCleanup.terminateAndReap(
+                    pid: command.pid,
+                    currentStatus: nil,
+                    gracePeriod: .zero,
+                    cleanupBudget: cleanupBudget,
+                    system: system
+                )
+                throw LMStudioCLIProbeError.commandFailed
+            }
+        }
+        let descendants = DarwinLMStudioDescendantTracker(rootPID: command.pid)
         let clock = ContinuousClock()
         let commandDeadline = clock.now.advanced(by: commandTimeout)
         var drainDeadline: ContinuousClock.Instant?
@@ -447,6 +561,19 @@ struct LMStudioCommandRunner: Sendable {
         var stderr = PipeCapture(limit: maximumOutputBytes)
 
         while true {
+            do {
+                try descendants.refresh()
+            } catch {
+                try await abort(
+                    command: command,
+                    currentStatus: status,
+                    stdout: &stdout,
+                    stderr: &stderr,
+                    error: .commandFailed,
+                    system: system,
+                    descendants: descendants
+                )
+            }
             stdout.drain(descriptor: command.stdoutFD)
             stderr.drain(descriptor: command.stderrFD)
 
@@ -457,7 +584,8 @@ struct LMStudioCommandRunner: Sendable {
                     stdout: &stdout,
                     stderr: &stderr,
                     error: .outputTooLarge,
-                    system: system
+                    system: system,
+                    descendants: descendants
                 )
             }
             if stdout.readFailed || stderr.readFailed {
@@ -467,7 +595,8 @@ struct LMStudioCommandRunner: Sendable {
                     stdout: &stdout,
                     stderr: &stderr,
                     error: .commandFailed,
-                    system: system
+                    system: system,
+                    descendants: descendants
                 )
             }
             if Task.isCancelled {
@@ -477,7 +606,8 @@ struct LMStudioCommandRunner: Sendable {
                     stdout: &stdout,
                     stderr: &stderr,
                     error: .cancelled,
-                    system: system
+                    system: system,
+                    descendants: descendants
                 )
             }
 
@@ -488,14 +618,16 @@ struct LMStudioCommandRunner: Sendable {
                 }
             }
             if let status, stdout.reachedEOF, stderr.reachedEOF {
-                if try system.processGroupExists(command.pid) {
+                if try system.processGroupExists(command.pid)
+                    || !(try descendants.allGone()) {
                     try await abort(
                         command: command,
                         currentStatus: status,
                         stdout: &stdout,
                         stderr: &stderr,
                         error: .commandFailed,
-                        system: system
+                        system: system,
+                        descendants: descendants
                     )
                 }
                 guard status == 0 else {
@@ -510,7 +642,8 @@ struct LMStudioCommandRunner: Sendable {
                     stdout: &stdout,
                     stderr: &stderr,
                     error: .commandFailed,
-                    system: system
+                    system: system,
+                    descendants: descendants
                 )
             }
             if clock.now >= commandDeadline {
@@ -520,7 +653,8 @@ struct LMStudioCommandRunner: Sendable {
                     stdout: &stdout,
                     stderr: &stderr,
                     error: .timedOut,
-                    system: system
+                    system: system,
+                    descendants: descendants
                 )
             }
             try? await Task.sleep(for: .milliseconds(5))
@@ -533,14 +667,16 @@ struct LMStudioCommandRunner: Sendable {
         stdout: inout PipeCapture,
         stderr: inout PipeCapture,
         error: LMStudioCLIProbeError,
-        system: any LMStudioProcessSystemCalling
+        system: any LMStudioProcessSystemCalling,
+        descendants: any LMStudioDescendantTracking
     ) async throws -> Never {
         _ = try await LMStudioProcessGroupCleanup.terminateAndReap(
             pid: command.pid,
             currentStatus: currentStatus,
             gracePeriod: terminationGracePeriod,
             cleanupBudget: cleanupBudget,
-            system: system
+            system: system,
+            descendants: descendants
         )
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: pipeDrainBudget)
@@ -563,36 +699,53 @@ protocol LMStudioProcessSystemCalling: Sendable {
     func processGroupExists(_ pid: pid_t) throws -> Bool
 }
 
+protocol LMStudioDescendantTracking: AnyObject, Sendable {
+    func refresh() throws
+    func sendSignalToObservedDescendants(_ signal: Int32) throws
+    func allGone() throws -> Bool
+}
+
 struct LMStudioProcessGroupCleanup {
     static func terminateAndReap(
         pid: pid_t,
         currentStatus: Int32?,
         gracePeriod: Duration,
         cleanupBudget: Duration,
-        system: any LMStudioProcessSystemCalling
+        system: any LMStudioProcessSystemCalling,
+        descendants: (any LMStudioDescendantTracking)? = nil
     ) async throws -> Int32 {
         let clock = ContinuousClock()
         let graceDeadline = clock.now.advanced(by: gracePeriod)
         let cleanupDeadline = graceDeadline.advanced(by: cleanupBudget)
         var status = currentStatus
 
+        try descendants?.refresh()
         try system.sendSignal(SIGTERM, toProcessGroup: pid)
+        try descendants?.sendSignalToObservedDescendants(SIGTERM)
         while clock.now < graceDeadline {
+            try descendants?.refresh()
             if status == nil { status = try system.pollStatus(of: pid) }
-            if let status, try !system.processGroupExists(pid) { return status }
+            let descendantsGone = try descendants?.allGone() ?? true
+            if let status, try !system.processGroupExists(pid), descendantsGone { return status }
             try? await Task.sleep(for: .milliseconds(5))
         }
 
+        try descendants?.refresh()
         try system.sendSignal(SIGKILL, toProcessGroup: pid)
+        try descendants?.sendSignalToObservedDescendants(SIGKILL)
         while clock.now < cleanupDeadline {
+            try descendants?.refresh()
             if status == nil { status = try system.pollStatus(of: pid) }
             let groupExists = try system.processGroupExists(pid)
-            if let status, !groupExists { return status }
+            let descendantsGone = try descendants?.allGone() ?? true
+            if let status, !groupExists, descendantsGone { return status }
             try? await Task.sleep(for: .milliseconds(5))
         }
 
+        try descendants?.refresh()
         if status == nil { status = try system.pollStatus(of: pid) }
-        guard let status, try !system.processGroupExists(pid) else {
+        let descendantsGone = try descendants?.allGone() ?? true
+        guard let status, try !system.processGroupExists(pid), descendantsGone else {
             throw LMStudioCLIProbeError.commandFailed
         }
         return status
@@ -622,10 +775,110 @@ private struct DarwinLMStudioProcessSystem: LMStudioProcessSystemCalling {
     }
 }
 
+private struct ObservedProcessIdentity: Equatable, Sendable {
+    let pid: pid_t
+    let owner: uid_t
+    let startSeconds: UInt64
+    let startMicroseconds: UInt64
+}
+
+private final class DarwinLMStudioDescendantTracker: LMStudioDescendantTracking,
+    @unchecked Sendable {
+    private static let maximumChildrenPerProcess = 256
+
+    private let rootPID: pid_t
+    private var observed: [pid_t: ObservedProcessIdentity] = [:]
+
+    init(rootPID: pid_t) {
+        self.rootPID = rootPID
+    }
+
+    func refresh() throws {
+        var queue = [rootPID]
+        for identity in observed.values where try currentIdentity(of: identity.pid) == identity {
+            queue.append(identity.pid)
+        }
+        var visited: Set<pid_t> = []
+        while let parent = queue.popLast() {
+            guard visited.insert(parent).inserted else { continue }
+            for child in try childProcessIDs(of: parent) {
+                guard child > 0, child != rootPID else {
+                    throw LMStudioCLIProbeError.commandFailed
+                }
+                guard let identity = try currentIdentity(of: child) else { continue }
+                guard identity.owner == getuid() else {
+                    throw LMStudioCLIProbeError.commandFailed
+                }
+                observed[child] = identity
+                queue.append(child)
+            }
+        }
+    }
+
+    func sendSignalToObservedDescendants(_ signal: Int32) throws {
+        for identity in observed.values {
+            guard try currentIdentity(of: identity.pid) == identity else { continue }
+            guard kill(identity.pid, signal) == 0 || errno == ESRCH else {
+                throw LMStudioCLIProbeError.commandFailed
+            }
+        }
+    }
+
+    func allGone() throws -> Bool {
+        for identity in observed.values where try currentIdentity(of: identity.pid) == identity {
+            return false
+        }
+        return true
+    }
+
+    private func childProcessIDs(of parent: pid_t) throws -> [pid_t] {
+        var children = [pid_t](repeating: 0, count: Self.maximumChildrenPerProcess)
+        errno = 0
+        let count = proc_listchildpids(
+            parent,
+            &children,
+            Int32(children.count * MemoryLayout<pid_t>.stride)
+        )
+        if count < 0 {
+            if errno == ESRCH { return [] }
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        guard count < children.count else {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+        return Array(children.prefix(Int(count))).filter { $0 > 0 }
+    }
+
+    private func currentIdentity(of pid: pid_t) throws -> ObservedProcessIdentity? {
+        var info = proc_bsdinfo()
+        errno = 0
+        let byteCount = proc_pidinfo(
+            pid,
+            PROC_PIDTBSDINFO,
+            0,
+            &info,
+            Int32(MemoryLayout<proc_bsdinfo>.size)
+        )
+        if byteCount == MemoryLayout<proc_bsdinfo>.size {
+            return ObservedProcessIdentity(
+                pid: pid,
+                owner: info.pbi_uid,
+                startSeconds: info.pbi_start_tvsec,
+                startMicroseconds: info.pbi_start_tvusec
+            )
+        }
+        if byteCount == 0, errno == ESRCH { return nil }
+        if byteCount == 0, kill(pid, 0) == -1, errno == ESRCH { return nil }
+        throw LMStudioCLIProbeError.commandFailed
+    }
+}
+
 private final class SpawnExecutionPlan {
     let spawnPath: String
     let argv: [String]
     let inheritedDescriptors: [Int32]
+    let startsSuspended: Bool
+    var pinnedIdentity: ExecutableIdentity { executableIdentity }
     private let executableReadDescriptor: Int32
     private let executableIdentity: ExecutableIdentity
     private let interpreterDescriptor: Int32?
@@ -642,8 +895,15 @@ private final class SpawnExecutionPlan {
         let readIdentity = try Self.descriptorIdentity(executableDescriptor)
         executableReadDescriptor = executableDescriptor
         executableIdentity = readIdentity
-        // macOS devfs cannot be executed directly. A fixed root-owned interpreter
-        // may read this inherited descriptor; every other executable form fails closed.
+        if Self.isArm64MachO(bytes: bytes, count: count) {
+            spawnPath = displayPath
+            argv = [displayPath] + arguments
+            inheritedDescriptors = [executableDescriptor]
+            startsSuspended = true
+            interpreterDescriptor = nil
+            interpreterIdentity = nil
+            return
+        }
         guard count >= 2, bytes[0] == 35, bytes[1] == 33 else {
             throw LMStudioCLIProbeError.commandFailed
         }
@@ -667,6 +927,7 @@ private final class SpawnExecutionPlan {
             spawnPath = interpreterPath
             argv = [interpreterPath, "/dev/fd/\(executableDescriptor)"] + arguments
             inheritedDescriptors = [executableDescriptor]
+            startsSuspended = false
             interpreterDescriptor = descriptor
             interpreterIdentity = identity
         } catch {
@@ -688,6 +949,17 @@ private final class SpawnExecutionPlan {
 
     func close() {
         if let interpreterDescriptor { Darwin.close(interpreterDescriptor) }
+    }
+
+    private static func isArm64MachO(bytes: [UInt8], count: Int) -> Bool {
+        guard count >= MemoryLayout<mach_header_64>.size else { return false }
+        var header = mach_header_64()
+        withUnsafeMutableBytes(of: &header) { destination in
+            bytes.withUnsafeBytes { source in
+                destination.copyBytes(from: source.prefix(destination.count))
+            }
+        }
+        return header.magic == MH_MAGIC_64 && header.cputype == CPU_TYPE_ARM64
     }
 
     private static func descriptorIdentity(_ descriptor: Int32) throws -> ExecutableIdentity {
@@ -734,6 +1006,8 @@ private final class SpawnedCommand: @unchecked Sendable {
     let pid: pid_t
     let stdoutFD: Int32
     let stderrFD: Int32
+    let expectedExecutableIdentity: ExecutableIdentity
+    let startsSuspended: Bool
     private let descriptorLock = NSLock()
     private var descriptorsClosed = false
 
@@ -807,7 +1081,11 @@ private final class SpawnedCommand: @unchecked Sendable {
         setupOK = setupOK && posix_spawnattr_setpgroup(&attributes, 0) == 0
         setupOK = setupOK && posix_spawnattr_setflags(
             &attributes,
-            Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)
+            Int16(
+                POSIX_SPAWN_SETPGROUP
+                    | POSIX_SPAWN_CLOEXEC_DEFAULT
+                    | (executionPlan.startsSuspended ? POSIX_SPAWN_START_SUSPENDED : 0)
+            )
         ) == 0
         guard setupOK else {
             Darwin.close(nullFD)
@@ -846,10 +1124,18 @@ private final class SpawnedCommand: @unchecked Sendable {
         pid = spawnedPID
         stdoutFD = stdoutPipe[0]
         stderrFD = stderrPipe[0]
+        expectedExecutableIdentity = executionPlan.pinnedIdentity
+        startsSuspended = executionPlan.startsSuspended
     }
 
     func verifyIsolatedProcessGroup() throws {
         guard getpgid(pid) == pid else {
+            throw LMStudioCLIProbeError.commandFailed
+        }
+    }
+
+    func resumeSuspendedProcess() throws {
+        guard startsSuspended, kill(pid, SIGCONT) == 0 else {
             throw LMStudioCLIProbeError.commandFailed
         }
     }
