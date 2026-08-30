@@ -9,15 +9,27 @@ public protocol ConsentCommandIO: Sendable {
     func stderr(_ text: String)
 }
 
+public extension ConsentCommandIO {
+    var hasPendingInput: Bool { true }
+}
+
 public struct StandardConsentCommandIO: ConsentCommandIO {
-    public init() {}
+    private let inputFileDescriptor: Int32
+
+    public init() {
+        inputFileDescriptor = STDIN_FILENO
+    }
+
+    init(inputFileDescriptor: Int32) {
+        self.inputFileDescriptor = inputFileDescriptor
+    }
 
     public var isTerminal: Bool {
-        isatty(STDIN_FILENO) != 0
+        isatty(inputFileDescriptor) != 0
     }
 
     public var hasPendingInput: Bool {
-        var descriptor = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
+        var descriptor = pollfd(fd: inputFileDescriptor, events: Int16(POLLIN), revents: 0)
         let result = poll(&descriptor, 1, 0)
         guard result >= 0 else {
             return true
@@ -30,7 +42,7 @@ public struct StandardConsentCommandIO: ConsentCommandIO {
         bytes.reserveCapacity(32)
         while bytes.count <= 4_096 {
             var byte: UInt8 = 0
-            let count = Darwin.read(STDIN_FILENO, &byte, 1)
+            let count = Darwin.read(inputFileDescriptor, &byte, 1)
             if count == 0 {
                 return bytes.isEmpty ? nil : String(decoding: bytes, as: UTF8.self)
             }

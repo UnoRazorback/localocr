@@ -154,8 +154,8 @@ public actor LocalIntelligenceSelectionStore: LocalIntelligenceSelectionStoring 
         _ receipt: LocalIntelligenceSelectionReceipt
     ) -> LocalIntelligenceSelectionState {
         switch receipt {
-        case .none:
-            return .none
+        case let .none(resetAt):
+            return .reset(at: resetAt)
         case .selected(.appleSystemDefault):
             return .selected(.appleSystemDefault)
         case let .selected(.external(identity, qualification, acknowledgment)):

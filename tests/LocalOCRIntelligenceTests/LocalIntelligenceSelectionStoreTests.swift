@@ -86,7 +86,7 @@ import Testing
             })
         )
 
-        #expect(await store.state() == .none)
+        #expect(await store.state() == .reset(at: selectedAt))
         #expect(try Data(contentsOf: receiptURL) == resetData)
     }
 
@@ -126,7 +126,7 @@ import Testing
             })
         )
 
-        #expect(await store.state() == .none)
+        #expect(await store.state() == .reset(at: selectedAt))
         #expect(try Data(contentsOf: receiptURL) == resetData)
     }
 
@@ -161,14 +161,35 @@ import Testing
 
         try await firstStore.reset(at: selectedAt)
 
-        #expect(await firstStore.state() == .none)
+        #expect(await firstStore.state() == .reset(at: selectedAt))
         let relaunchedStore = LocalIntelligenceSelectionStore(receiptURL: fixture.receiptURL)
-        #expect(await relaunchedStore.state() == .none)
+        #expect(await relaunchedStore.state() == .reset(at: selectedAt))
         let object = try #require(JSONSerialization.jsonObject(
             with: Data(contentsOf: fixture.receiptURL)
         ) as? [String: Any])
         #expect(Set(object.keys) == ["schema_version", "policy_version", "state", "reset_at"])
         #expect(object["state"] as? String == "none")
+    }
+
+    @Test func selectionResetDoesNotRevokeCurrentMCPConsent() async throws {
+        let selectionFixture = try SelectionFixture()
+        defer { selectionFixture.remove() }
+        let consentFixture = try SelectionFixture(receiptName: "mcp-consent.json")
+        defer { consentFixture.remove() }
+        let selectionStore = LocalIntelligenceSelectionStore(
+            receiptURL: selectionFixture.receiptURL
+        )
+        let consentStore = ExternalDataConsentStore(receiptURL: consentFixture.receiptURL)
+        try await consentStore.acceptBothStatements(at: selectedAt)
+
+        try await selectionStore.reset(at: selectedAt)
+
+        #expect(await selectionStore.state() == .reset(at: selectedAt))
+        guard case let .current(receipt) = await consentStore.status() else {
+            Issue.record("Expected current MCP consent after selection reset")
+            return
+        }
+        #expect(receipt.acceptedAt == selectedAt)
     }
 
     @Test func staleQualificationPolicyIsRejectedBeforePersistence() async throws {

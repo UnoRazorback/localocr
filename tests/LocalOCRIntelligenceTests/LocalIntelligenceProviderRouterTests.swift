@@ -338,6 +338,17 @@ import Testing
             try await noneEnvironment.router.summarize(task6Document)
         }
         #expect(locator.resolutionCount == 0)
+
+        let resetEnvironment = LocalIntelligenceEnvironment.live(
+            bridgeLocator: locator,
+            selectionStore: Task6SelectionStore(.reset(at: task6Now)),
+            appleProviderFactory: { apple },
+            now: { task6Now }
+        )
+        await #expect(throws: IntelligenceError.selection(.corruptReceipt)) {
+            try await resetEnvironment.router.summarize(task6Document)
+        }
+        #expect(locator.resolutionCount == 0)
     }
 }
 

@@ -1200,8 +1200,7 @@ actor Task6SelectionStore: LocalIntelligenceSelectionStoring {
     }
 
     func reset(at date: Date) async throws {
-        _ = date
-        storedState = .none
+        storedState = .reset(at: date)
         writes.append(storedState)
     }
 }

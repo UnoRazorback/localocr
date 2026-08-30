@@ -136,6 +136,7 @@ public enum LocalIntelligenceSelectionFailure: Codable, Sendable, Equatable {
 
 public enum LocalIntelligenceSelectionState: Sendable, Equatable {
     case none
+    case reset(at: Date)
     case selected(LocalIntelligenceSelection)
     case invalid(LocalIntelligenceSelectionFailure)
 }

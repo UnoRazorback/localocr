@@ -311,7 +311,7 @@ public struct CLIApplication: Sendable {
                 acknowledgmentAcceptedAt: now()
             )
             consentIO.stdout(
-                "\nselected \(descriptor.identity.provider.rawValue) \(descriptor.identity.model)\n"
+                "\nselected \(intelligenceTextField(descriptor.identity.provider.rawValue)) \(intelligenceTextField(descriptor.identity.model))\n"
             )
             return 0
         case "status":
@@ -347,8 +347,7 @@ public struct CLIApplication: Sendable {
         model: String
     ) async throws -> LocalModelDescriptor {
         guard LocalModelProviderID(rawValue: provider) != nil,
-              !model.isEmpty,
-              model.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
+              !model.isEmpty
         else {
             throw CLIArgumentError.message("invalid provider or model")
         }
@@ -394,8 +393,8 @@ public struct CLIApplication: Sendable {
     private static func externalModelDisclosure(for identity: LocalModelIdentity) -> String {
         """
         LocalOCR will send OCR text to the selected third-party model harness over loopback on this Mac. The harness may keep its own logs or history. Review its privacy settings before continuing.
-        Selected provider: \(intelligenceProviderDisplayName(identity.provider))
-        Selected model: \(identity.model)
+        Selected provider: \(intelligenceTextField(intelligenceProviderDisplayName(identity.provider)))
+        Selected model: \(intelligenceTextField(identity.model))
         Send future LocalOCR intelligence text to this local harness? [y/N]
         """
     }
@@ -572,13 +571,7 @@ private struct IntelligenceModelResponse: Encodable {
         [
             provider, model, fingerprint ?? "-", harnessVersion ?? "-", displayName,
             locality, localityReason, qualification, String(available), String(selected)
-        ].map(Self.textField).joined(separator: "\t") + "\n"
-    }
-
-    private static func textField(_ value: String) -> String {
-        value.replacingOccurrences(of: "\t", with: " ")
-            .replacingOccurrences(of: "\r", with: " ")
-            .replacingOccurrences(of: "\n", with: " ")
+        ].map(intelligenceTextField).joined(separator: "\t") + "\n"
     }
 }
 
@@ -616,12 +609,12 @@ private struct IntelligenceQualificationResponse: Encodable {
         Model: \(intelligenceTextField(model))
         Fingerprint: \(intelligenceTextField(fingerprint ?? "-"))
         Harness version: \(intelligenceTextField(harnessVersion ?? "-"))
-        Status: \(status)
+        Status: \(intelligenceTextField(status))
         Failures: \(intelligenceTextField(failures.isEmpty ? "none" : failures.joined(separator: ", ")))
-        Qualified at: \(qualifiedAt ?? "-")
+        Qualified at: \(intelligenceTextField(qualifiedAt ?? "-"))
         Qualification policy: \(qualificationPolicyVersion.map(String.init) ?? "-")
         Fixture version: \(fixtureVersion.map(String.init) ?? "-")
-        Passed actions: \(passedActions.isEmpty ? "-" : passedActions.joined(separator: ", "))
+        Passed actions: \(intelligenceTextField(passedActions.isEmpty ? "-" : passedActions.joined(separator: ", ")))
         """ + "\n"
     }
 }
@@ -632,6 +625,7 @@ private struct IntelligenceResetResponse: Encodable {
 
 private struct IntelligenceStatusResponse: Encodable {
     let state: String
+    let resetAt: String?
     let provider: String?
     let model: String?
     let fingerprint: String?
@@ -649,6 +643,8 @@ private struct IntelligenceStatusResponse: Encodable {
         switch selectionState {
         case .none:
             self.init(state: "none")
+        case let .reset(at):
+            self.init(state: "reset", resetAt: intelligenceTimestamp(at))
         case .selected(.appleSystemDefault):
             self.init(
                 state: "selected",
@@ -668,6 +664,7 @@ private struct IntelligenceStatusResponse: Encodable {
                 acknowledgment.identity == identity
             self.init(
                 state: "selected",
+                resetAt: nil,
                 provider: identity.provider.rawValue,
                 model: identity.model,
                 fingerprint: identity.fingerprint,
@@ -690,6 +687,7 @@ private struct IntelligenceStatusResponse: Encodable {
             }
             self.init(
                 state: "invalid",
+                resetAt: nil,
                 provider: provider,
                 model: identity?.model,
                 fingerprint: identity?.fingerprint,
@@ -710,10 +708,12 @@ private struct IntelligenceStatusResponse: Encodable {
         state: String,
         identity: LocalModelIdentity? = nil,
         qualification: String? = nil,
-        acknowledgment: String? = nil
+        acknowledgment: String? = nil,
+        resetAt: String? = nil
     ) {
         self.init(
             state: state,
+            resetAt: resetAt,
             provider: identity?.provider.rawValue,
             model: identity?.model,
             fingerprint: identity?.fingerprint,
@@ -731,6 +731,7 @@ private struct IntelligenceStatusResponse: Encodable {
 
     private init(
         state: String,
+        resetAt: String?,
         provider: String?,
         model: String?,
         fingerprint: String?,
@@ -745,6 +746,7 @@ private struct IntelligenceStatusResponse: Encodable {
         failure: String?
     ) {
         self.state = state
+        self.resetAt = resetAt
         self.provider = provider
         self.model = model
         self.fingerprint = fingerprint
@@ -761,25 +763,26 @@ private struct IntelligenceStatusResponse: Encodable {
 
     var text: String {
         guard state != "none" else { return "State: none\n" }
-        var lines = ["State: \(state)"]
+        var lines = ["State: \(intelligenceTextField(state))"]
+        if let resetAt { lines.append("Reset at: \(intelligenceTextField(resetAt))") }
         if let provider {
             lines.append("Provider: \(intelligenceTextField(intelligenceProviderDisplayName(LocalModelProviderID(rawValue: provider))))")
         }
         if let model { lines.append("Model: \(intelligenceTextField(model))") }
         if let fingerprint { lines.append("Fingerprint: \(intelligenceTextField(fingerprint))") }
         if let harnessVersion { lines.append("Harness version: \(intelligenceTextField(harnessVersion))") }
-        if let qualification { lines.append("Qualification: \(qualification)") }
-        if let qualifiedAt { lines.append("Qualified at: \(qualifiedAt)") }
+        if let qualification { lines.append("Qualification: \(intelligenceTextField(qualification))") }
+        if let qualifiedAt { lines.append("Qualified at: \(intelligenceTextField(qualifiedAt))") }
         if let qualificationPolicyVersion {
             lines.append("Qualification policy: \(qualificationPolicyVersion)")
         }
         if let fixtureVersion { lines.append("Fixture version: \(fixtureVersion)") }
-        if let acknowledgment { lines.append("Acknowledgment: \(acknowledgment)") }
-        if let acknowledgedAt { lines.append("Acknowledged at: \(acknowledgedAt)") }
+        if let acknowledgment { lines.append("Acknowledgment: \(intelligenceTextField(acknowledgment))") }
+        if let acknowledgedAt { lines.append("Acknowledged at: \(intelligenceTextField(acknowledgedAt))") }
         if let acknowledgmentPolicyVersion {
             lines.append("Acknowledgment policy: \(acknowledgmentPolicyVersion)")
         }
-        if let failure { lines.append("Failure: \(failure)") }
+        if let failure { lines.append("Failure: \(intelligenceTextField(failure))") }
         return lines.joined(separator: "\n") + "\n"
     }
 
@@ -828,7 +831,12 @@ private func intelligenceTimestamp(_ date: Date) -> String {
 }
 
 private func intelligenceTextField(_ value: String) -> String {
-    String(value.unicodeScalars.map { scalar in
-        CharacterSet.controlCharacters.contains(scalar) ? " " : Character(String(scalar))
-    })
+    value.unicodeScalars.reduce(into: "") { result, scalar in
+        switch scalar.properties.generalCategory {
+        case .control, .format, .lineSeparator, .paragraphSeparator:
+            result.append(" ")
+        default:
+            result.unicodeScalars.append(scalar)
+        }
+    }
 }

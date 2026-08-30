@@ -114,6 +114,26 @@ import Testing
         #expect(await store.state() == .selected(task6ExternalSelection()))
     }
 
+    @Test func resetPreservesPopulatedQualificationHistory() async throws {
+        let store = Task6SelectionStore(.selected(task6ExternalSelection()))
+        let qualification = task6QualificationService(provider: Task6FixtureProvider())
+        let qualified = try await qualification.qualify(task6OllamaIdentity)
+        let registry = LocalIntelligenceProviderRegistry(
+            transport: Task6Transport { request in
+                task6DiscoveryResponse(request: request, candidates: [])
+            },
+            selectionStore: store,
+            qualificationService: qualification,
+            appleProviderFactory: { Task6FixtureProvider(identity: .appleSystemDefault) },
+            now: { task6Now }
+        )
+
+        try await registry.reset()
+
+        #expect(await store.state() == .reset(at: task6Now))
+        #expect(await qualification.cachedOutcome(for: task6OllamaIdentity) == qualified)
+    }
+
     @Test func blockedOrUnverifiedCandidateCannotBeSelected() async throws {
         for identity in [task6OllamaIdentity, task6LMStudioIdentity] {
             for locality in [LocalModelLocality.blocked, .unverified] {

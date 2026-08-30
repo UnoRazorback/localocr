@@ -51,7 +51,7 @@ public actor LocalIntelligenceProviderRouter: DocumentIntelligenceProviding {
 
     private func resolvedProvider() async throws -> any DocumentIntelligenceProviding {
         switch await selectionStore.state() {
-        case .none:
+        case .none, .reset:
             throw IntelligenceError.selection(.corruptReceipt)
         case let .invalid(failure):
             throw IntelligenceError.selection(failure)

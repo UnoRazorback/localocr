@@ -317,7 +317,7 @@ actor FixtureIntelligenceManager: LocalIntelligenceManaging {
     func reset() async throws {
         try throwForBehavior(resetBehavior)
         resetCount += 1
-        selectionState = .none
+        selectionState = .reset(at: Date(timeIntervalSince1970: 0))
     }
 
     func modelCalls() -> Int { modelsCallCount }
@@ -339,6 +339,33 @@ actor FixtureIntelligenceManager: LocalIntelligenceManaging {
             throw error
         }
     }
+}
+
+actor StoreBackedIntelligenceManager: LocalIntelligenceManaging {
+    private let store: LocalIntelligenceSelectionStore
+    private let now: @Sendable () -> Date
+
+    init(receiptURL: URL, now: @escaping @Sendable () -> Date) {
+        store = LocalIntelligenceSelectionStore(receiptURL: receiptURL)
+        self.now = now
+    }
+
+    func models() async -> [LocalModelDescriptor] { [] }
+    func qualify(_ identity: LocalModelIdentity) async throws -> LocalModelQualificationOutcome {
+        _ = identity
+        throw FixtureFailure.operation
+    }
+    func selectApple() async throws { try await store.selectApple(at: now()) }
+    func selectExternal(
+        _ identity: LocalModelIdentity,
+        acknowledgmentAcceptedAt: Date
+    ) async throws {
+        _ = identity
+        _ = acknowledgmentAcceptedAt
+        throw FixtureFailure.operation
+    }
+    func status() async -> LocalIntelligenceSelectionState { await store.state() }
+    func reset() async throws { try await store.reset(at: now()) }
 }
 
 extension LocalModelDescriptor {
@@ -463,6 +490,17 @@ final class FixtureConsentIO: @unchecked Sendable, ConsentCommandIO {
     var readLineCalls: Int {
         lock.withLock { readLineCallCount }
     }
+}
+
+final class LegacyConsentIO: @unchecked Sendable, ConsentCommandIO {
+    let isTerminal = true
+    private let lock = NSLock()
+    private var capturedStdout = ""
+    private var capturedStderr = ""
+
+    func readLine() -> String? { "yes" }
+    func stdout(_ text: String) { lock.withLock { capturedStdout += text } }
+    func stderr(_ text: String) { lock.withLock { capturedStderr += text } }
 }
 
 final class FixtureBridgeLocator: @unchecked Sendable, ModelBridgeExecutableLocating {

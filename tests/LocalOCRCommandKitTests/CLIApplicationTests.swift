@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import LocalOCRCommandKit
@@ -370,6 +371,39 @@ import LocalOCRService
     #expect(harness.stderr == "")
 }
 
+@Test func intelligenceHumanOutputSanitizesEveryDescriptorDerivedFieldButJSONRemainsExact() async throws {
+    let hostile = "visible\u{001B}\u{0000}\u{0008}\u{007F}\u{0085}\u{202E}\u{200B}\u{000D}\u{000A}\u{0009}\u{2028}\u{2029}end"
+    let identity = LocalModelIdentity(
+        provider: .ollama,
+        model: hostile,
+        fingerprint: hostile,
+        harnessVersion: hostile
+    )
+    let descriptor = LocalModelDescriptor(
+        identity: identity,
+        displayName: hostile,
+        locality: .verifiedLocal,
+        localityReason: hostile,
+        qualification: .passed,
+        available: true,
+        selected: false
+    )
+    let manager = FixtureIntelligenceManager(descriptors: [descriptor])
+    let textHarness = CLIHarness(service: FixtureService(), intelligenceManager: manager)
+    let jsonHarness = CLIHarness(service: FixtureService(), intelligenceManager: manager)
+
+    #expect(await textHarness.run(["intelligence", "models"]) == 0)
+    #expect(!containsUnsafeTerminalScalar(textHarness.stdout, allowingSeparators: true))
+
+    #expect(await jsonHarness.run(["intelligence", "models", "--json"]) == 0)
+    let model = try #require((jsonHarness.stdoutJSON()["models"] as? [[String: Any]])?.first)
+    #expect(model["model"] as? String == hostile)
+    #expect(model["fingerprint"] as? String == hostile)
+    #expect(model["harness_version"] as? String == hostile)
+    #expect(model["display_name"] as? String == hostile)
+    #expect(model["locality_reason"] as? String == hostile)
+}
+
 @Test func intelligenceInvalidProviderStatusPreservesTheExactProvider() async {
     let manager = FixtureIntelligenceManager(
         descriptors: [],
@@ -438,6 +472,41 @@ import LocalOCRService
     """ + "\n")
 }
 
+@Test func intelligenceQualificationAndDisclosureSanitizeHostileFieldsWithoutChangingIdentity() async {
+    let hostile = "visible\u{001B}\u{0000}\u{0008}\u{007F}\u{0085}\u{202E}\u{200B}\u{000D}\u{000A}\u{0009}\u{2028}\u{2029}end"
+    let identity = LocalModelIdentity(
+        provider: .ollama,
+        model: hostile,
+        fingerprint: hostile,
+        harnessVersion: hostile
+    )
+    let descriptor = fixtureDescriptor(identity: identity, localityReason: hostile)
+    let failed = LocalModelQualificationOutcome(status: .failed, receipt: nil, failures: [hostile])
+    let testManager = FixtureIntelligenceManager(
+        descriptors: [descriptor], qualificationOutcomes: [identity: failed]
+    )
+    let testHarness = CLIHarness(service: FixtureService(), intelligenceManager: testManager)
+
+    #expect(await testHarness.run(["intelligence", "test", "ollama", hostile]) == 2)
+    #expect(!containsUnsafeTerminalScalar(testHarness.stdout, allowingSeparators: true))
+
+    let jsonHarness = CLIHarness(service: FixtureService(), intelligenceManager: testManager)
+    #expect(await jsonHarness.run(["intelligence", "test", "ollama", hostile, "--json"]) == 2)
+    #expect(jsonHarness.stdoutJSON()["model"] as? String == hostile)
+    #expect(jsonHarness.stdoutJSON()["fingerprint"] as? String == hostile)
+    #expect(jsonHarness.stdoutJSON()["harness_version"] as? String == hostile)
+    #expect(jsonHarness.stdoutJSON()["failures"] as? [String] == [hostile])
+
+    let selectManager = FixtureIntelligenceManager(descriptors: [descriptor])
+    let io = FixtureConsentIO(isTerminal: true, answers: ["yes"])
+    let selectHarness = CLIHarness(
+        service: FixtureService(), intelligenceManager: selectManager, consentIO: io
+    )
+    #expect(await selectHarness.run(["intelligence", "select", "ollama", hostile]) == 0)
+    #expect(!containsUnsafeTerminalScalar(io.stdoutText, allowingSeparators: true))
+    #expect(await selectManager.externalSelections().first?.0 == identity)
+}
+
 @Test func intelligenceTestRejectsMissingDuplicateUnavailableAndUnsafeCandidatesWithoutQualifying() async {
     let cases: [[LocalModelDescriptor]] = [
         [],
@@ -499,6 +568,16 @@ import LocalOCRService
         #expect(await harness.run(["intelligence", "select", "ollama", "gemma4:8b"]) == 2)
         #expect(await manager.externalSelections().isEmpty)
     }
+}
+
+@Test func legacyConsentIOConformerCompilesAndFailsClosedForExternalSelection() async {
+    let manager = FixtureIntelligenceManager(descriptors: [.fixtureOllama])
+    let harness = CLIHarness(
+        service: FixtureService(), intelligenceManager: manager, consentIO: LegacyConsentIO()
+    )
+
+    #expect(await harness.run(["intelligence", "select", "ollama", "gemma4:8b"]) == 2)
+    #expect(await manager.externalSelections().isEmpty)
 }
 
 @Test func intelligenceSelectRereadsAndRejectsUnavailableUnsafeOrUnqualifiedCandidates() async {
@@ -599,8 +678,10 @@ import LocalOCRService
 }
 
 @Test func intelligenceStatusReportsNoneAppleExternalAndInvalidWithoutDiscovery() async throws {
+    let resetAt = Date(timeIntervalSince1970: 1_730_000_000)
     let states: [(LocalIntelligenceSelectionState, String)] = [
         (.none, "none"),
+        (.reset(at: resetAt), "reset"),
         (.selected(.appleSystemDefault), "selected"),
         (.selected(fixtureExternalSelection()), "selected"),
         (.invalid(.modelUnavailable(LocalModelDescriptor.fixtureOllama.identity)), "invalid")
@@ -614,6 +695,12 @@ import LocalOCRService
         #expect(await manager.statusCalls() == 1)
         #expect(await manager.modelCalls() == 0)
     }
+
+
+    let resetManager = FixtureIntelligenceManager(descriptors: [], selectionState: .reset(at: resetAt))
+    let textHarness = CLIHarness(service: FixtureService(), intelligenceManager: resetManager)
+    #expect(await textHarness.run(["intelligence", "status"]) == 0)
+    #expect(textHarness.stdout == "State: reset\nReset at: 2024-10-27T03:33:20Z\n")
 }
 
 @Test func intelligenceExternalStatusReportsExactQualificationAndAcknowledgment() async {
@@ -641,6 +728,26 @@ import LocalOCRService
     #expect(await manager.modelCalls() == 0)
 }
 
+@Test func intelligenceStatusSanitizesHostileSelectedIdentityFields() async {
+    let hostile = "visible\u{001B}\u{0000}\u{0008}\u{007F}\u{0085}\u{202E}\u{200B}\u{000D}\u{000A}\u{0009}\u{2028}\u{2029}end"
+    let identity = LocalModelIdentity(
+        provider: .ollama, model: hostile, fingerprint: hostile, harnessVersion: hostile
+    )
+    let manager = FixtureIntelligenceManager(
+        descriptors: [], selectionState: .selected(fixtureExternalSelection(identity: identity))
+    )
+    let harness = CLIHarness(service: FixtureService(), intelligenceManager: manager)
+
+    #expect(await harness.run(["intelligence", "status"]) == 0)
+    #expect(!containsUnsafeTerminalScalar(harness.stdout, allowingSeparators: true))
+
+    let jsonHarness = CLIHarness(service: FixtureService(), intelligenceManager: manager)
+    #expect(await jsonHarness.run(["intelligence", "status", "--json"]) == 0)
+    #expect(jsonHarness.stdoutJSON()["model"] as? String == hostile)
+    #expect(jsonHarness.stdoutJSON()["fingerprint"] as? String == hostile)
+    #expect(jsonHarness.stdoutJSON()["harness_version"] as? String == hostile)
+}
+
 @Test func intelligenceResetIsStableIdempotentAndTouchesNeitherMCPConsentNorQualification() async {
     let consent = FixtureConsentStore()
     let manager = FixtureIntelligenceManager(
@@ -663,9 +770,44 @@ import LocalOCRService
     #expect(await second.run(["intelligence", "reset"]) == 0)
     #expect(second.stdout == "reset\n")
     #expect(await manager.resets() == 2)
+    #expect(await manager.status() == .reset(at: Date(timeIntervalSince1970: 0)))
     #expect(await manager.qualifiedIdentities().isEmpty)
     #expect(await consent.statusCalls() == 0)
     #expect(await consent.revocations() == 0)
+}
+
+@Test func intelligenceResetSurvivesANewManagerAndStatusReportsPersistedTimestamp() async throws {
+    var resolved = [CChar](repeating: 0, count: Int(PATH_MAX))
+    try #require(realpath(FileManager.default.temporaryDirectory.path, &resolved) != nil)
+    let physicalTemporaryDirectory = URL(
+        fileURLWithPath: String(
+            decoding: resolved.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
+            as: UTF8.self
+        ),
+        isDirectory: true
+    )
+    let baseURL = physicalTemporaryDirectory.appending(
+        path: "LocalOCR-command-reset-\(UUID().uuidString)", directoryHint: .isDirectory
+    )
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: false)
+    try #require(chmod(baseURL.path, 0o700) == 0)
+    defer { try? FileManager.default.removeItem(at: baseURL) }
+    let receiptURL = baseURL
+        .appending(path: "application", directoryHint: .isDirectory)
+        .appending(path: "local-intelligence-selection.json")
+    let resetAt = Date(timeIntervalSince1970: 1_730_000_000)
+    let firstManager = StoreBackedIntelligenceManager(receiptURL: receiptURL, now: { resetAt })
+
+    let first = CLIHarness(service: FixtureService(), intelligenceManager: firstManager)
+    let second = CLIHarness(service: FixtureService(), intelligenceManager: firstManager)
+    #expect(await first.run(["intelligence", "reset"]) == 0)
+    #expect(await second.run(["intelligence", "reset", "--json"]) == 0)
+
+    let relaunchedManager = StoreBackedIntelligenceManager(receiptURL: receiptURL, now: Date.init)
+    let status = CLIHarness(service: FixtureService(), intelligenceManager: relaunchedManager)
+    #expect(await status.run(["intelligence", "status", "--json"]) == 0)
+    #expect(status.stdoutJSON()["state"] as? String == "reset")
+    #expect(status.stdoutJSON()["reset_at"] as? String == "2024-10-27T03:33:20Z")
 }
 
 @Test func intelligenceExitCodesDistinguishCancellationInvalidAndOperationalFailures() async {
@@ -691,6 +833,64 @@ import LocalOCRService
     #expect(await CLIHarness(service: FixtureService(), intelligenceManager: operational).run([
         "intelligence", "test", "ollama", "gemma4:8b"
     ]) == 1)
+}
+
+@Test func everyStableSelectionFailureUsesInvalidExitWithoutMutation() async {
+    let identity = LocalModelDescriptor.fixtureOllama.identity
+    let changed = LocalModelIdentity(
+        provider: .ollama, model: identity.model,
+        fingerprint: "sha256:changed", harnessVersion: identity.harnessVersion
+    )
+    let failures: [LocalIntelligenceSelectionFailure] = [
+        .corruptReceipt,
+        .providerUnavailable(.ollama),
+        .modelUnavailable(identity),
+        .localityUnverified(identity),
+        .localityBlocked(identity),
+        .qualificationRequired(identity),
+        .acknowledgmentRequired(identity),
+        .identityChanged(expected: identity, actual: changed)
+    ]
+
+    for failure in failures {
+        let manager = FixtureIntelligenceManager(
+            descriptors: [.fixtureOllama],
+            qualifyBehavior: .intelligenceFailure(.selection(failure))
+        )
+        let harness = CLIHarness(service: FixtureService(), intelligenceManager: manager)
+        #expect(await harness.run(["intelligence", "test", "ollama", "gemma4:8b"]) == 2)
+        #expect(await manager.qualifiedIdentities().isEmpty)
+        #expect(await manager.externalSelections().isEmpty)
+        #expect(await manager.appleSelections() == 0)
+        #expect(await manager.resets() == 0)
+    }
+}
+
+@Test func selectAndResetMapCancellationAndOperationalFailureWithoutMutation() async {
+    for (behavior, expected): (FixtureIntelligenceManagerBehavior, Int32) in [
+        (.cancellation, 4), (.operationalFailure, 1)
+    ] {
+        let selectManager = FixtureIntelligenceManager(
+            descriptors: [.fixtureOllama], selectBehavior: behavior
+        )
+        let selectHarness = CLIHarness(
+            service: FixtureService(), intelligenceManager: selectManager,
+            consentIO: FixtureConsentIO(isTerminal: true, answers: ["yes"])
+        )
+        #expect(await selectHarness.run([
+            "intelligence", "select", "ollama", "gemma4:8b"
+        ]) == expected)
+        #expect(await selectManager.externalSelections().isEmpty)
+
+        let resetManager = FixtureIntelligenceManager(
+            descriptors: [], selectionState: .selected(.appleSystemDefault),
+            resetBehavior: behavior
+        )
+        let resetHarness = CLIHarness(service: FixtureService(), intelligenceManager: resetManager)
+        #expect(await resetHarness.run(["intelligence", "reset"]) == expected)
+        #expect(await resetManager.resets() == 0)
+        #expect(await resetManager.status() == .selected(.appleSystemDefault))
+    }
 }
 
 @Test func ordinaryCLIHelpVersionAndOCRNeverTouchTheIntelligenceManager() async {
@@ -752,4 +952,19 @@ import LocalOCRService
     #expect(await manager.externalSelections().isEmpty)
     #expect(await manager.appleSelections() == 0)
     #expect(await manager.resets() == 0)
+}
+
+private func containsUnsafeTerminalScalar(
+    _ value: String,
+    allowingSeparators: Bool
+) -> Bool {
+    value.unicodeScalars.contains { scalar in
+        if allowingSeparators && (scalar == "\n" || scalar == "\t") { return false }
+        switch scalar.properties.generalCategory {
+        case .control, .format, .lineSeparator, .paragraphSeparator:
+            return true
+        default:
+            return false
+        }
+    }
 }
