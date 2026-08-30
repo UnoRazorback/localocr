@@ -40,6 +40,12 @@ SHARED_SCHEME = (
 APP_ENTRY_POINT = ROOT / "App" / "LocalOCRStudioApp.swift"
 UI_TEST_SUPPORT = ROOT / "App" / "LocalOCRStudioUITestSupport.swift"
 UI_TESTS = ROOT / "AppUITests" / "LocalOCRStudioUITests.swift"
+AGENT_GUIDE_MODEL = (
+    ROOT / "Sources" / "LocalOCRStudioKit" / "AgentConnectionGuideModel.swift"
+)
+AGENT_GUIDE_VIEW = (
+    ROOT / "Sources" / "LocalOCRStudioKit" / "AgentConnectionGuideView.swift"
+)
 BATCH_WORKSPACE = ROOT / "Sources" / "LocalOCRStudioKit" / "BatchWorkspaceView.swift"
 BATCH_STATUS_VIEWS = ROOT / "Sources" / "LocalOCRStudioKit" / "BatchStatusViews.swift"
 BUILD_SCRIPT = ROOT / "scripts" / "build-unsigned-studio-app.sh"
@@ -198,6 +204,43 @@ def test_required_app_project_files_exist() -> None:
         BUILD_SCRIPT,
     ):
         assert path.is_file(), f"missing required app-project file: {path}"
+
+
+def test_agent_guide_has_guided_safe_client_controls_and_offline_fixtures() -> None:
+    model = _read(AGENT_GUIDE_MODEL)
+    view = _read(AGENT_GUIDE_VIEW)
+    support = _read(UI_TEST_SUPPORT)
+
+    for state in (
+        "case unavailable",
+        "case inspecting",
+        "case disconnected",
+        "case connected(helperPath: String)",
+        "case conflict",
+        "case failed",
+    ):
+        assert state in model
+
+    for identifier in (
+        "studio.agent-guide.client.",
+        "studio.agent-guide.scope",
+        "studio.agent-guide.confirm-change",
+        "studio.agent-guide.connect",
+        "studio.agent-guide.disconnect",
+        "studio.agent-guide.client-status",
+    ):
+        assert identifier in view
+
+    assert "Other stdio clients" in view
+    assert "copy-only" in view
+    assert "restart or reload normally" in model
+    for prohibited in ("forceQuit", "terminate()", "kill("):
+        assert prohibited not in view
+        assert prohibited not in model
+
+    assert "LOCALOCR_STUDIO_AGENT_STATE" in support
+    for fixture in ("disconnected", "connected", "conflict", "failure"):
+        assert f"case {fixture}" in support
 
 
 def test_project_source_of_truth_has_exact_release_settings() -> None:

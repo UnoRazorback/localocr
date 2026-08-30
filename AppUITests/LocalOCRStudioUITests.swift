@@ -283,6 +283,24 @@ final class LocalOCRStudioUITests: XCTestCase {
         XCTAssertTrue(dropZone.exists)
     }
 
+    func testAgentConnectionFixtureShowsDetectedClientScopeConfirmationAndSafeActions() {
+        let app = launch(state: "empty", agentState: "disconnected")
+        XCTAssertTrue(element("studio.drop-zone", in: app).waitForExistence(timeout: 5))
+
+        openAgentConnectionGuide(in: app)
+
+        XCTAssertTrue(element("studio.agent-guide", in: app).waitForExistence(timeout: 5))
+        XCTAssertTrue(element("studio.agent-guide.client.codex", in: app).exists)
+        let claude = element("studio.agent-guide.client.claudeCode", in: app)
+        XCTAssertTrue(claude.exists)
+        claude.click()
+        XCTAssertTrue(element("studio.agent-guide.client-status", in: app).exists)
+        XCTAssertTrue(element("studio.agent-guide.scope", in: app).exists)
+        XCTAssertTrue(app.checkBoxes["studio.agent-guide.confirm-change"].exists)
+        XCTAssertFalse(app.buttons["studio.agent-guide.connect"].isEnabled)
+        XCTAssertFalse(app.buttons["studio.agent-guide.disconnect"].isEnabled)
+    }
+
     func testOfflineHelpMenuOpensSearchableReusableHelpCenter() {
         let app = launch(state: "empty")
         XCTAssertTrue(element("studio.drop-zone", in: app).waitForExistence(timeout: 5))
@@ -645,13 +663,16 @@ final class LocalOCRStudioUITests: XCTestCase {
         waitForExpectations(timeout: 5)
     }
 
-    private func launch(state: String) -> XCUIApplication {
+    private func launch(state: String, agentState: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         let testSession = ProcessInfo.processInfo
             .environment["XCTestSessionIdentifier"]
             .flatMap { $0.isEmpty ? nil : $0 } ?? UUID().uuidString
         app.launchEnvironment["LOCALOCR_STUDIO_UI_TEST_SESSION"] = testSession
         app.launchEnvironment["LOCALOCR_STUDIO_UI_STATE"] = state
+        if let agentState {
+            app.launchEnvironment["LOCALOCR_STUDIO_AGENT_STATE"] = agentState
+        }
         app.launchArguments += [
             "-ApplePersistenceIgnoreState", "YES",
             "-NSOSPLastRootDirectory", "",

@@ -106,7 +106,8 @@ public enum AgentClientCommandFactory {
 
 public enum AgentClientProcessEnvironment {
     private static let allowedKeys = [
-        "HOME", "LANG", "LC_ALL", "LOGNAME", "PATH", "TMPDIR", "USER", "XDG_CONFIG_HOME",
+        "CLAUDE_CONFIG_DIR", "CODEX_HOME", "HOME", "LANG", "LC_ALL", "LOGNAME", "PATH",
+        "TMPDIR", "USER", "XDG_CONFIG_HOME",
     ]
 
     public static func filteredCurrent(

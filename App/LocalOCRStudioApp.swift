@@ -145,8 +145,7 @@ final class LocalOCRStudioAppDelegate: NSObject, NSApplicationDelegate, NSWindow
             agentGuideModel = model
         }
 
-        model.resetSessionAcknowledgments()
-        Task { await model.refreshReceiptStatus() }
+        Task { await model.prepareForPresentation() }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }

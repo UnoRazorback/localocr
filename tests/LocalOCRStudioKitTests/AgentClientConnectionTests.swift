@@ -47,4 +47,22 @@ import Testing
         #expect(spec.arguments.count == 5)
         #expect(!spec.arguments.joined(separator: " ").contains("sh -c"))
     }
+
+    @Test func filteredEnvironmentPreservesClientConfigRootsButNotCredentials() {
+        let filtered = AgentClientProcessEnvironment.filteredCurrent([
+            "HOME": "/Users/test",
+            "PATH": "/usr/bin:/bin",
+            "CODEX_HOME": "/tmp/codex-profile",
+            "CLAUDE_CONFIG_DIR": "/tmp/claude-profile",
+            "OPENAI_API_KEY": "secret",
+            "ANTHROPIC_API_KEY": "secret",
+        ])
+
+        #expect(filtered == [
+            "HOME": "/Users/test",
+            "PATH": "/usr/bin:/bin",
+            "CODEX_HOME": "/tmp/codex-profile",
+            "CLAUDE_CONFIG_DIR": "/tmp/claude-profile",
+        ])
+    }
 }

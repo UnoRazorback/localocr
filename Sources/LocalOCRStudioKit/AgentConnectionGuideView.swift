@@ -14,14 +14,17 @@ public struct AgentConnectionGuideView: View {
             VStack(alignment: .leading, spacing: 20) {
                 introduction
                 helperPath
-                connectionInstructions
+                detectedClients
                 consentControls
+                connectionActions
+                manualFallback
                 toolsAndTroubleshooting
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(minWidth: 700, minHeight: 620)
+        .background(Color.localOCRStudioGround)
+        .frame(minWidth: 760, minHeight: 660)
         .accessibilityIdentifier("studio.agent-guide")
     }
 
@@ -41,8 +44,90 @@ public struct AgentConnectionGuideView: View {
         }
     }
 
-    private var connectionInstructions: some View {
-        GuideSection(title: "Client setup") {
+    private var detectedClients: some View {
+        GuideSection(title: "Detected clients") {
+            VStack(alignment: .leading, spacing: 10) {
+                switch model.discoveryState {
+                case .idle, .discovering:
+                    ProgressView("Checking this Mac…")
+                case .unavailable:
+                    Text("LocalOCR did not find a supported Codex or Claude Code installation in its bounded application and executable locations. Manual setup remains available below.")
+                        .foregroundStyle(.secondary)
+                case .available:
+                    ForEach(model.detectedClients) { client in
+                        clientButton(client)
+                    }
+                }
+
+                Button("Check Again") {
+                    Task { await model.refreshClients() }
+                }
+                .disabled(model.discoveryState == .discovering || model.isChangingConnection)
+                .accessibilityIdentifier("studio.agent-guide.refresh-clients")
+            }
+        }
+    }
+
+    private var connectionActions: some View {
+        GuideSection(title: "Connection") {
+            VStack(alignment: .leading, spacing: 12) {
+                if let client = model.selectedClient {
+                    Text("Selected: \(client.displayName)")
+                        .font(.headline)
+                    Text(clientStateText(model.clientState(for: client)))
+                        .foregroundStyle(clientStateColor(model.clientState(for: client)))
+                        .accessibilityIdentifier("studio.agent-guide.client-status")
+
+                    if client.kind == .claudeCode {
+                        Picker("Claude connection scope", selection: $model.claudeScope) {
+                            Text("Choose a scope").tag(ClaudeMCPConnectionScope?.none)
+                            Text("This project (local)").tag(ClaudeMCPConnectionScope?.some(.local))
+                            Text("All projects (user)").tag(ClaudeMCPConnectionScope?.some(.user))
+                        }
+                        .pickerStyle(.segmented)
+                        .accessibilityIdentifier("studio.agent-guide.scope")
+                    }
+
+                    Toggle(
+                        "I confirm this change for \(client.displayName) and the scope shown above.",
+                        isOn: $model.connectionChangeConfirmed
+                    )
+                    .accessibilityIdentifier("studio.agent-guide.confirm-change")
+
+                    HStack(spacing: 12) {
+                        Button("Connect") {
+                            Task { try? await model.connectSelectedClient() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color.localOCRStudioOlive)
+                        .disabled(!model.canConnect)
+                        .accessibilityIdentifier("studio.agent-guide.connect")
+
+                        Button("Disconnect") {
+                            Task { try? await model.disconnectSelectedClient() }
+                        }
+                        .disabled(!model.canDisconnect)
+                        .accessibilityIdentifier("studio.agent-guide.disconnect")
+                    }
+                    Text(model.restartGuidance)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Select a detected client to inspect or change its LocalOCR registration.")
+                        .foregroundStyle(.secondary)
+                }
+
+                if let connectionError = model.connectionError {
+                    Text(connectionError)
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier("studio.agent-guide.connection-error")
+                }
+            }
+        }
+    }
+
+    private var manualFallback: some View {
+        GuideSection(title: "Manual fallback") {
             TabView {
                 clientInstructions(
                     commands: model.codexCommands,
@@ -63,7 +148,7 @@ public struct AgentConnectionGuideView: View {
                 .tabItem { Text("Claude Code") }
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Use your client's current documentation to add, inspect, and remove this stdio entry. LocalOCR does not edit the configuration for you.")
+                    Text("Other stdio clients are copy-only in this beta. Use the client's current documentation to add, inspect, and remove this entry; LocalOCR does not edit generic client configuration.")
                     codeBlock(
                         model.genericStdioJSON,
                         copyIdentifier: "studio.agent-guide.copy-json"
@@ -72,7 +157,7 @@ public struct AgentConnectionGuideView: View {
                 .padding(.top, 8)
                 .tabItem { Text("Other stdio clients") }
             }
-            .frame(height: 270)
+            .frame(height: 290)
         }
     }
 
@@ -142,6 +227,65 @@ public struct AgentConnectionGuideView: View {
             "Acknowledgment status: Current"
         case .required:
             "Acknowledgment status: Required"
+        }
+    }
+
+    private func clientButton(_ client: AgentClientInstallation) -> some View {
+        let selected = model.selectedClientID == client.id
+        return Button {
+            model.selectedClientID = client.id
+            model.connectionChangeConfirmed = false
+            if client.kind != .claudeCode {
+                model.claudeScope = nil
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: client.kind == .codex ? "terminal" : "chevron.left.forwardslash.chevron.right")
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(client.displayName)
+                        .font(.headline)
+                    Text(client.executableURL.path)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Text(clientStateText(model.clientState(for: client)))
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(clientStateColor(model.clientState(for: client)))
+            }
+            .padding(12)
+            .background(
+                selected ? Color.localOCRStudioOlive.opacity(0.13) : Color.localOCRStudioSurface,
+                in: RoundedRectangle(cornerRadius: 12)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(selected ? Color.localOCRStudioOlive : Color.secondary.opacity(0.18))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("studio.agent-guide.client.\(client.kind.rawValue)")
+    }
+
+    private func clientStateText(_ state: AgentClientGuideState) -> String {
+        switch state {
+        case .unavailable: "Unavailable"
+        case .inspecting: "Checking…"
+        case .disconnected: "Not connected"
+        case .connected: "Connected to this app"
+        case .conflict: "Different LocalOCR registered"
+        case .failed: "Check failed"
+        }
+    }
+
+    private func clientStateColor(_ state: AgentClientGuideState) -> Color {
+        switch state {
+        case .connected: Color.localOCRStudioOlive
+        case .conflict, .failed: .red
+        case .unavailable, .inspecting, .disconnected: .secondary
         }
     }
 

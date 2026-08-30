@@ -36,11 +36,27 @@ public enum AgentClientDiscoveryRejectionReason: Equatable, Sendable {
 public struct AgentClientDiscoveryRejection: Equatable, Sendable {
     public let candidate: AgentClientDiscoveryCandidate
     public let reason: AgentClientDiscoveryRejectionReason
+
+    public init(
+        candidate: AgentClientDiscoveryCandidate,
+        reason: AgentClientDiscoveryRejectionReason
+    ) {
+        self.candidate = candidate
+        self.reason = reason
+    }
 }
 
 public struct AgentClientDiscoveryResult: Equatable, Sendable {
     public let installations: [AgentClientInstallation]
     public let rejections: [AgentClientDiscoveryRejection]
+
+    public init(
+        installations: [AgentClientInstallation],
+        rejections: [AgentClientDiscoveryRejection]
+    ) {
+        self.installations = installations
+        self.rejections = rejections
+    }
 }
 
 public struct AgentClientDiscovery {

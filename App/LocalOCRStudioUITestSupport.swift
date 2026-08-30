@@ -6,6 +6,13 @@ import LocalOCRModelCore
 
 @MainActor
 enum LocalOCRStudioUITestSupport {
+    private enum AgentFixtureState: String, Sendable {
+        case disconnected
+        case connected
+        case conflict
+        case failure
+    }
+
     static func helpTopicIfRequested(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> HelpTopicID? {
@@ -27,10 +34,90 @@ enum LocalOCRStudioUITestSupport {
         else {
             return nil
         }
+        guard let rawState = environment["LOCALOCR_STUDIO_AGENT_STATE"],
+              let state = AgentFixtureState(rawValue: rawState)
+        else {
+            return AgentConnectionGuideModel(
+                bundleURL: bundleURL,
+                consentStore: UITestConsentStore()
+            )
+        }
+
+        let installations = [
+            AgentClientInstallation(
+                kind: .codex,
+                executableURL: URL(fileURLWithPath: "/fixture/bin/codex"),
+                displayName: "Codex",
+                version: "fixture"
+            ),
+            AgentClientInstallation(
+                kind: .claudeCode,
+                executableURL: URL(fileURLWithPath: "/fixture/bin/claude"),
+                displayName: "Claude Code",
+                version: "fixture"
+            ),
+        ]
+        let runner = UITestAgentCommandRunner(
+            state: state,
+            helperPath: bundleURL.appendingPathComponent(
+                "Contents/Helpers/localocr-mcp"
+            ).path
+        )
         return AgentConnectionGuideModel(
             bundleURL: bundleURL,
-            consentStore: UITestConsentStore()
+            consentStore: UITestConsentStore(),
+            discoverClients: {
+                AgentClientDiscoveryResult(
+                    installations: installations,
+                    rejections: []
+                )
+            },
+            runCommand: { command in
+                try await runner.run(command)
+            }
         )
+    }
+
+    private actor UITestAgentCommandRunner {
+        private var state: AgentFixtureState
+        private let helperPath: String
+
+        init(state: AgentFixtureState, helperPath: String) {
+            self.state = state
+            self.helperPath = helperPath
+        }
+
+        func run(_ command: AgentClientCommandSpec) throws -> AgentClientCommandResult {
+            if command.arguments.prefix(2) == ["mcp", "add"] {
+                state = .connected
+                return result()
+            }
+            if command.arguments.prefix(2) == ["mcp", "remove"] {
+                state = .disconnected
+                return result()
+            }
+
+            switch state {
+            case .disconnected:
+                throw AgentClientCommandRunnerError.exited(status: 1)
+            case .connected:
+                return result(stdout: "command: \(helperPath)")
+            case .conflict:
+                return result(
+                    stdout: "command: /Applications/Other LocalOCR.app/Contents/Helpers/localocr-mcp"
+                )
+            case .failure:
+                throw AgentClientCommandRunnerError.launchFailed
+            }
+        }
+
+        private func result(stdout: String = "") -> AgentClientCommandResult {
+            AgentClientCommandResult(
+                exitStatus: 0,
+                stdout: Data(stdout.utf8),
+                stderr: Data()
+            )
+        }
     }
 
     private enum FixtureState: String, Sendable {

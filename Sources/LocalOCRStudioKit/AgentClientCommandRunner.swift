@@ -31,6 +31,12 @@ public struct AgentClientCommandResult: Equatable, Sendable {
 
     public var stdoutString: String { String(decoding: stdout, as: UTF8.self) }
     public var stderrString: String { String(decoding: stderr, as: UTF8.self) }
+
+    public init(exitStatus: Int32, stdout: Data, stderr: Data) {
+        self.exitStatus = exitStatus
+        self.stdout = stdout
+        self.stderr = stderr
+    }
 }
 
 public struct AgentClientCommandRunner: Sendable {
