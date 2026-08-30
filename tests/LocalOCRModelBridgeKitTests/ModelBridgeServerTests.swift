@@ -6,6 +6,103 @@ import Testing
 @Suite("Model bridge server")
 struct ModelBridgeServerTests {
     @Test
+    func productionCompositionRoutesFramedOllamaDiscovery() async throws {
+        let http = CompositionFixtureHTTP(responses: [
+            Data(#"{"version":"0.11.7"}"#.utf8),
+            Data(
+                #"{"models":[{"name":"gemma4:8b","model":"gemma4:8b","size":5234567890,"digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","details":{"format":"gguf"}}]}"#.utf8
+            )
+        ])
+        let server = ModelBridgeServer(
+            handler: ModelBridgeProductionComposition.handler(http: http)
+        )
+        var frame = try JSONEncoder().encode(
+            ModelBridgeRequest.discover(id: 501, provider: .ollama)
+        )
+        frame.append(10)
+
+        let response = await server.consume(frame)
+
+        #expect(response.id == 501)
+        #expect(response.candidates.map(\.identity.model) == ["gemma4:8b"])
+        #expect(response.candidates.first?.locality == .verifiedLocal)
+        #expect(response.error == nil)
+        #expect(await http.endpoints == [.ollamaVersion, .ollamaTags])
+    }
+
+    @Test
+    func productionCompositionKeepsLMStudioExplicitlyUnimplemented() async {
+        let http = CompositionFixtureHTTP(responses: [])
+        let handler = ModelBridgeProductionComposition.handler(http: http)
+
+        let response = await handler.handle(.discover(id: 502, provider: .lmStudio))
+
+        #expect(response.id == 502)
+        #expect(response.error?.code == .providerNotImplemented)
+        #expect(response.error?.message == "Provider adapter is not implemented.")
+        #expect(await http.endpoints.isEmpty)
+    }
+
+    @Test
+    func productionCompositionExitsCleanlyOnEOFWithoutHTTP() async throws {
+        let http = CompositionFixtureHTTP(responses: [])
+        let input = Pipe()
+        let output = Pipe()
+        let diagnostics = Pipe()
+        let server = ModelBridgeServer(
+            handler: ModelBridgeProductionComposition.handler(http: http)
+        )
+        try input.fileHandleForWriting.close()
+
+        await server.run(
+            input: input.fileHandleForReading,
+            output: output.fileHandleForWriting,
+            diagnostics: diagnostics.fileHandleForWriting
+        )
+        try output.fileHandleForWriting.close()
+        try diagnostics.fileHandleForWriting.close()
+
+        #expect((try output.fileHandleForReading.readToEnd()) ?? Data() == Data())
+        #expect((try diagnostics.fileHandleForReading.readToEnd()) ?? Data() == Data())
+        #expect(await http.endpoints.isEmpty)
+    }
+
+    @Test
+    func builtExecutableUsesProductionCompositionForOllamaRequest() throws {
+        let executableURL = try builtModelBridgeExecutableURL()
+        let input = Pipe()
+        let output = Pipe()
+        let diagnostics = Pipe()
+        let process = Process()
+        process.executableURL = executableURL
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = diagnostics
+
+        try process.run()
+        var request = try JSONEncoder().encode(
+            ModelBridgeRequest.status(id: 503, provider: .ollama)
+        )
+        request.append(10)
+        try input.fileHandleForWriting.write(contentsOf: request)
+        try input.fileHandleForWriting.close()
+        process.waitUntilExit()
+
+        let outputData = try #require(try output.fileHandleForReading.readToEnd())
+        let lines = outputData.split(separator: 10)
+        let response = try JSONDecoder().decode(
+            ModelBridgeResponse.self,
+            from: Data(try #require(lines.first))
+        )
+        #expect(process.terminationStatus == 0)
+        #expect(lines.count == 1)
+        #expect(response.id == 503)
+        #expect(response.error?.code == .invalidRequest)
+        #expect(response.error?.message == "Ollama status requires an exact model identifier.")
+        #expect((try diagnostics.fileHandleForReading.readToEnd()) ?? Data() == Data())
+    }
+
+    @Test
     func serverRejectsMessagesOverOneMiBBeforeDispatch() async {
         let handler = RecordingBridgeHandler()
         let server = ModelBridgeServer(handler: handler)
@@ -176,6 +273,44 @@ struct ModelBridgeServerTests {
         #expect(input.requestedReadCounts.allSatisfy { $0 <= 65_536 })
         #expect((try diagnostics.fileHandleForReading.readToEnd()) ?? Data() == Data())
     }
+}
+
+private actor CompositionFixtureHTTP: LoopbackHTTPPerforming {
+    private var responses: [Data]
+    private(set) var endpoints: [ApprovedLoopbackEndpoint] = []
+
+    init(responses: [Data]) {
+        self.responses = responses
+    }
+
+    func perform(
+        _ endpoint: ApprovedLoopbackEndpoint,
+        body: Data?,
+        timeoutMilliseconds: Int
+    ) async throws -> Data {
+        endpoints.append(endpoint)
+        return responses.removeFirst()
+    }
+}
+
+private func builtModelBridgeExecutableURL() throws -> URL {
+    var directories = [
+        Bundle.main.bundleURL.deletingLastPathComponent(),
+        URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/debug")
+    ]
+    var argumentDirectory = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
+    for _ in 0..<10 {
+        directories.append(argumentDirectory)
+        argumentDirectory.deleteLastPathComponent()
+    }
+    for directory in directories {
+        let candidate = directory.appendingPathComponent("localocr-model-bridge")
+        if FileManager.default.isExecutableFile(atPath: candidate.path) {
+            return candidate
+        }
+    }
+    throw CocoaError(.fileNoSuchFile)
 }
 
 private actor RecordingBridgeHandler: ModelBridgeHandling {

@@ -99,6 +99,35 @@ public final class LoopbackHTTPClient: LoopbackHTTPPerforming, @unchecked Sendab
         }
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .milliseconds(timeoutMilliseconds))
+        return try await withThrowingTaskGroup(of: Data.self) { group in
+            group.addTask {
+                try await self.performWithFallback(
+                    endpoint,
+                    body: body,
+                    timeoutMilliseconds: timeoutMilliseconds,
+                    deadline: deadline,
+                    clock: clock
+                )
+            }
+            group.addTask {
+                try await clock.sleep(until: deadline)
+                throw LoopbackHTTPError.timedOut
+            }
+            defer { group.cancelAll() }
+            guard let result = try await group.next() else {
+                throw LoopbackHTTPError.timedOut
+            }
+            return result
+        }
+    }
+
+    private func performWithFallback(
+        _ endpoint: ApprovedLoopbackEndpoint,
+        body: Data?,
+        timeoutMilliseconds: Int,
+        deadline: ContinuousClock.Instant,
+        clock: ContinuousClock
+    ) async throws -> Data {
         do {
             return try await perform(
                 endpoint,

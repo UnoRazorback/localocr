@@ -1,7 +1,7 @@
 import Foundation
 import LocalOCRModelBridgeKit
 
-let server = ModelBridgeServer(handler: UnimplementedModelBridgeHandler())
+let server = ModelBridgeServer(handler: ModelBridgeProductionComposition.handler())
 await server.run(
     input: .standardInput,
     output: .standardOutput,

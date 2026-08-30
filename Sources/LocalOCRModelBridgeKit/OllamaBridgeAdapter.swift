@@ -188,9 +188,11 @@ public struct OllamaBridgeAdapter: Sendable {
     private static func classify(model: OllamaModel, name: String) -> (locality: LocalModelLocality, reason: String) {
         let identifiers = [name, model.name, model.model]
         let hasCloudIdentifier = identifiers.contains { identifier in
-            identifier.lowercased().split { character in
-                character == ":" || character == "/" || character == "@"
-            }.contains(where: { $0 == "cloud" || $0.hasSuffix("-cloud") })
+            let normalized = identifier.lowercased()
+            let segments = normalized.split { character in
+                !character.isLetter && !character.isNumber
+            }
+            return normalized.hasSuffix("-cloud") || segments.contains("cloud")
         }
         if hasCloudIdentifier || model.remoteModel != nil || model.remoteHost != nil {
             return (.blocked, "Ollama reports a cloud or remote model.")

@@ -102,6 +102,14 @@ public struct ModelBridgeProviderHandler: ModelBridgeHandling {
     }
 }
 
+public enum ModelBridgeProductionComposition {
+    public static func handler(
+        http: any LoopbackHTTPPerforming = LoopbackHTTPClient()
+    ) -> ModelBridgeProviderHandler {
+        ModelBridgeProviderHandler(ollama: OllamaBridgeAdapter(http: http))
+    }
+}
+
 public actor ModelBridgeServer {
     public static let maximumMessageBytes = ModelBridgeLimits.maximumMessageBytes
 

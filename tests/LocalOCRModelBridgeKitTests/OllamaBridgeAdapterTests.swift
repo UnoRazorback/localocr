@@ -57,6 +57,10 @@ struct OllamaBridgeAdapterTests {
     func cloudSegmentsAndRemoteMetadataAreBlocked() async throws {
         let fixtures: [Data] = [
             tagsFixture(name: "cloud/model:8b"),
+            tagsFixture(name: "cloud-preview:8b"),
+            tagsFixture(name: "vendor.cloud:8b"),
+            tagsFixture(name: "vendor_cloud_preview:8b"),
+            tagsFixture(name: "vendor+cloud:8b"),
             tagsFixture(name: "model:cloud"),
             tagsFixture(name: "model:8b-cloud"),
             tagsFixture(name: "model:8b-cloud", model: "model:8b"),

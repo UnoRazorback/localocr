@@ -201,6 +201,24 @@ struct LoopbackHTTPClientTests {
         #expect(requests[1].timeoutInterval > 0)
         #expect(requests[1].timeoutInterval < 0.9)
     }
+
+    @Test
+    func overallDeadlineCancelsSlowDripDespiteContinuousProgress() async {
+        let cancellation = HTTPTransferCancellationProbe()
+        let client = LoopbackHTTPClient(
+            session: SlowDripLoopbackHTTPSession(cancellation: cancellation)
+        )
+        let clock = ContinuousClock()
+        let start = clock.now
+
+        await #expect(throws: LoopbackHTTPError.timedOut) {
+            try await client.perform(.ollamaTags, body: nil, timeoutMilliseconds: 1_000)
+        }
+
+        let elapsed = start.duration(to: clock.now)
+        #expect(elapsed < .milliseconds(1_400))
+        #expect(cancellation.wasCancelled)
+    }
 }
 
 private actor FixtureLoopbackHTTPSession: LoopbackHTTPSessionPerforming {
@@ -255,4 +273,46 @@ private func okResponse(
             headerFields: nil
         )!
     )
+}
+
+private actor SlowDripLoopbackHTTPSession: LoopbackHTTPSessionPerforming {
+    private let cancellation: HTTPTransferCancellationProbe
+
+    init(cancellation: HTTPTransferCancellationProbe) {
+        self.cancellation = cancellation
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        try await withTaskCancellationHandler {
+            var data = Data()
+            for _ in 0..<20 {
+                try await Task.sleep(for: .milliseconds(75))
+                data.append(65)
+            }
+            return (
+                data,
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+            )
+        } onCancel: {
+            cancellation.markCancelled()
+        }
+    }
+}
+
+private final class HTTPTransferCancellationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var wasCancelled: Bool {
+        lock.withLock { cancelled }
+    }
+
+    func markCancelled() {
+        lock.withLock { cancelled = true }
+    }
 }
