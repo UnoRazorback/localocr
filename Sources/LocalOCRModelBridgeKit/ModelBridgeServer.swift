@@ -27,6 +27,81 @@ public struct UnimplementedModelBridgeHandler: ModelBridgeHandling {
     }
 }
 
+public struct ModelBridgeProviderHandler: ModelBridgeHandling {
+    private let ollama: OllamaBridgeAdapter
+
+    public init(ollama: OllamaBridgeAdapter) {
+        self.ollama = ollama
+    }
+
+    public func handle(_ request: ModelBridgeRequest) async -> ModelBridgeResponse {
+        guard request.provider == .ollama else {
+            return Self.errorResponse(
+                id: request.id,
+                code: .providerNotImplemented,
+                message: "Provider adapter is not implemented."
+            )
+        }
+
+        switch request.action {
+        case .discover:
+            do {
+                return ModelBridgeResponse(
+                    id: request.id,
+                    candidates: try await ollama.discover(
+                        timeoutMilliseconds: request.timeoutMilliseconds
+                    )
+                )
+            } catch {
+                return Self.errorResponse(
+                    id: request.id,
+                    code: .providerUnavailable,
+                    message: "Ollama discovery is unavailable."
+                )
+            }
+        case .generate:
+            return await ollama.generate(request)
+        case .status:
+            guard let selectedModel = request.model else {
+                return Self.errorResponse(
+                    id: request.id,
+                    code: .invalidRequest,
+                    message: "Ollama status requires an exact model identifier."
+                )
+            }
+            do {
+                let matches = try await ollama.discover(
+                    timeoutMilliseconds: request.timeoutMilliseconds
+                ).filter {
+                    $0.identity.model == selectedModel && $0.locality == .verifiedLocal
+                }
+                guard matches.count == 1, let candidate = matches.first else {
+                    return Self.errorResponse(
+                        id: request.id,
+                        code: .providerUnavailable,
+                        message: "Selected Ollama model is unavailable or not verified local."
+                    )
+                }
+                return ModelBridgeResponse(id: request.id, identity: candidate.identity)
+            } catch {
+                return Self.errorResponse(
+                    id: request.id,
+                    code: .providerUnavailable,
+                    message: "Ollama status is unavailable."
+                )
+            }
+        }
+    }
+
+    private static func errorResponse(
+        id: UInt64,
+        code: ModelBridgeWireErrorCode,
+        message: String
+    ) -> ModelBridgeResponse {
+        ModelBridgeResponse(id: id, error: ModelBridgeWireError(code: code, message: message))
+    }
+}
+
 public actor ModelBridgeServer {
     public static let maximumMessageBytes = ModelBridgeLimits.maximumMessageBytes
 
