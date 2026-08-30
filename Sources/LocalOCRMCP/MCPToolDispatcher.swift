@@ -272,8 +272,18 @@ public struct MCPToolDispatcher: Sendable {
             }
         case .emptyDocument, .invalidFields:
             ("local_intelligence_invalid_input", "The document does not contain usable OCR text or the requested fields are invalid. Ordinary OCR tools remain available.")
+        case .bridgeUnavailable:
+            ("local_intelligence_bridge_unavailable", "The Local Intelligence bridge is unavailable. Reinstall or repair LocalOCR, then retry. Ordinary OCR tools remain available.")
+        case .bridgeInvalid:
+            ("local_intelligence_bridge_invalid", "The Local Intelligence bridge returned an invalid protocol response. Reinstall or repair LocalOCR, then retry. Ordinary OCR tools remain available.")
+        case .generationTimedOut:
+            ("local_intelligence_generation_timeout", "The selected local model timed out before producing a result. Ordinary OCR tools remain available.")
+        case .generationFailed:
+            ("local_intelligence_generation_failed", "The selected local model could not generate a result. Ordinary OCR tools remain available.")
         case .contextOverflow:
-            ("local_intelligence_generation_failed", "Local Intelligence could not process this document. Ordinary OCR tools remain available.")
+            ("local_intelligence_context_limit_exceeded", "The selected local model cannot safely process this document within its context limit. Ordinary OCR tools remain available.")
+        case .malformedOutput:
+            ("local_intelligence_output_malformed", "The selected local model returned malformed structured output. Ordinary OCR tools remain available.")
         case .ungroundedOutput:
             ("local_intelligence_output_not_grounded", "Local Intelligence could not ground its result in the document. Ordinary OCR tools remain available.")
         case .cancelled:

@@ -448,8 +448,12 @@ private struct ExecutableFixture {
 
 private let fixtureGenerateRequest = ModelBridgeRequest.generate(
     id: 44,
-    provider: .ollama,
-    model: "gemma4:8b",
+    expectedIdentity: LocalModelIdentity(
+        provider: .ollama,
+        model: "gemma4:8b",
+        fingerprint: "sha256:fixture",
+        harnessVersion: "0.11.7"
+    ),
     operation: .summarize,
     prompt: "Summarize grounded OCR text."
 )

@@ -120,7 +120,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LocalOCRModelBridgeKitTests",
-            dependencies: ["LocalOCRModelBridgeKit", "LocalOCRModelBridgeProtocol"],
+            dependencies: ["LocalOCRModelBridgeKit", "LocalOCRModelBridgeProtocol", "LocalOCRModelCore"],
             path: "tests/LocalOCRModelBridgeKitTests",
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),

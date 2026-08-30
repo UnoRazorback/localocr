@@ -68,6 +68,22 @@ import Testing
         #expect(outcome.failures == ["organization"])
     }
 
+    @Test func summaryWithUnsupportedClaimAndUnrelatedValidQuoteFailsQualification() async throws {
+        let provider = Task6FixtureProvider(summary: .init(
+            text: "This invoice was paid through a cloud payment service.",
+            citations: [
+                .init(page: 1, quote: "Invoice Q-104. Date: 2026-08-29. Total: $144.17.")
+            ]
+        ))
+
+        let outcome = try await task6QualificationService(provider: provider)
+            .qualify(task6OllamaIdentity)
+
+        #expect(outcome.status == .failed)
+        #expect(outcome.receipt == nil)
+        #expect(outcome.failures == ["summary"])
+    }
+
     @Test func cachedQualificationBecomesStaleForIdentityHarnessFixtureOrPolicyChanges() async throws {
         let service = task6QualificationService(provider: Task6FixtureProvider())
         let passed = try #require(try await service.qualify(task6OllamaIdentity).receipt)
@@ -117,16 +133,12 @@ import Testing
     }
 
     @Test func passedQualificationCacheSurvivesAServiceRelaunch() async throws {
-        let base = try task6PhysicalURL(FileManager.default.temporaryDirectory)
-            .appending(path: "localocr-task6-cache-\(UUID().uuidString)", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: false)
-        try #require(chmod(base.path, 0o700) == 0)
-        defer { try? FileManager.default.removeItem(at: base) }
-        let cacheDirectory = base.appending(path: "qualification", directoryHint: .isDirectory)
+        let fixture = try Task6QualificationCacheFixture()
+        defer { fixture.remove() }
         let first = LocalModelQualificationService(
             providerFactory: { _ in Task6FixtureProvider() },
             now: { task6Now },
-            cacheDirectory: cacheDirectory
+            cacheDirectory: fixture.cacheDirectory
         )
         _ = try await first.qualify(task6OllamaIdentity)
         let relaunched = LocalModelQualificationService(
@@ -135,13 +147,139 @@ import Testing
                 return Task6FixtureProvider()
             },
             now: { task6Now },
-            cacheDirectory: cacheDirectory
+            cacheDirectory: fixture.cacheDirectory
         )
 
         let cached = await relaunched.cachedOutcome(for: task6OllamaIdentity)
 
         #expect(cached?.status == .passed)
         #expect(cached?.receipt == task6QualificationReceipt())
+    }
+
+    @Test func corruptQualificationCacheFailsClosedAsStale() async throws {
+        let fixture = try Task6QualificationCacheFixture()
+        defer { fixture.remove() }
+        try await fixture.persistPassedQualification()
+        let receiptURL = try fixture.onlyReceiptURL()
+        let handle = try FileHandle(forWritingTo: receiptURL)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: Data(#"{"schema_version":1"#.utf8))
+        try handle.synchronize()
+        try handle.close()
+
+        let cached = await fixture.relaunchedService().cachedOutcome(for: task6OllamaIdentity)
+
+        #expect(cached?.status == .stale)
+        #expect(cached?.receipt == nil)
+        #expect(cached?.failures == ["qualification_cache_invalid"])
+    }
+
+    @Test func insecureCacheOwnerModeSymlinkAndHardLinkAreRejected() async throws {
+        do {
+            let fixture = try Task6QualificationCacheFixture()
+            defer { fixture.remove() }
+            try await fixture.persistPassedQualification()
+            let receiptURL = try fixture.onlyReceiptURL()
+            try #require(chmod(receiptURL.path, 0o644) == 0)
+            #expect(await fixture.relaunchedService().cachedOutcome(for: task6OllamaIdentity)?.status == .stale)
+        }
+
+        do {
+            let fixture = try Task6QualificationCacheFixture()
+            defer { fixture.remove() }
+            try await fixture.persistPassedQualification()
+            let wrongOwner = geteuid() == uid_t.max ? geteuid() - 1 : geteuid() + 1
+            #expect(await fixture.relaunchedService(
+                expectedCacheOwnerID: wrongOwner
+            ).cachedOutcome(for: task6OllamaIdentity)?.status == .stale)
+        }
+
+        do {
+            let fixture = try Task6QualificationCacheFixture()
+            defer { fixture.remove() }
+            try await fixture.persistPassedQualification()
+            let receiptURL = try fixture.onlyReceiptURL()
+            let target = fixture.baseURL.appending(path: "symlink-target.json")
+            try FileManager.default.moveItem(at: receiptURL, to: target)
+            try FileManager.default.createSymbolicLink(at: receiptURL, withDestinationURL: target)
+            #expect(await fixture.relaunchedService().cachedOutcome(for: task6OllamaIdentity)?.status == .stale)
+        }
+
+        do {
+            let fixture = try Task6QualificationCacheFixture()
+            defer { fixture.remove() }
+            try await fixture.persistPassedQualification()
+            let receiptURL = try fixture.onlyReceiptURL()
+            try FileManager.default.linkItem(
+                at: receiptURL,
+                to: fixture.baseURL.appending(path: "qualification-hard-link.json")
+            )
+            #expect(await fixture.relaunchedService().cachedOutcome(for: task6OllamaIdentity)?.status == .stale)
+        }
+    }
+
+    @Test func independentConcurrentWritersLeaveOneCompleteReadableOutcome() async throws {
+        let fixture = try Task6QualificationCacheFixture()
+        defer { fixture.remove() }
+        let passed = fixture.relaunchedService(provider: Task6FixtureProvider())
+        let failed = fixture.relaunchedService(provider: Task6FixtureProvider(extraction: [
+            .init(name: "date", value: nil, sourcePage: nil, evidence: nil),
+            .init(name: "total", value: nil, sourcePage: nil, evidence: nil),
+            .init(name: "reference_number", value: nil, sourcePage: nil, evidence: nil)
+        ]))
+
+        async let passedResult = task6QualificationResult(from: passed)
+        async let failedResult = task6QualificationResult(from: failed)
+        let writerResults = await [passedResult, failedResult]
+        let cached = await fixture.relaunchedService().cachedOutcome(for: task6OllamaIdentity)
+
+        #expect(writerResults.contains { $0 != nil })
+        #expect(cached?.status == .passed || cached?.status == .failed)
+        #expect(cached?.status != .stale)
+    }
+
+    @Test func partialFailureAndOriginalTimestampSurviveIndependentRelaunches() async throws {
+        let fixture = try Task6QualificationCacheFixture()
+        defer { fixture.remove() }
+        let failedService = fixture.relaunchedService(provider: Task6FixtureProvider(extraction: [
+            .init(name: "date", value: nil, sourcePage: nil, evidence: nil),
+            .init(name: "total", value: nil, sourcePage: nil, evidence: nil),
+            .init(name: "reference_number", value: nil, sourcePage: nil, evidence: nil)
+        ]))
+        _ = try await failedService.qualify(task6OllamaIdentity)
+
+        let failed = await fixture.relaunchedService(now: task6Now.addingTimeInterval(3_600))
+            .cachedOutcome(for: task6OllamaIdentity)
+        #expect(failed?.status == .failed)
+        #expect(failed?.receipt == nil)
+        #expect(failed?.failures == ["extraction"])
+
+        try FileManager.default.removeItem(at: try fixture.onlyReceiptURL())
+        try await fixture.persistPassedQualification()
+        let passed = await fixture.relaunchedService(now: task6Now.addingTimeInterval(86_400))
+            .cachedOutcome(for: task6OllamaIdentity)
+        #expect(passed?.status == .passed)
+        #expect(passed?.receipt?.qualifiedAt == task6Now)
+    }
+
+    @Test(arguments: ["missing", "malformed"])
+    func missingOrMalformedFixtureResourceFailsClosedWithoutCrashing(_ kind: String) async {
+        let service = LocalModelQualificationService(
+            providerFactory: { _ in Task6FixtureProvider() },
+            now: { task6Now },
+            cacheDirectory: nil,
+            fixtureLoader: {
+                if kind == "missing" { throw CocoaError(.fileNoSuchFile) }
+                throw DecodingError.dataCorrupted(.init(
+                    codingPath: [],
+                    debugDescription: "malformed fixture"
+                ))
+            }
+        )
+
+        await #expect(throws: IntelligenceError.bridgeInvalid) {
+            try await service.qualify(task6OllamaIdentity)
+        }
     }
 }
 
@@ -385,4 +523,53 @@ func task6PhysicalURL(_ url: URL) throws -> URL {
         as: UTF8.self
     )
     return URL(fileURLWithPath: path, isDirectory: true)
+}
+
+private func task6QualificationResult(
+    from service: LocalModelQualificationService
+) async -> LocalModelQualificationOutcome? {
+    try? await service.qualify(task6OllamaIdentity)
+}
+
+private final class Task6QualificationCacheFixture: @unchecked Sendable {
+    let baseURL: URL
+    let cacheDirectory: URL
+
+    init() throws {
+        baseURL = try task6PhysicalURL(FileManager.default.temporaryDirectory)
+            .appending(path: "localocr-task6-cache-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: false)
+        try #require(chmod(baseURL.path, 0o700) == 0)
+        cacheDirectory = baseURL.appending(path: "qualification", directoryHint: .isDirectory)
+    }
+
+    func persistPassedQualification() async throws {
+        _ = try await relaunchedService(provider: Task6FixtureProvider())
+            .qualify(task6OllamaIdentity)
+    }
+
+    func relaunchedService(
+        provider: any DocumentIntelligenceProviding = Task6FixtureProvider(),
+        now: Date = task6Now,
+        expectedCacheOwnerID: uid_t = geteuid()
+    ) -> LocalModelQualificationService {
+        LocalModelQualificationService(
+            providerFactory: { _ in provider },
+            now: { now },
+            cacheDirectory: cacheDirectory,
+            expectedCacheOwnerID: expectedCacheOwnerID
+        )
+    }
+
+    func onlyReceiptURL() throws -> URL {
+        let contents = try FileManager.default.contentsOfDirectory(
+            at: cacheDirectory,
+            includingPropertiesForKeys: nil
+        ).filter { !$0.lastPathComponent.contains(".quarantine-") }
+        return try #require(contents.count == 1 ? contents[0] : nil)
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: baseURL)
+    }
 }

@@ -5,6 +5,9 @@ import LocalOCRModelCore
 
 public enum OllamaBridgeError: Error, Sendable, Equatable {
     case invalidProviderResponse
+    case modelUnavailable
+    case localityUnverified
+    case localityBlocked
 }
 
 public struct OllamaBridgeAdapter: Sendable {
@@ -63,6 +66,7 @@ public struct OllamaBridgeAdapter: Sendable {
         guard request.provider == .ollama,
               request.action == .generate,
               let selectedModel = request.model,
+              let expectedIdentity = request.expectedIdentity,
               let operation = request.operation,
               let prompt = request.prompt,
               request.fields.count <= 32,
@@ -80,17 +84,36 @@ public struct OllamaBridgeAdapter: Sendable {
                 named: selectedModel,
                 timeoutMilliseconds: request.timeoutMilliseconds
             )
+        } catch OllamaBridgeError.localityUnverified {
+            return Self.errorResponse(
+                id: request.id,
+                code: .localityUnverified,
+                message: "Selected Ollama model is not verified local."
+            )
+        } catch OllamaBridgeError.localityBlocked {
+            return Self.errorResponse(
+                id: request.id,
+                code: .localityBlocked,
+                message: "Selected Ollama model is blocked by locality policy."
+            )
         } catch is OllamaBridgeError {
             return Self.errorResponse(
                 id: request.id,
-                code: .generationFailed,
-                message: "Selected Ollama model is not verified local."
+                code: .modelIdentityChanged,
+                message: "Selected Ollama model identity is unavailable or ambiguous."
             )
         } catch {
             return Self.errorResponse(
                 id: request.id,
                 code: .providerUnavailable,
                 message: "Ollama model verification is unavailable."
+            )
+        }
+        guard before.identity == expectedIdentity else {
+            return Self.errorResponse(
+                id: request.id,
+                code: .modelIdentityChanged,
+                message: "Selected Ollama model identity changed before generation."
             )
         }
 
@@ -120,7 +143,7 @@ public struct OllamaBridgeAdapter: Sendable {
         } catch {
             return Self.errorResponse(
                 id: request.id,
-                code: .providerUnavailable,
+                code: Self.generationTransportErrorCode(error),
                 message: "Ollama generation is unavailable."
             )
         }
@@ -138,7 +161,9 @@ public struct OllamaBridgeAdapter: Sendable {
                 message: "Ollama model identity could not be reverified."
             )
         }
-        guard before.identity == after.identity,
+        guard before.identity == expectedIdentity,
+              after.identity == expectedIdentity,
+              before.identity == after.identity,
               before.identity.model == selectedModel,
               after.identity.model == selectedModel,
               before.locality == .verifiedLocal,
@@ -156,7 +181,7 @@ public struct OllamaBridgeAdapter: Sendable {
               Self.validatePayload(content, operation: operation, fields: request.fields) else {
             return Self.errorResponse(
                 id: request.id,
-                code: .generationFailed,
+                code: .schemaFailure,
                 message: "Ollama returned an invalid structured response."
             )
         }
@@ -175,12 +200,20 @@ public struct OllamaBridgeAdapter: Sendable {
         let matches = try await discover(timeoutMilliseconds: timeoutMilliseconds).filter {
             $0.identity.model == selectedModel
         }
-        guard matches.count == 1,
-              let candidate = matches.first,
-              candidate.locality == .verifiedLocal,
-              candidate.identity.fingerprint != nil,
+        guard matches.count == 1, let candidate = matches.first else {
+            throw OllamaBridgeError.modelUnavailable
+        }
+        switch candidate.locality {
+        case .blocked:
+            throw OllamaBridgeError.localityBlocked
+        case .unverified:
+            throw OllamaBridgeError.localityUnverified
+        case .verifiedLocal:
+            break
+        }
+        guard candidate.identity.fingerprint != nil,
               candidate.identity.harnessVersion != nil else {
-            throw OllamaBridgeError.invalidProviderResponse
+            throw OllamaBridgeError.localityUnverified
         }
         return candidate
     }
@@ -457,6 +490,19 @@ public struct OllamaBridgeAdapter: Sendable {
         message: String
     ) -> ModelBridgeResponse {
         ModelBridgeResponse(id: id, error: ModelBridgeWireError(code: code, message: message))
+    }
+
+    private static func generationTransportErrorCode(
+        _ error: any Error
+    ) -> ModelBridgeWireErrorCode {
+        switch error as? LoopbackHTTPError {
+        case .timedOut:
+            .generationTimedOut
+        case .invalidStatus(413):
+            .contextOverflow
+        default:
+            .providerUnavailable
+        }
     }
 }
 

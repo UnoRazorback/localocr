@@ -1,6 +1,7 @@
 import Foundation
 @testable import LocalOCRModelBridgeKit
 import LocalOCRModelBridgeProtocol
+import LocalOCRModelCore
 import Testing
 
 @Suite("Verified-local Ollama adapter")
@@ -112,8 +113,7 @@ struct OllamaBridgeAdapterTests {
         let adapter = OllamaBridgeAdapter(http: http)
         let request = ModelBridgeRequest.generate(
             id: 41,
-            provider: .ollama,
-            model: "gemma4:8b",
+            expectedIdentity: ollamaFixtureIdentity,
             operation: .summarize,
             prompt: "bounded LocalOCR prompt",
             timeoutMilliseconds: 3_000
@@ -168,6 +168,52 @@ struct OllamaBridgeAdapterTests {
     }
 
     @Test
+    func changedExpectedIdentityStopsBeforeAnyPromptBearingChatRequest() async {
+        let http = FixtureLoopbackHTTP(responses: [
+            versionFixture,
+            tagsFixture(digest: String(repeating: "b", count: 64))
+        ])
+
+        let response = await OllamaBridgeAdapter(http: http).generate(summaryRequest)
+
+        #expect(response.error?.code == .modelIdentityChanged)
+        #expect(response.payloadJSON == nil)
+        #expect(await http.requests.map(\.endpoint) == [.ollamaVersion, .ollamaTags])
+        #expect(await http.requests.allSatisfy { $0.body == nil })
+    }
+
+    @Test(arguments: [
+        (LoopbackHTTPError.timedOut, ModelBridgeWireErrorCode.generationTimedOut),
+        (LoopbackHTTPError.invalidStatus(413), ModelBridgeWireErrorCode.contextOverflow)
+    ])
+    func chatTransportFailureUsesItsStableWireCategory(
+        error: LoopbackHTTPError,
+        expected: ModelBridgeWireErrorCode
+    ) async {
+        let http = FixtureLoopbackHTTP(outcomes: [
+            .data(versionFixture),
+            .data(localTagsFixture),
+            .error(error)
+        ])
+
+        let response = await OllamaBridgeAdapter(http: http).generate(summaryRequest)
+
+        #expect(response.error?.code == expected)
+        #expect(response.payloadJSON == nil)
+    }
+
+    @Test func malformedStructuredProviderOutputUsesSchemaFailure() async {
+        let http = FixtureLoopbackHTTP(
+            responses: generationResponses(chat: chatFixture(content: #"{"unexpected":true}"#))
+        )
+
+        let response = await OllamaBridgeAdapter(http: http).generate(summaryRequest)
+
+        #expect(response.error?.code == .schemaFailure)
+        #expect(response.payloadJSON == nil)
+    }
+
+    @Test
     func organizationAndExtractionSchemasAreClosedAndBounded() async throws {
         let organizationHTTP = FixtureLoopbackHTTP(
             responses: generationResponses(
@@ -181,15 +227,13 @@ struct OllamaBridgeAdapterTests {
         )
         let organizationRequest = ModelBridgeRequest.generate(
             id: 42,
-            provider: .ollama,
-            model: "gemma4:8b",
+            expectedIdentity: ollamaFixtureIdentity,
             operation: .organize,
             prompt: "organize"
         )
         let extractionRequest = ModelBridgeRequest.generate(
             id: 43,
-            provider: .ollama,
-            model: "gemma4:8b",
+            expectedIdentity: ollamaFixtureIdentity,
             operation: .extract,
             prompt: "extract",
             fields: ["invoice_number"]
@@ -286,7 +330,7 @@ struct OllamaBridgeAdapterTests {
             let response = await OllamaBridgeAdapter(
                 http: FixtureLoopbackHTTP(responses: generationResponses(chat: chat))
             ).generate(summaryRequest)
-            #expect(response.error?.code == .generationFailed)
+            #expect(response.error?.code == .schemaFailure)
             #expect(response.payloadJSON == nil)
             #expect(response.identity == nil)
         }
@@ -312,8 +356,7 @@ struct OllamaBridgeAdapterTests {
             (
                 ModelBridgeRequest.generate(
                     id: 47,
-                    provider: .ollama,
-                    model: "gemma4:8b",
+                    expectedIdentity: ollamaFixtureIdentity,
                     operation: .organize,
                     prompt: "organize"
                 ),
@@ -322,8 +365,7 @@ struct OllamaBridgeAdapterTests {
             (
                 ModelBridgeRequest.generate(
                     id: 48,
-                    provider: .ollama,
-                    model: "gemma4:8b",
+                    expectedIdentity: ollamaFixtureIdentity,
                     operation: .extract,
                     prompt: "extract",
                     fields: ["invoice_number"]
@@ -338,7 +380,7 @@ struct OllamaBridgeAdapterTests {
                     responses: generationResponses(chat: chatFixture(content: content))
                 )
             ).generate(request)
-            #expect(response.error?.code == .generationFailed)
+            #expect(response.error?.code == .schemaFailure)
             #expect(response.payloadJSON == nil)
         }
     }
@@ -353,9 +395,9 @@ struct OllamaBridgeAdapterTests {
             http: FixtureLoopbackHTTP(responses: [versionFixture, tagsFixture(size: 0)])
         ).generate(summaryRequest)
 
-        #expect(oversized.error?.code == .generationFailed)
+        #expect(oversized.error?.code == .schemaFailure)
         #expect(oversized.payloadJSON == nil)
-        #expect(unverified.error?.code == .generationFailed)
+        #expect(unverified.error?.code == .localityUnverified)
         #expect(unverified.payloadJSON == nil)
     }
 
@@ -366,16 +408,14 @@ struct OllamaBridgeAdapterTests {
         let oversizedHTTP = FixtureLoopbackHTTP(responses: safeResponses)
         let emptyRequest = ModelBridgeRequest.generate(
             id: 45,
-            provider: .ollama,
-            model: "gemma4:8b",
+            expectedIdentity: ollamaFixtureIdentity,
             operation: .extract,
             prompt: "extract",
             fields: []
         )
         let oversizedRequest = ModelBridgeRequest.generate(
             id: 46,
-            provider: .ollama,
-            model: "gemma4:8b",
+            expectedIdentity: ollamaFixtureIdentity,
             operation: .extract,
             prompt: "extract",
             fields: [String(repeating: "x", count: 4_097)]
@@ -445,8 +485,7 @@ struct OllamaBridgeAdapterTests {
         var frame = try JSONEncoder().encode(
             ModelBridgeRequest.generate(
                 id: 54,
-                provider: .ollama,
-                model: "gemma4:8b",
+                expectedIdentity: ollamaFixtureIdentity,
                 operation: .summarize,
                 prompt: "summarize"
             )
@@ -540,10 +579,16 @@ private func tagsFixture(
 
 private let summaryRequest = ModelBridgeRequest.generate(
     id: 44,
-    provider: .ollama,
-    model: "gemma4:8b",
+    expectedIdentity: ollamaFixtureIdentity,
     operation: .summarize,
     prompt: "summarize"
+)
+
+private let ollamaFixtureIdentity = LocalModelIdentity(
+    provider: .ollama,
+    model: "gemma4:8b",
+    fingerprint: String(repeating: "a", count: 64),
+    harnessVersion: "0.11.7"
 )
 
 private func generationResponses(chat: Data) -> [Data] {

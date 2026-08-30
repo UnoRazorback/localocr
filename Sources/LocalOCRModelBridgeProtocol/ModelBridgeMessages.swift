@@ -28,6 +28,7 @@ public struct ModelBridgeRequest: Codable, Sendable, Equatable {
     public let action: ModelBridgeAction
     public let provider: LocalModelProviderID
     public let model: String?
+    public let expectedIdentity: LocalModelIdentity?
     public let operation: ModelBridgeOperation?
     public let prompt: String?
     public let fields: [String]
@@ -39,6 +40,7 @@ public struct ModelBridgeRequest: Codable, Sendable, Equatable {
         action: ModelBridgeAction,
         provider: LocalModelProviderID,
         model: String? = nil,
+        expectedIdentity: LocalModelIdentity? = nil,
         operation: ModelBridgeOperation? = nil,
         prompt: String? = nil,
         fields: [String] = [],
@@ -49,6 +51,7 @@ public struct ModelBridgeRequest: Codable, Sendable, Equatable {
         self.action = action
         self.provider = provider
         self.model = model
+        self.expectedIdentity = expectedIdentity
         self.operation = operation
         self.prompt = prompt
         self.fields = fields
@@ -85,8 +88,7 @@ public struct ModelBridgeRequest: Codable, Sendable, Equatable {
 
     public static func generate(
         id: UInt64,
-        provider: LocalModelProviderID,
-        model: String,
+        expectedIdentity: LocalModelIdentity,
         operation: ModelBridgeOperation,
         prompt: String,
         fields: [String] = [],
@@ -95,8 +97,9 @@ public struct ModelBridgeRequest: Codable, Sendable, Equatable {
         ModelBridgeRequest(
             id: id,
             action: .generate,
-            provider: provider,
-            model: model,
+            provider: expectedIdentity.provider,
+            model: expectedIdentity.model,
+            expectedIdentity: expectedIdentity,
             operation: operation,
             prompt: prompt,
             fields: fields,
@@ -105,7 +108,7 @@ public struct ModelBridgeRequest: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case version, id, action, provider, model, operation, prompt, fields, timeoutMilliseconds
+        case version, id, action, provider, model, expectedIdentity, operation, prompt, fields, timeoutMilliseconds
     }
 
     public init(from decoder: any Decoder) throws {
@@ -117,6 +120,13 @@ public struct ModelBridgeRequest: Codable, Sendable, Equatable {
         action = try container.decode(ModelBridgeAction.self, forKey: .action)
         provider = try container.decode(LocalModelProviderID.self, forKey: .provider)
         model = try container.decodeIfPresent(String.self, forKey: .model)
+        if container.contains(.expectedIdentity), try !container.decodeNil(forKey: .expectedIdentity) {
+            expectedIdentity = try decodeStrictIdentity(
+                from: container.superDecoder(forKey: .expectedIdentity)
+            )
+        } else {
+            expectedIdentity = nil
+        }
         operation = try container.decodeIfPresent(ModelBridgeOperation.self, forKey: .operation)
         prompt = try container.decodeIfPresent(String.self, forKey: .prompt)
         fields = try container.decode([String].self, forKey: .fields)
@@ -142,18 +152,25 @@ public struct ModelBridgeRequest: Codable, Sendable, Equatable {
         }
         switch action {
         case .discover:
-            guard model == nil, operation == nil, prompt == nil, fields.isEmpty else {
+            guard model == nil, expectedIdentity == nil,
+                  operation == nil, prompt == nil, fields.isEmpty else {
                 throw DecodingError.dataCorruptedError(forKey: .action, in: container, debugDescription: "Discovery requests accept provider metadata only.")
             }
         case .status:
-            guard operation == nil, prompt == nil, fields.isEmpty else {
+            guard expectedIdentity == nil, operation == nil, prompt == nil, fields.isEmpty else {
                 throw DecodingError.dataCorruptedError(forKey: .action, in: container, debugDescription: "Status requests cannot contain generation content.")
             }
         case .generate:
-            guard model != nil, operation != nil,
+            guard let model,
+                  let expectedIdentity,
+                  expectedIdentity.provider == provider,
+                  expectedIdentity.model == model,
+                  !(expectedIdentity.fingerprint?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
+                  !(expectedIdentity.harnessVersion?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
+                  operation != nil,
                   let prompt,
                   !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw DecodingError.dataCorruptedError(forKey: .action, in: container, debugDescription: "Generate requests require a model, operation, and prompt.")
+                throw DecodingError.dataCorruptedError(forKey: .action, in: container, debugDescription: "Generate requests require one exact immutable identity, operation, and prompt.")
             }
         }
     }
@@ -255,7 +272,13 @@ public enum ModelBridgeWireErrorCode: String, Codable, Sendable, Equatable {
     case providerNotImplemented = "provider_not_implemented"
     case providerUnavailable = "provider_unavailable"
     case modelIdentityChanged = "model_identity_changed"
+    case localityUnverified = "locality_unverified"
+    case localityBlocked = "locality_blocked"
+    case generationTimedOut = "generation_timed_out"
     case generationFailed = "generation_failed"
+    case contextOverflow = "context_overflow"
+    case schemaFailure = "schema_failure"
+    case groundingFailure = "grounding_failure"
 }
 
 public struct ModelBridgeWireError: Codable, Sendable, Equatable {

@@ -6,6 +6,9 @@ import LocalOCRModelCore
 
 public enum LMStudioBridgeError: Error, Sendable, Equatable {
     case invalidProviderResponse
+    case modelUnavailable
+    case localityUnverified
+    case localityBlocked
 }
 
 public struct LMStudioLocalityAttestation: Sendable, Equatable {
@@ -124,6 +127,7 @@ public struct LMStudioBridgeAdapter: Sendable {
         guard request.provider == .lmStudio,
               request.action == .generate,
               let selectedModel = request.model,
+              let expectedIdentity = request.expectedIdentity,
               let operation = request.operation,
               let prompt = request.prompt,
               prompt.utf8.count <= ModelBridgeLimits.maximumPromptBytes,
@@ -133,6 +137,45 @@ public struct LMStudioBridgeAdapter: Sendable {
                 id: request.id,
                 code: .generationFailed,
                 message: "Invalid LM Studio generation request."
+            )
+        }
+
+        let before: AttestedCandidate
+        do {
+            before = try await verifiedCandidate(
+                named: selectedModel,
+                timeoutMilliseconds: request.timeoutMilliseconds
+            )
+        } catch LMStudioBridgeError.localityUnverified {
+            return Self.errorResponse(
+                id: request.id,
+                code: .localityUnverified,
+                message: "Selected LM Studio model is not verified local."
+            )
+        } catch LMStudioBridgeError.localityBlocked {
+            return Self.errorResponse(
+                id: request.id,
+                code: .localityBlocked,
+                message: "Selected LM Studio model is blocked by locality policy."
+            )
+        } catch is LMStudioBridgeError {
+            return Self.errorResponse(
+                id: request.id,
+                code: .modelIdentityChanged,
+                message: "Selected LM Studio model identity is unavailable or ambiguous."
+            )
+        } catch {
+            return Self.errorResponse(
+                id: request.id,
+                code: .providerUnavailable,
+                message: "LM Studio model verification is unavailable."
+            )
+        }
+        guard before.candidate.identity == expectedIdentity else {
+            return Self.errorResponse(
+                id: request.id,
+                code: .modelIdentityChanged,
+                message: "Selected LM Studio model identity changed before generation."
             )
         }
 
@@ -147,26 +190,6 @@ public struct LMStudioBridgeAdapter: Sendable {
             )
         }
 
-        let before: AttestedCandidate
-        do {
-            before = try await verifiedCandidate(
-                named: selectedModel,
-                timeoutMilliseconds: request.timeoutMilliseconds
-            )
-        } catch is LMStudioBridgeError {
-            return Self.errorResponse(
-                id: request.id,
-                code: .generationFailed,
-                message: "Selected LM Studio model is not verified local."
-            )
-        } catch {
-            return Self.errorResponse(
-                id: request.id,
-                code: .providerUnavailable,
-                message: "LM Studio model verification is unavailable."
-            )
-        }
-
         let chatData: Data
         do {
             chatData = try await http.perform(
@@ -177,7 +200,7 @@ public struct LMStudioBridgeAdapter: Sendable {
         } catch {
             return Self.errorResponse(
                 id: request.id,
-                code: .providerUnavailable,
+                code: Self.generationTransportErrorCode(error),
                 message: "LM Studio generation is unavailable."
             )
         }
@@ -188,7 +211,7 @@ public struct LMStudioBridgeAdapter: Sendable {
               Self.validatePayload(chat.content, operation: operation, fields: request.fields) else {
             return Self.errorResponse(
                 id: request.id,
-                code: .generationFailed,
+                code: .schemaFailure,
                 message: "LM Studio returned an invalid structured response."
             )
         }
@@ -206,7 +229,9 @@ public struct LMStudioBridgeAdapter: Sendable {
                 message: "LM Studio model identity or link state could not be reverified."
             )
         }
-        guard before.candidate.identity == after.candidate.identity,
+        guard before.candidate.identity == expectedIdentity,
+              after.candidate.identity == expectedIdentity,
+              before.candidate.identity == after.candidate.identity,
               before.candidate.identity.model == selectedModel,
               after.candidate.identity.model == selectedModel,
               before.candidate.locality == .verifiedLocal,
@@ -234,13 +259,21 @@ public struct LMStudioBridgeAdapter: Sendable {
         let matches = try await attestedCandidates(timeoutMilliseconds: timeoutMilliseconds).filter {
             $0.candidate.identity.model == selectedModel
         }
-        guard matches.count == 1,
-              let candidate = matches.first,
-              candidate.candidate.locality == .verifiedLocal,
-              candidate.candidate.identity.fingerprint != nil,
+        guard matches.count == 1, let candidate = matches.first else {
+            throw LMStudioBridgeError.modelUnavailable
+        }
+        switch candidate.candidate.locality {
+        case .blocked:
+            throw LMStudioBridgeError.localityBlocked
+        case .unverified:
+            throw LMStudioBridgeError.localityUnverified
+        case .verifiedLocal:
+            break
+        }
+        guard candidate.candidate.identity.fingerprint != nil,
               candidate.candidate.identity.harnessVersion != nil,
               candidate.loadedInstanceID != nil else {
-            throw LMStudioBridgeError.invalidProviderResponse
+            throw LMStudioBridgeError.localityUnverified
         }
         return candidate
     }
@@ -515,6 +548,19 @@ public struct LMStudioBridgeAdapter: Sendable {
         message: String
     ) -> ModelBridgeResponse {
         ModelBridgeResponse(id: id, error: ModelBridgeWireError(code: code, message: message))
+    }
+
+    private static func generationTransportErrorCode(
+        _ error: any Error
+    ) -> ModelBridgeWireErrorCode {
+        switch error as? LoopbackHTTPError {
+        case .timedOut:
+            .generationTimedOut
+        case .invalidStatus(413):
+            .contextOverflow
+        default:
+            .providerUnavailable
+        }
     }
 }
 

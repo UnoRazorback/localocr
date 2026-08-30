@@ -124,10 +124,57 @@ import Testing
         }
         let router = task6Router(transport: transport, apple: apple)
 
-        await #expect(throws: IntelligenceError.selection(.providerUnavailable(.ollama))) {
+        await #expect(throws: IntelligenceError.bridgeUnavailable) {
             try await router.summarize(task6Document)
         }
         #expect(await apple.summaryCount == 0)
+    }
+
+    @Test func bridgeAndGenerationFailuresMapToStableCategoriesWithoutFallback() async {
+        enum Failure: Sendable {
+            case transport(ModelBridgeClientError)
+            case wire(ModelBridgeWireErrorCode)
+        }
+        let fixtures: [(Failure, IntelligenceError)] = [
+            (.transport(.timedOut), .generationTimedOut),
+            (.transport(.malformedResponse), .bridgeInvalid),
+            (.transport(.responseTooLarge), .bridgeInvalid),
+            (.transport(.helperLaunchFailed), .bridgeUnavailable),
+            (.wire(.generationFailed), .generationFailed),
+            (.wire(.contextOverflow), .contextOverflow),
+            (.wire(.schemaFailure), .malformedOutput),
+            (.wire(.groundingFailure), .ungroundedOutput),
+            (.wire(.localityUnverified), .selection(.localityUnverified(task6OllamaIdentity)))
+        ]
+
+        for (fixture, expected) in fixtures {
+            let apple = Task6FixtureProvider(identity: .appleSystemDefault)
+            let transport = Task6Transport { request in
+                if request.action == .discover {
+                    return task6DiscoveryResponse(request: request, candidates: [task6Candidate()])
+                }
+                switch fixture {
+                case let .transport(error):
+                    throw error
+                case let .wire(code):
+                    return ModelBridgeResponse(
+                        id: request.id,
+                        error: .init(code: code, message: "fixture")
+                    )
+                }
+            }
+
+            do {
+                _ = try await task6Router(transport: transport, apple: apple)
+                    .summarize(task6Document)
+                Issue.record("Expected stable failure \(expected)")
+            } catch let actual as IntelligenceError {
+                #expect(actual == expected)
+            } catch {
+                Issue.record("Unexpected error: \(error)")
+            }
+            #expect(await apple.summaryCount == 0)
+        }
     }
 
     @Test func malformedBridgePayloadIsDiscardedWithoutAppleFallback() async {
@@ -144,10 +191,41 @@ import Testing
         }
         let router = task6Router(transport: transport, apple: apple)
 
-        await #expect(throws: IntelligenceError.ungroundedOutput) {
+        await #expect(throws: IntelligenceError.malformedOutput) {
             try await router.summarize(task6Document)
         }
         #expect(await apple.summaryCount == 0)
+    }
+
+    @Test func organizeAndExtractExternalFailuresNeverFallBackToApple() async {
+        let organizeApple = Task6FixtureProvider(identity: .appleSystemDefault)
+        let organizeTransport = Task6Transport { request in
+            if request.action == .discover {
+                return task6DiscoveryResponse(request: request, candidates: [task6Candidate()])
+            }
+            throw ModelBridgeClientError.helperExited(status: 9)
+        }
+        await #expect(throws: IntelligenceError.bridgeUnavailable) {
+            try await task6Router(transport: organizeTransport, apple: organizeApple)
+                .organize(task6Document)
+        }
+        #expect(await organizeApple.organizationCount == 0)
+
+        let extractApple = Task6FixtureProvider(identity: .appleSystemDefault)
+        let extractTransport = Task6Transport { request in
+            if request.action == .discover {
+                return task6DiscoveryResponse(request: request, candidates: [task6Candidate()])
+            }
+            return ModelBridgeResponse(
+                id: request.id,
+                error: .init(code: .generationFailed, message: "failed")
+            )
+        }
+        await #expect(throws: IntelligenceError.generationFailed) {
+            try await task6Router(transport: extractTransport, apple: extractApple)
+                .extract(["date"], from: task6Document)
+        }
+        #expect(await extractApple.extractionCount == 0)
     }
 
     @Test func successfulExternalResultUsesTheActualBridgeResponseProvenance() async throws {

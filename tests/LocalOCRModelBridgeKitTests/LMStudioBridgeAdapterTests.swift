@@ -1,6 +1,7 @@
 import Foundation
 @testable import LocalOCRModelBridgeKit
 import LocalOCRModelBridgeProtocol
+import LocalOCRModelCore
 import Testing
 
 @Suite("Verified-local LM Studio adapter")
@@ -117,6 +118,57 @@ struct LMStudioBridgeAdapterTests {
     }
 
     @Test
+    func changedExpectedIdentityStopsBeforeAnyPromptBearingChatRequest() async {
+        let http = FixtureLMStudioHTTP(responses: [modelsFixture])
+        let cli = FixtureLMStudioCLIProbe(snapshots: [
+            .init(version: "replacement-commit")
+        ])
+
+        let response = await LMStudioBridgeAdapter(http: http, cli: cli).generate(summaryRequest)
+
+        #expect(response.error?.code == .modelIdentityChanged)
+        #expect(response.payloadJSON == nil)
+        #expect(await http.requests.map(\.endpoint) == [.lmStudioModels])
+        #expect(await http.requests.allSatisfy { $0.body == nil })
+    }
+
+    @Test(arguments: [
+        (LoopbackHTTPError.timedOut, ModelBridgeWireErrorCode.generationTimedOut),
+        (LoopbackHTTPError.invalidStatus(413), ModelBridgeWireErrorCode.contextOverflow)
+    ])
+    func chatTransportFailureUsesItsStableWireCategory(
+        error: LoopbackHTTPError,
+        expected: ModelBridgeWireErrorCode
+    ) async {
+        let http = FixtureLMStudioHTTP(outcomes: [
+            .data(modelsFixture),
+            .error(error)
+        ])
+
+        let response = await LMStudioBridgeAdapter(
+            http: http,
+            cli: FixtureLMStudioCLIProbe()
+        ).generate(summaryRequest)
+
+        #expect(response.error?.code == expected)
+        #expect(response.payloadJSON == nil)
+    }
+
+    @Test func malformedStructuredProviderOutputUsesSchemaFailure() async {
+        let http = FixtureLMStudioHTTP(
+            responses: [modelsFixture, chatFixture(content: #"{"unexpected":true}"#)]
+        )
+
+        let response = await LMStudioBridgeAdapter(
+            http: http,
+            cli: FixtureLMStudioCLIProbe()
+        ).generate(summaryRequest)
+
+        #expect(response.error?.code == .schemaFailure)
+        #expect(response.payloadJSON == nil)
+    }
+
+    @Test
     func linkEnabledBetweenPreflightProbeCallsPreventsOCRTextFromBeingSent() async {
         let http = FixtureLMStudioHTTP(
             responses: [modelsFixture, chatFixture(content: #"{"items":[]}"#), modelsFixture]
@@ -125,7 +177,7 @@ struct LMStudioBridgeAdapterTests {
 
         let response = await LMStudioBridgeAdapter(http: http, cli: cli).generate(summaryRequest)
 
-        #expect(response.error?.code == .generationFailed)
+        #expect(response.error?.code == .localityBlocked)
         #expect(response.payloadJSON == nil)
         #expect(await http.requests.map(\.endpoint) == [.lmStudioModels])
         #expect(await http.requests.allSatisfy { $0.body == nil })
@@ -274,8 +326,7 @@ struct LMStudioBridgeAdapterTests {
         let adapter = LMStudioBridgeAdapter(http: http, cli: cli)
         let request = ModelBridgeRequest.generate(
             id: 61,
-            provider: .lmStudio,
-            model: fixtureModelKey,
+            expectedIdentity: lmStudioFixtureIdentity,
             operation: .summarize,
             prompt: "bounded LocalOCR prompt",
             timeoutMilliseconds: 3_000
@@ -318,8 +369,7 @@ struct LMStudioBridgeAdapterTests {
             (
                 ModelBridgeRequest.generate(
                     id: 62,
-                    provider: .lmStudio,
-                    model: fixtureModelKey,
+                    expectedIdentity: lmStudioFixtureIdentity,
                     operation: .summarize,
                     prompt: "summarize"
                 ),
@@ -328,8 +378,7 @@ struct LMStudioBridgeAdapterTests {
             (
                 ModelBridgeRequest.generate(
                     id: 63,
-                    provider: .lmStudio,
-                    model: fixtureModelKey,
+                    expectedIdentity: lmStudioFixtureIdentity,
                     operation: .organize,
                     prompt: "organize"
                 ),
@@ -338,8 +387,7 @@ struct LMStudioBridgeAdapterTests {
             (
                 ModelBridgeRequest.generate(
                     id: 64,
-                    provider: .lmStudio,
-                    model: fixtureModelKey,
+                    expectedIdentity: lmStudioFixtureIdentity,
                     operation: .extract,
                     prompt: "extract",
                     fields: ["invoice_number"]
@@ -381,7 +429,7 @@ struct LMStudioBridgeAdapterTests {
                 ),
                 cli: FixtureLMStudioCLIProbe(snapshots: [.init(), .init()])
             ).generate(summaryRequest)
-            #expect(response.error?.code == .generationFailed)
+            #expect(response.error?.code == .schemaFailure)
             #expect(response.payloadJSON == nil)
             #expect(response.identity == nil)
         }
@@ -406,8 +454,7 @@ struct LMStudioBridgeAdapterTests {
             (
                 ModelBridgeRequest.generate(
                     id: 68,
-                    provider: .lmStudio,
-                    model: fixtureModelKey,
+                    expectedIdentity: lmStudioFixtureIdentity,
                     operation: .organize,
                     prompt: "organize"
                 ),
@@ -416,8 +463,7 @@ struct LMStudioBridgeAdapterTests {
             (
                 ModelBridgeRequest.generate(
                     id: 69,
-                    provider: .lmStudio,
-                    model: fixtureModelKey,
+                    expectedIdentity: lmStudioFixtureIdentity,
                     operation: .extract,
                     prompt: "extract",
                     fields: ["invoice_number"]
@@ -433,7 +479,7 @@ struct LMStudioBridgeAdapterTests {
                 ),
                 cli: FixtureLMStudioCLIProbe(snapshots: [.init(), .init()])
             ).generate(request)
-            #expect(response.error?.code == .generationFailed)
+            #expect(response.error?.code == .schemaFailure)
             #expect(response.payloadJSON == nil)
         }
     }
@@ -468,13 +514,13 @@ struct LMStudioBridgeAdapterTests {
                 modelsFixtureData(loadedInstanceIDs: []),
                 chatFixture(content: #"{"items":[]}"#),
                 modelsFixture,
-                .generationFailed
+                .localityUnverified
             ),
             (
                 modelsFixtureData(loadedInstanceIDs: [fixtureInstanceID, "second-instance"]),
                 chatFixture(content: #"{"items":[]}"#),
                 modelsFixture,
-                .generationFailed
+                .localityUnverified
             ),
             (
                 modelsFixtureData(otherModelLoadedInstanceIDs: ["other-model-instance"]),
@@ -500,7 +546,7 @@ struct LMStudioBridgeAdapterTests {
             #expect(response.error?.code == fixture.expected)
             #expect(response.payloadJSON == nil)
             #expect(response.identity == nil)
-            if fixture.expected == .generationFailed {
+            if fixture.expected == .localityUnverified {
                 #expect(await http.requests.map(\.endpoint) == [.lmStudioModels])
                 #expect(await http.requests.allSatisfy { $0.body == nil })
             }
@@ -515,7 +561,7 @@ struct LMStudioBridgeAdapterTests {
             cli: FixtureLMStudioCLIProbe(snapshots: [.init(models: [])])
         ).generate(summaryRequest)
 
-        #expect(response.error?.code == .generationFailed)
+        #expect(response.error?.code == .localityUnverified)
         #expect(await http.requests.map(\.endpoint) == [.lmStudioModels])
         #expect(await http.requests.allSatisfy { $0.body == nil })
     }
@@ -526,8 +572,7 @@ struct LMStudioBridgeAdapterTests {
         let cli = FixtureLMStudioCLIProbe()
         let request = ModelBridgeRequest.generate(
             id: 65,
-            provider: .lmStudio,
-            model: fixtureModelKey,
+            expectedIdentity: lmStudioFixtureIdentity,
             operation: .extract,
             prompt: "extract",
             fields: []
@@ -548,8 +593,7 @@ struct LMStudioBridgeAdapterTests {
         let cli = FixtureLMStudioCLIProbe(snapshots: [.init(), .init()])
         let request = ModelBridgeRequest.generate(
             id: 67,
-            provider: .lmStudio,
-            model: fixtureModelKey,
+            expectedIdentity: lmStudioFixtureIdentity,
             operation: .summarize,
             prompt: String(repeating: "x", count: ModelBridgeLimits.maximumPromptBytes + 1)
         )
@@ -569,11 +613,20 @@ private actor FixtureLMStudioHTTP: LoopbackHTTPPerforming {
         let timeoutMilliseconds: Int
     }
 
-    private var responses: [Data]
+    enum Outcome: Sendable {
+        case data(Data)
+        case error(LoopbackHTTPError)
+    }
+
+    private var outcomes: [Outcome]
     private(set) var requests: [Request] = []
 
     init(responses: [Data]) {
-        self.responses = responses
+        outcomes = responses.map(Outcome.data)
+    }
+
+    init(outcomes: [Outcome]) {
+        self.outcomes = outcomes
     }
 
     func perform(
@@ -582,7 +635,12 @@ private actor FixtureLMStudioHTTP: LoopbackHTTPPerforming {
         timeoutMilliseconds: Int
     ) async throws -> Data {
         requests.append(.init(endpoint: endpoint, body: body, timeoutMilliseconds: timeoutMilliseconds))
-        return responses.removeFirst()
+        switch outcomes.removeFirst() {
+        case let .data(data):
+            return data
+        case let .error(error):
+            throw error
+        }
     }
 }
 
@@ -754,10 +812,16 @@ private func modelsFixtureData(
 
 private let summaryRequest = ModelBridgeRequest.generate(
     id: 66,
-    provider: .lmStudio,
-    model: fixtureModelKey,
+    expectedIdentity: lmStudioFixtureIdentity,
     operation: .summarize,
     prompt: "summarize"
+)
+
+private let lmStudioFixtureIdentity = LocalModelIdentity(
+    provider: .lmStudio,
+    model: fixtureModelKey,
+    fingerprint: "d3282ace6d11876a73d45bda3e1bee478328f2e115a4a398e056f0b1a64c064c",
+    harnessVersion: "fixture-commit"
 )
 
 private func chatFixture(

@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import LocalOCRModelCore
 
@@ -73,8 +74,9 @@ public actor LocalModelQualificationService {
 
     private let providerFactory: ProviderFactory
     private let now: @Sendable () -> Date
-    private let fixture: LocalModelQualificationFixture
+    private let fixture: LocalModelQualificationFixture?
     private let cacheDirectory: URL?
+    private let expectedCacheOwnerID: uid_t
     private var outcomes: [ModelKey: LocalModelQualificationOutcome] = [:]
     private var outcomeIdentities: [ModelKey: LocalModelIdentity] = [:]
 
@@ -94,7 +96,8 @@ public actor LocalModelQualificationService {
         self.providerFactory = providerFactory
         self.now = now
         self.cacheDirectory = cacheDirectory
-        fixture = try! Self.loadFixture()
+        expectedCacheOwnerID = geteuid()
+        fixture = try? Self.loadFixture()
     }
 
     init(
@@ -107,11 +110,41 @@ public actor LocalModelQualificationService {
         self.now = now
         self.fixture = fixture
         self.cacheDirectory = cacheDirectory
+        expectedCacheOwnerID = geteuid()
+    }
+
+    init(
+        providerFactory: @escaping ProviderFactory,
+        now: @escaping @Sendable () -> Date,
+        cacheDirectory: URL?,
+        expectedCacheOwnerID: uid_t
+    ) {
+        self.providerFactory = providerFactory
+        self.now = now
+        self.cacheDirectory = cacheDirectory
+        self.expectedCacheOwnerID = expectedCacheOwnerID
+        fixture = try? Self.loadFixture()
+    }
+
+    init(
+        providerFactory: @escaping ProviderFactory,
+        now: @escaping @Sendable () -> Date,
+        cacheDirectory: URL?,
+        fixtureLoader: @escaping @Sendable () throws -> LocalModelQualificationFixture
+    ) {
+        self.providerFactory = providerFactory
+        self.now = now
+        self.cacheDirectory = cacheDirectory
+        expectedCacheOwnerID = geteuid()
+        fixture = try? fixtureLoader()
     }
 
     public func qualify(
         _ identity: LocalModelIdentity
     ) async throws -> LocalModelQualificationOutcome {
+        guard let fixture else {
+            throw IntelligenceError.bridgeInvalid
+        }
         guard identity.provider != .appleFoundationModels,
               Self.hasExactExternalIdentity(identity)
         else {
@@ -204,7 +237,8 @@ public actor LocalModelQualificationService {
             return nil
         }
         guard let receipt = outcome.receipt else {
-            return outcome.status == .failed && outcomeIdentities[key] == identity
+            return (outcome.status == .failed && outcomeIdentities[key] == identity) ||
+                outcome.status == .stale
                 ? outcome
                 : LocalModelQualificationOutcome(
                     status: .stale,
@@ -262,13 +296,19 @@ public actor LocalModelQualificationService {
         identity: LocalModelIdentity
     ) async throws {
         guard let store = cacheStore(for: identity) else { return }
-        try await store.replace(with: QualificationCacheEntry(
+        let entry = QualificationCacheEntry(
             schemaVersion: QualificationCacheEntry.currentSchemaVersion,
             identity: identity,
             status: outcome.status,
             receipt: outcome.receipt,
             failures: outcome.failures
-        ))
+        )
+        do {
+            _ = try await store.read()
+            try await store.replace(with: entry)
+        } catch SecureJSONReceiptStoreError.missingPath {
+            _ = try await store.createIfAbsent(with: entry)
+        }
     }
 
     private func persistedOutcome(
@@ -338,6 +378,7 @@ public actor LocalModelQualificationService {
         ])
         return SecureJSONReceiptStore(
             receiptURL: url,
+            expectedReceiptOwnerID: expectedCacheOwnerID,
             allowedTopLevelMemberSets: [
                 ["schema_version", "identity", "status", "receipt", "failures"],
                 ["schema_version", "identity", "status", "failures"]
@@ -358,9 +399,34 @@ public actor LocalModelQualificationService {
         _ summary: IntelligenceSummary,
         in document: IntelligenceDocument
     ) -> Bool {
-        !summary.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-            !summary.citations.isEmpty &&
-            IntelligenceGroundingValidator.validCitations(summary.citations, in: document) == summary.citations
+        guard !summary.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !summary.citations.isEmpty,
+              IntelligenceGroundingValidator.validCitations(
+                  summary.citations,
+                  in: document
+              ) == summary.citations
+        else {
+            return false
+        }
+        let supportedTokens = Set(summary.citations.flatMap { materialTokens(in: $0.quote) })
+        let claimedTokens = materialTokens(in: summary.text)
+        return !claimedTokens.isEmpty && claimedTokens.allSatisfy(supportedTokens.contains)
+    }
+
+    private nonisolated static func materialTokens(in value: String) -> [String] {
+        let stopWords: Set<String> = [
+            "a", "an", "and", "as", "at", "by", "for", "from", "in", "is", "it",
+            "of", "on", "or", "the", "this", "to", "was", "were", "with"
+        ]
+        return value.lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+            .filter { !stopWords.contains($0) }
+            .map { token in
+                token.count > 3 && token.hasSuffix("s")
+                    ? String(token.dropLast())
+                    : token
+            }
     }
 
     private nonisolated static func validOrganization(

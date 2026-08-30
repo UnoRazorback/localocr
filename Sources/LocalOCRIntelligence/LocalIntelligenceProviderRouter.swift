@@ -79,8 +79,10 @@ public actor LocalIntelligenceProviderRouter: DocumentIntelligenceProviding {
         let response: ModelBridgeResponse
         do {
             response = try await transport.send(.discover(id: id, provider: selected.provider))
+        } catch is CancellationError {
+            throw IntelligenceError.cancelled
         } catch {
-            throw IntelligenceError.selection(.providerUnavailable(selected.provider))
+            throw Self.mappedTransportError(error)
         }
         if let error = response.error {
             throw Self.mappedWireError(error, expected: selected)
@@ -146,12 +148,39 @@ public actor LocalIntelligenceProviderRouter: DocumentIntelligenceProviding {
         switch error.code {
         case .modelIdentityChanged:
             .selection(.identityChanged(expected: expected, actual: nil))
+        case .localityUnverified:
+            .selection(.localityUnverified(expected))
+        case .localityBlocked:
+            .selection(.localityBlocked(expected))
         case .providerUnavailable:
             .selection(.providerUnavailable(expected.provider))
+        case .generationTimedOut:
+            .generationTimedOut
         case .generationFailed:
+            .generationFailed
+        case .contextOverflow:
+            .contextOverflow
+        case .schemaFailure:
+            .malformedOutput
+        case .groundingFailure:
             .ungroundedOutput
         case .invalidRequest, .messageTooLarge, .unsupportedVersion, .providerNotImplemented:
-            .selection(.providerUnavailable(expected.provider))
+            .bridgeInvalid
+        }
+    }
+
+    nonisolated static func mappedTransportError(_ error: any Error) -> IntelligenceError {
+        guard let bridgeError = error as? ModelBridgeClientError else {
+            return .bridgeUnavailable
+        }
+        switch bridgeError {
+        case .helperLaunchFailed, .helperExited:
+            return .bridgeUnavailable
+        case .timedOut:
+            return .generationTimedOut
+        case .invalidRequest, .requestTooLarge, .responseTooLarge, .malformedResponse,
+             .responseIDMismatch:
+            return .bridgeInvalid
         }
     }
 }
@@ -336,8 +365,7 @@ private actor BridgeStructuredIntelligenceSessionDriver: StructuredIntelligenceS
         do {
             response = try await transport.send(.generate(
                 id: id,
-                provider: identity.provider,
-                model: identity.model,
+                expectedIdentity: identity,
                 operation: operation,
                 prompt: prompt,
                 fields: fields
@@ -345,7 +373,7 @@ private actor BridgeStructuredIntelligenceSessionDriver: StructuredIntelligenceS
         } catch is CancellationError {
             throw IntelligenceError.cancelled
         } catch {
-            throw IntelligenceError.selection(.providerUnavailable(identity.provider))
+            throw LocalIntelligenceProviderRouter.mappedTransportError(error)
         }
         if let error = response.error {
             throw LocalIntelligenceProviderRouter.mappedWireError(error, expected: identity)
@@ -357,16 +385,16 @@ private actor BridgeStructuredIntelligenceSessionDriver: StructuredIntelligenceS
             throw IntelligenceError.selection(.identityChanged(expected: identity, actual: actual))
         }
         guard let payloadJSON = response.payloadJSON else {
-            throw IntelligenceError.ungroundedOutput
+            throw IntelligenceError.bridgeInvalid
         }
         guard Self.hasClosedSchema(payloadJSON, operation: operation) else {
-            throw IntelligenceError.ungroundedOutput
+            throw IntelligenceError.malformedOutput
         }
         let payload: Payload
         do {
             payload = try JSONDecoder().decode(Payload.self, from: Data(payloadJSON.utf8))
         } catch {
-            throw IntelligenceError.ungroundedOutput
+            throw IntelligenceError.malformedOutput
         }
         actualIdentity = actual
         return payload

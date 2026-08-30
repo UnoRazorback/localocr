@@ -120,8 +120,63 @@ struct ModelBridgeMessagesTests {
     func requestDecoderRejectsGenerateWithoutRequiredValues() throws {
         var object = validGenerateObject()
         object.removeValue(forKey: "model")
+        object.removeValue(forKey: "expectedIdentity")
         object.removeValue(forKey: "operation")
         object.removeValue(forKey: "prompt")
+
+        #expect(throws: (any Error).self) {
+            try decodeRequest(object)
+        }
+    }
+
+    @Test
+    func generationRequestCarriesTheExactImmutableExpectedIdentity() throws {
+        let expectedIdentity = LocalModelIdentity(
+            provider: .ollama,
+            model: "gemma4:8b",
+            fingerprint: "sha256:exact",
+            harnessVersion: "0.11.7"
+        )
+        let request = ModelBridgeRequest.generate(
+            id: 9,
+            expectedIdentity: expectedIdentity,
+            operation: .summarize,
+            prompt: "bounded OCR prompt"
+        )
+
+        let data = try JSONEncoder().encode(request)
+        let decoded = try JSONDecoder().decode(ModelBridgeRequest.self, from: data)
+
+        #expect(decoded.provider == .ollama)
+        #expect(decoded.model == "gemma4:8b")
+        #expect(decoded.expectedIdentity == expectedIdentity)
+    }
+
+    @Test(arguments: ["missing", "provider", "model", "fingerprint", "harness", "unknown"])
+    func generationDecoderRejectsMissingOrContradictoryExpectedIdentity(_ mutation: String) throws {
+        var object = validGenerateObject()
+        var identity = object["expectedIdentity"] as! [String: Any]
+        switch mutation {
+        case "missing":
+            object.removeValue(forKey: "expectedIdentity")
+        case "provider":
+            identity["provider"] = "lm_studio"
+            object["expectedIdentity"] = identity
+        case "model":
+            identity["model"] = "other:8b"
+            object["expectedIdentity"] = identity
+        case "fingerprint":
+            identity["fingerprint"] = " "
+            object["expectedIdentity"] = identity
+        case "harness":
+            identity["harnessVersion"] = " "
+            object["expectedIdentity"] = identity
+        case "unknown":
+            identity["prompt"] = "must remain rejected"
+            object["expectedIdentity"] = identity
+        default:
+            Issue.record("Unknown fixture mutation")
+        }
 
         #expect(throws: (any Error).self) {
             try decodeRequest(object)
@@ -203,6 +258,12 @@ private func validGenerateObject() -> [String: Any] {
         "action": "generate",
         "provider": "ollama",
         "model": "gemma4:8b",
+        "expectedIdentity": [
+            "provider": "ollama",
+            "model": "gemma4:8b",
+            "fingerprint": "sha256:exact",
+            "harnessVersion": "0.11.7"
+        ],
         "operation": "summarize",
         "prompt": "Summarize this OCR text.",
         "fields": [],
