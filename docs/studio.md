@@ -70,6 +70,13 @@ in the single-document result view. They use the recognized page text, retain
 page citations or evidence, and do not send the original PDF or image bytes to
 the model.
 
+The Local Intelligence card identifies the active local model as **Apple
+Foundation Models (system default)**. In technical terms, LocalOCR uses
+`SystemLanguageModel.default`. Apple chooses the installed system model and
+does not expose its specific model name or version through the public API. This
+disclosure records the model baseline without implying that LocalOCR currently
+supports selecting a different model.
+
 Local Intelligence results are temporary and non-destructive. They remain in
 the current result view only until you process another document, switch
 workspaces, or close the window. LocalOCR does not rename, move, rewrite, or

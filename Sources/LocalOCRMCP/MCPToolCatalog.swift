@@ -237,9 +237,10 @@ public enum MCPToolCatalog {
     private static let summaryOutputSchema = objectSchema(
         properties: [
             "text": stringSchema,
-            "citations": .object(["type": "array", "items": citationSchema])
+            "citations": .object(["type": "array", "items": citationSchema]),
+            "local_model": localModelSchema
         ],
-        required: ["text", "citations"]
+        required: ["text", "citations", "local_model"]
     )
 
     private static let organizationOutputSchema = objectSchema(
@@ -247,9 +248,10 @@ public enum MCPToolCatalog {
             "title": stringSchema,
             "category": stringSchema,
             "tags": .object(["type": "array", "items": stringSchema]),
-            "citations": .object(["type": "array", "items": citationSchema])
+            "citations": .object(["type": "array", "items": citationSchema]),
+            "local_model": localModelSchema
         ],
-        required: ["title", "category", "tags", "citations"]
+        required: ["title", "category", "tags", "citations", "local_model"]
     )
 
     private static let extractionOutputSchema: Value = objectSchema(
@@ -265,9 +267,19 @@ public enum MCPToolCatalog {
                     ],
                     required: ["name", "value", "source_page", "evidence"]
                 )
-            ])
+            ]),
+            "local_model": localModelSchema
         ],
-        required: ["fields"]
+        required: ["fields", "local_model"]
+    )
+
+    private static let localModelSchema: Value = objectSchema(
+        properties: [
+            "provider": .object(["const": "Apple Foundation Models"]),
+            "model": .object(["const": "SystemLanguageModel.default"]),
+            "processing": .object(["const": "on_device"])
+        ],
+        required: ["provider", "model", "processing"]
     )
 
     private static let citationSchema: Value = objectSchema(

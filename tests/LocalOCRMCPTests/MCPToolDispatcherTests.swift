@@ -344,11 +344,11 @@ import Testing
             arguments: ["file_path": "form.pdf", "fields": [" date ", "total"]]
         )
 
-        #expect(text(in: summary) == "{\"citations\":[{\"page\":1,\"quote\":\"Invoice total\"}],\"text\":\"A short summary.\"}")
+        #expect(text(in: summary) == "{\"citations\":[{\"page\":1,\"quote\":\"Invoice total\"}],\"local_model\":{\"model\":\"SystemLanguageModel.default\",\"processing\":\"on_device\",\"provider\":\"Apple Foundation Models\"},\"text\":\"A short summary.\"}")
         #expect(summary.structuredContent?.objectValue?["text"] == .string("A short summary."))
-        #expect(text(in: organization) == "{\"category\":\"Finance\",\"citations\":[{\"page\":1,\"quote\":\"Invoice total\"}],\"tags\":[\"invoice\",\"paid\"],\"title\":\"Paid invoice\"}")
+        #expect(text(in: organization) == "{\"category\":\"Finance\",\"citations\":[{\"page\":1,\"quote\":\"Invoice total\"}],\"local_model\":{\"model\":\"SystemLanguageModel.default\",\"processing\":\"on_device\",\"provider\":\"Apple Foundation Models\"},\"tags\":[\"invoice\",\"paid\"],\"title\":\"Paid invoice\"}")
         #expect(organization.structuredContent?.objectValue?["category"] == .string("Finance"))
-        #expect(text(in: extraction) == "{\"fields\":[{\"evidence\":null,\"name\":\"date\",\"source_page\":null,\"value\":null},{\"evidence\":\"Total: $19.00\",\"name\":\"total\",\"source_page\":1,\"value\":\"$19.00\"}]}")
+        #expect(text(in: extraction) == "{\"fields\":[{\"evidence\":null,\"name\":\"date\",\"source_page\":null,\"value\":null},{\"evidence\":\"Total: $19.00\",\"name\":\"total\",\"source_page\":1,\"value\":\"$19.00\"}],\"local_model\":{\"model\":\"SystemLanguageModel.default\",\"processing\":\"on_device\",\"provider\":\"Apple Foundation Models\"}}")
         let extractedFields = extraction.structuredContent?.objectValue?["fields"]?.arrayValue
         #expect(extractedFields?.count == 2)
         #expect(extractedFields?.first?.objectValue?["value"] == .null)
@@ -364,6 +364,33 @@ import Testing
         ])
         #expect(await service.totalCallCount() == 0)
         #expect(await consent.statusReadCount() == 3)
+    }
+
+    @Test func intelligenceResponsesIdentifyTheOnDeviceAppleSystemModel() async throws {
+        let dispatcher = makeDispatcher(currentDirectory: currentDirectory)
+        let expectedModel: Value = .object([
+            "provider": .string("Apple Foundation Models"),
+            "model": .string("SystemLanguageModel.default"),
+            "processing": .string("on_device"),
+        ])
+
+        let summary = await dispatcher.callTool(
+            name: "summarize_document",
+            arguments: ["file_path": "summary.pdf"]
+        )
+        let organization = await dispatcher.callTool(
+            name: "organize_document",
+            arguments: ["file_path": "organization.pdf"]
+        )
+        let extraction = await dispatcher.callTool(
+            name: "extract_document_fields",
+            arguments: ["file_path": "form.pdf", "fields": ["date", "total"]]
+        )
+
+        for result in [summary, organization, extraction] {
+            #expect(result.structuredContent?.objectValue?["local_model"] == expectedModel)
+            #expect(text(in: result)?.contains(#""local_model":{"model":"SystemLanguageModel.default","processing":"on_device","provider":"Apple Foundation Models"}"#) == true)
+        }
     }
 
     @Test func structuredOCRAndIntelligenceResultsPreserveLiteralDataURIStrings() async {

@@ -5,6 +5,8 @@ struct StudioLocalIntelligenceContract {
     let availability: IntelligenceAvailability
 
     let title = "Local Intelligence"
+    let modelDisclosure = "Model: Apple Foundation Models (system default)"
+    let modelExplanation = "Apple selects the installed system model. macOS does not expose its specific model name or version."
     let summaryActionLabel = "Summarize document with Local Intelligence"
     let organizationActionLabel = "Suggest document name and tags with Local Intelligence"
     let fieldsActionLabel = "Extract date, total, and reference number with Local Intelligence"
@@ -44,6 +46,15 @@ struct StudioLocalIntelligenceView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Color.localOCRStudioOlive)
             }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(contract.modelDisclosure)
+                    .font(.caption.weight(.semibold))
+                Text(contract.modelExplanation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .fixedSize(horizontal: false, vertical: true)
 
             if let guidance = contract.unavailableGuidance {
                 Label(guidance, systemImage: "info.circle")

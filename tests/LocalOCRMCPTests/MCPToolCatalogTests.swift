@@ -1,5 +1,6 @@
 import Foundation
 @testable import LocalOCRMCP
+import MCPStdio
 import Testing
 
 @Suite struct MCPToolCatalogTests {
@@ -91,7 +92,9 @@ import Testing
         let outputProperties = try #require(outputItems["properties"]?.objectValue)
         #expect(extractionOutput["type"] == .string("object"))
         #expect(extractionOutput["additionalProperties"] == .bool(false))
-        #expect(extractionOutput["required"] == .array([.string("fields")]))
+        #expect(extractionOutput["required"] == .array([
+            .string("fields"), .string("local_model")
+        ]))
         #expect(outputItems["required"] == .array([
             .string("name"), .string("value"), .string("source_page"), .string("evidence")
         ]))
@@ -104,6 +107,27 @@ import Testing
         #expect(outputProperties["evidence"]?.objectValue?["anyOf"]?.arrayValue == [
             .object(["type": "string"]), .object(["type": "null"])
         ])
+    }
+
+    @Test func intelligenceOutputSchemasDiscloseTheLocalModel() throws {
+        let tools = Dictionary(uniqueKeysWithValues: MCPToolCatalog.tools.map { ($0.name, $0) })
+        let expectedRequired: Value = .array([
+            .string("provider"), .string("model"), .string("processing")
+        ])
+
+        for name in ["summarize_document", "organize_document", "extract_document_fields"] {
+            let output = try #require(tools[name]?.outputSchema?.objectValue)
+            let properties = try #require(output["properties"]?.objectValue)
+            let model = try #require(properties["local_model"]?.objectValue)
+            let modelProperties = try #require(model["properties"]?.objectValue)
+
+            #expect(output["required"]?.arrayValue?.contains(.string("local_model")) == true)
+            #expect(model["additionalProperties"] == .bool(false))
+            #expect(model["required"] == expectedRequired)
+            #expect(modelProperties["provider"]?.objectValue?["const"] == .string("Apple Foundation Models"))
+            #expect(modelProperties["model"]?.objectValue?["const"] == .string("SystemLanguageModel.default"))
+            #expect(modelProperties["processing"]?.objectValue?["const"] == .string("on_device"))
+        }
     }
 }
 

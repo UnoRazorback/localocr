@@ -63,7 +63,9 @@ public struct MCPToolDispatcher: Sendable {
                 let document = try await textLoader.load(request.fileURL)
                 try Task.checkCancellation()
                 do {
-                    result = objectResult(try await intelligence.summarize(document))
+                    result = objectResult(SummarizeDocumentResponse(
+                        summary: try await intelligence.summarize(document)
+                    ))
                 } catch let error as IntelligenceError {
                     throw error
                 } catch is CancellationError {
@@ -75,7 +77,9 @@ public struct MCPToolDispatcher: Sendable {
                 let document = try await textLoader.load(request.fileURL)
                 try Task.checkCancellation()
                 do {
-                    result = objectResult(try await intelligence.organize(document))
+                    result = objectResult(OrganizeDocumentResponse(
+                        suggestion: try await intelligence.organize(document)
+                    ))
                 } catch let error as IntelligenceError {
                     throw error
                 } catch is CancellationError {
@@ -88,7 +92,8 @@ public struct MCPToolDispatcher: Sendable {
                 try Task.checkCancellation()
                 do {
                     result = objectResult(ExtractDocumentFieldsResponse(
-                        fields: try await intelligence.extract(request.fields, from: document)
+                        fields: try await intelligence.extract(request.fields, from: document),
+                        localModel: .appleSystemDefault
                     ))
                 } catch let error as IntelligenceError {
                     throw error
@@ -272,6 +277,66 @@ private enum LiteralJSONValueError: Error {
 
 private struct ExtractDocumentFieldsResponse: Encodable {
     let fields: [ExtractedDocumentField]
+    let localModel: LocalModelResponse
+
+    private enum CodingKeys: String, CodingKey {
+        case fields
+        case localModel = "local_model"
+    }
+}
+
+private struct SummarizeDocumentResponse: Encodable {
+    let text: String
+    let citations: [IntelligenceCitation]
+    let localModel: LocalModelResponse
+
+    init(summary: IntelligenceSummary) {
+        text = summary.text
+        citations = summary.citations
+        localModel = .appleSystemDefault
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case text
+        case citations
+        case localModel = "local_model"
+    }
+}
+
+private struct OrganizeDocumentResponse: Encodable {
+    let title: String
+    let category: String
+    let tags: [String]
+    let citations: [IntelligenceCitation]
+    let localModel: LocalModelResponse
+
+    init(suggestion: OrganizationSuggestion) {
+        title = suggestion.title
+        category = suggestion.category
+        tags = suggestion.tags
+        citations = suggestion.citations
+        localModel = .appleSystemDefault
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case title
+        case category
+        case tags
+        case citations
+        case localModel = "local_model"
+    }
+}
+
+private struct LocalModelResponse: Encodable {
+    let provider: String
+    let model: String
+    let processing: String
+
+    static let appleSystemDefault = LocalModelResponse(
+        provider: "Apple Foundation Models",
+        model: "SystemLanguageModel.default",
+        processing: "on_device"
+    )
 }
 
 private struct ToolErrorResponse: Encodable {

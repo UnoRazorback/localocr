@@ -84,10 +84,31 @@
             "type" : "object"
           },
           "type" : "array"
+        },
+        "local_model" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "model" : {
+              "const" : "SystemLanguageModel.default"
+            },
+            "processing" : {
+              "const" : "on_device"
+            },
+            "provider" : {
+              "const" : "Apple Foundation Models"
+            }
+          },
+          "required" : [
+            "provider",
+            "model",
+            "processing"
+          ],
+          "type" : "object"
         }
       },
       "required" : [
-        "fields"
+        "fields",
+        "local_model"
       ],
       "type" : "object"
     }
@@ -697,6 +718,26 @@
           },
           "type" : "array"
         },
+        "local_model" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "model" : {
+              "const" : "SystemLanguageModel.default"
+            },
+            "processing" : {
+              "const" : "on_device"
+            },
+            "provider" : {
+              "const" : "Apple Foundation Models"
+            }
+          },
+          "required" : [
+            "provider",
+            "model",
+            "processing"
+          ],
+          "type" : "object"
+        },
         "tags" : {
           "items" : {
             "type" : "string"
@@ -711,7 +752,8 @@
         "title",
         "category",
         "tags",
-        "citations"
+        "citations",
+        "local_model"
       ],
       "type" : "object"
     }
@@ -760,13 +802,34 @@
           },
           "type" : "array"
         },
+        "local_model" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "model" : {
+              "const" : "SystemLanguageModel.default"
+            },
+            "processing" : {
+              "const" : "on_device"
+            },
+            "provider" : {
+              "const" : "Apple Foundation Models"
+            }
+          },
+          "required" : [
+            "provider",
+            "model",
+            "processing"
+          ],
+          "type" : "object"
+        },
         "text" : {
           "type" : "string"
         }
       },
       "required" : [
         "text",
-        "citations"
+        "citations",
+        "local_model"
       ],
       "type" : "object"
     }

@@ -336,6 +336,14 @@ third-party model, an API key, or any network model, and there is no cloud
 fallback. The outputs are constrained to the requested summary, organization,
 or named-field task and checked against source text before being returned.
 
+Every Local Intelligence result includes a `local_model` object identifying
+the provider as `Apple Foundation Models`, the model as
+`SystemLanguageModel.default`, and processing as `on_device`. Apple selects the
+installed system model and does not expose its specific model name or version
+through the public Foundation Models API. The field is provenance for the
+current result; it does not indicate that LocalOCR currently supports selecting
+another model.
+
 That local LocalOCR boundary ends at the MCP client. The client may send paths,
 arguments, recognized text, and results to its configured service, so do not
 assume that data remains on your Mac. Codex, Claude Code, and other clients own

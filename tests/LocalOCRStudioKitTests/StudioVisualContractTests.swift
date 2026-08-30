@@ -33,6 +33,11 @@ import Testing
         let contract = StudioLocalIntelligenceContract(availability: .available)
 
         #expect(contract.title == "Local Intelligence")
+        #expect(contract.modelDisclosure == "Model: Apple Foundation Models (system default)")
+        #expect(
+            contract.modelExplanation
+                == "Apple selects the installed system model. macOS does not expose its specific model name or version."
+        )
         #expect(contract.summaryActionLabel == "Summarize document with Local Intelligence")
         #expect(contract.organizationActionLabel == "Suggest document name and tags with Local Intelligence")
         #expect(contract.fieldsActionLabel == "Extract date, total, and reference number with Local Intelligence")
