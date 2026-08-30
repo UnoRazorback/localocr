@@ -17,6 +17,7 @@ struct SecureJSONReceiptStoreHooks: Sendable {
 
     let beforeAcceptReproof: OperationHook
     let beforeAcceptFinalMutation: OperationHook
+    let afterCreateIfAbsentRename: OperationHook
     let beforeRevokeReproof: OperationHook
     let beforeRevokeFinalMutation: OperationHook
     let beforeTemporaryCleanupFinalMutation: OperationHook
@@ -26,6 +27,7 @@ struct SecureJSONReceiptStoreHooks: Sendable {
     init(
         beforeAcceptReproof: @escaping OperationHook = {},
         beforeAcceptFinalMutation: @escaping OperationHook = {},
+        afterCreateIfAbsentRename: @escaping OperationHook = {},
         beforeRevokeReproof: @escaping OperationHook = {},
         beforeRevokeFinalMutation: @escaping OperationHook = {},
         beforeTemporaryCleanupFinalMutation: @escaping OperationHook = {},
@@ -34,6 +36,7 @@ struct SecureJSONReceiptStoreHooks: Sendable {
     ) {
         self.beforeAcceptReproof = beforeAcceptReproof
         self.beforeAcceptFinalMutation = beforeAcceptFinalMutation
+        self.afterCreateIfAbsentRename = afterCreateIfAbsentRename
         self.beforeRevokeReproof = beforeRevokeReproof
         self.beforeRevokeFinalMutation = beforeRevokeFinalMutation
         self.beforeTemporaryCleanupFinalMutation = beforeTemporaryCleanupFinalMutation
@@ -352,26 +355,32 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
             throw SecureJSONReceiptStoreError.filesystemOperationFailed(renameError)
         }
         shouldQuarantineTemporary = false
+        try hooks.afterCreateIfAbsentRename()
 
         guard entryIdentity(named: receiptName, beneath: parent.descriptor) == temporary.identity else {
-            try? quarantineCurrent(beneath: parent.descriptor)
-            throw SecureJSONReceiptStoreError.insecureFilesystemState
+            return false
         }
         do {
             try reprove(handles)
             try synchronize(parent.descriptor)
+            guard entryIdentity(
+                named: receiptName,
+                beneath: parent.descriptor
+            ) == temporary.identity else {
+                return false
+            }
             try requireEntry(
                 named: receiptName,
                 beneath: parent.descriptor,
                 matches: temporary.identity
             )
         } catch {
-            try? moveToPermanentQuarantine(
+            guard entryIdentity(
                 named: receiptName,
-                beneath: parent.descriptor,
-                expectedIdentity: temporary.identity,
-                beforeFinalMutation: {}
-            )
+                beneath: parent.descriptor
+            ) == temporary.identity else {
+                return false
+            }
             throw error
         }
         return true

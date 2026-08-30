@@ -113,6 +113,46 @@ import Testing
         #expect(try Data(contentsOf: receiptURL) == winningData)
     }
 
+    @Test func concurrentResetAfterMigrationRenameWinsWithoutQuarantine() async throws {
+        let fixture = try SelectionFixture()
+        defer { fixture.remove() }
+        let resetData = try selectionReceiptData(.none(resetAt: selectedAt))
+        let receiptURL = fixture.receiptURL
+        let store = LocalIntelligenceSelectionStore(
+            receiptURL: receiptURL,
+            hooks: SecureJSONReceiptStoreHooks(afterCreateIfAbsentRename: {
+                try resetData.write(to: receiptURL, options: .atomic)
+                try chmod(receiptURL.path, 0o600).requireSelectionSuccess()
+            })
+        )
+
+        #expect(await store.state() == .none)
+        #expect(try Data(contentsOf: receiptURL) == resetData)
+    }
+
+    @Test func concurrentExplicitSelectionAfterMigrationRenameWinsWithoutQuarantine() async throws {
+        let fixture = try SelectionFixture()
+        defer { fixture.remove() }
+        let identity = fixtureOllamaIdentity
+        let winningSelection = LocalIntelligenceSelection.external(
+            identity: identity,
+            qualification: fixtureQualification(identity),
+            acknowledgment: fixtureAcknowledgment(identity)
+        )
+        let winningData = try selectionReceiptData(.selected(winningSelection))
+        let receiptURL = fixture.receiptURL
+        let store = LocalIntelligenceSelectionStore(
+            receiptURL: receiptURL,
+            hooks: SecureJSONReceiptStoreHooks(afterCreateIfAbsentRename: {
+                try winningData.write(to: receiptURL, options: .atomic)
+                try chmod(receiptURL.path, 0o600).requireSelectionSuccess()
+            })
+        )
+
+        #expect(await store.state() == .selected(winningSelection))
+        #expect(try Data(contentsOf: receiptURL) == winningData)
+    }
+
     @Test func explicitResetPersistsNoneAndNeverRemigratesAsLegacyAbsence() async throws {
         let fixture = try SelectionFixture()
         defer { fixture.remove() }
