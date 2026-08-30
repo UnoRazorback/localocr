@@ -1334,7 +1334,7 @@ def real_unsigned_studio_app():
     try:
         yield UNSIGNED_STUDIO_APP
     finally:
-        for product in ("localocr-mcp", "localocr-model-bridge"):
+        for product in ("localocr", "localocr-mcp", "localocr-model-bridge"):
             restore_debug_product = subprocess.run(
                 ["swift", "build", "--product", product],
                 cwd=ROOT,
