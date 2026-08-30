@@ -229,13 +229,56 @@ import Testing
         #expect(outcome.failures.isEmpty)
     }
 
-    @Test func summaryItemsCannotBorrowAnotherItemsPageEvidence() async throws {
+    @Test func summaryItemsUseGlobalCanonicalProvenanceWithoutPositionalCitationPairing() async throws {
         let provider = Task6FixtureProvider(summary: .init(
             text: "Invoice reference Q-104 has total $144.17.\n\nThe project is LocalOCR Qualification and the status is synthetic test only.",
             citations: [
                 .init(page: 2, quote: "Project: LocalOCR Qualification. Status: synthetic test only."),
                 .init(page: 1, quote: "Invoice Q-104. Date: 2026-08-29. Total: $144.17.")
             ]
+        ))
+
+        let outcome = try await task6QualificationService(provider: provider)
+            .qualify(task6OllamaIdentity)
+
+        #expect(outcome.status == .passed)
+        #expect(outcome.failures.isEmpty)
+    }
+
+    @Test func multipleSamePageSummaryItemsMayShareOneDeduplicatedCanonicalCitation() async throws {
+        let provider = Task6FixtureProvider(summary: .init(
+            text: "Invoice reference Q-104.\n\nInvoice Q-104 has total $144.17.",
+            citations: [
+                .init(page: 1, quote: "Invoice Q-104. Date: 2026-08-29. Total: $144.17.")
+            ]
+        ))
+
+        let outcome = try await task6QualificationService(provider: provider)
+            .qualify(task6OllamaIdentity)
+
+        #expect(outcome.status == .passed)
+        #expect(outcome.failures.isEmpty)
+    }
+
+    @Test func groundedProviderDeduplicatedSummaryCitationPassesQualification() async throws {
+        let provider = GroundedDocumentIntelligenceProvider(
+            availability: { .available },
+            provenance: task6Provenance(),
+            sessionDriver: Task6QualificationGroundedDriver()
+        )
+
+        let outcome = try await task6QualificationService(provider: provider)
+            .qualify(task6OllamaIdentity)
+
+        #expect(outcome.status == .passed)
+        #expect(outcome.failures.isEmpty)
+        #expect(outcome.receipt?.passedActions == Set(LocalIntelligenceAction.allCases))
+    }
+
+    @Test func partialFixtureQuoteIsNotCanonicalQualificationProvenance() async throws {
+        let provider = Task6FixtureProvider(summary: .init(
+            text: "Invoice reference Q-104.",
+            citations: [.init(page: 1, quote: "Invoice Q-104")]
         ))
 
         let outcome = try await task6QualificationService(provider: provider)
@@ -248,15 +291,121 @@ import Testing
     @Test(arguments: [
         "Invoice… Q-104",
         "LocalOCR Qualification — Project",
+        "LocalOCR Qualification – Project",
         "Invoice; Q-104",
         "Invoice, Q-104",
         "Invoice? Q-104",
-        "Invoice! Q-104"
+        "Invoice! Q-104",
+        "Invoice | Q-104",
+        "Invoice + Q-104",
+        "Invoice = Q-104",
+        "Invoice~Q-104",
+        "Invoice / Q-104",
+        "Invoice \\ Q-104",
+        "Invoice # Q-104",
+        "Invoice % Q-104",
+        "Invoice & Q-104",
+        "Invoice * Q-104",
+        "Invoice @ Q-104",
+        "Invoice ^ Q-104",
+        "Invoice _ Q-104",
+        "Invoice ` Q-104",
+        "Invoice < Q-104",
+        "Invoice > Q-104",
+        "Invoice $ Q-104",
+        "Invoice-Q-104",
+        "Invoice 💥 Q-104",
+        "Invoice\u{200B}Q-104",
+        "Invoice\nQ-104",
+        "Invoice (reference) Q-104",
+        "Invoice [number] Q-104",
+        "Invoice \"reference\" Q-104"
     ])
     func unicodeAndAsciiClauseBoundariesCannotJoinRelationFragments(
         text: String
     ) async throws {
         let page = text.contains("Invoice") ? 1 : 2
+        let quote = page == 1
+            ? "Invoice Q-104. Date: 2026-08-29. Total: $144.17."
+            : "Project: LocalOCR Qualification. Status: synthetic test only."
+        let outcome = try await task6QualificationService(
+            provider: Task6FixtureProvider(summary: .init(
+                text: text,
+                citations: [.init(page: page, quote: quote)]
+            ))
+        ).qualify(task6OllamaIdentity)
+
+        #expect(outcome.status == .failed)
+        #expect(outcome.failures == ["summary"])
+    }
+
+    @Test(arguments: [
+        "\"Invoice reference Q-104\"",
+        "(Invoice reference Q-104)",
+        "Invoice\tQ-104",
+        "Invoice Q-104 has total $144.17",
+        "Invoice Q-104 has total: $144.17"
+    ])
+    func approvedWrappersWhitespaceAndRelationPunctuationPassQualification(
+        text: String
+    ) async throws {
+        let outcome = try await task6QualificationService(
+            provider: Task6FixtureProvider(summary: .init(
+                text: text,
+                citations: [
+                    .init(page: 1, quote: "Invoice Q-104. Date: 2026-08-29. Total: $144.17.")
+                ]
+            ))
+        ).qualify(task6OllamaIdentity)
+
+        #expect(outcome.status == .passed)
+        #expect(outcome.failures.isEmpty)
+    }
+
+    @Test(arguments: [
+        "Invoice Q-104 and",
+        "and Invoice Q-104",
+        "Invoice Q-104 but",
+        "with status synthetic test only",
+        "status synthetic test only plus",
+        "status synthetic test only is",
+        "is status synthetic test only",
+        "date 2026-08-29 and",
+        "date 2026-08-29 has",
+        "is dated 2026-08-29",
+        "Invoice Q-104 has",
+        "has Invoice Q-104",
+        "or Invoice Q-104"
+    ])
+    func danglingOrNonassertiveConnectorsFailQualification(
+        text: String
+    ) async throws {
+        let page = text.localizedCaseInsensitiveContains("invoice") ||
+            text.localizedCaseInsensitiveContains("date") ? 1 : 2
+        let quote = page == 1
+            ? "Invoice Q-104. Date: 2026-08-29. Total: $144.17."
+            : "Project: LocalOCR Qualification. Status: synthetic test only."
+        let outcome = try await task6QualificationService(
+            provider: Task6FixtureProvider(summary: .init(
+                text: text,
+                citations: [.init(page: page, quote: quote)]
+            ))
+        ).qualify(task6OllamaIdentity)
+
+        #expect(outcome.status == .failed)
+        #expect(outcome.failures == ["summary"])
+    }
+
+    @Test(arguments: [
+        "The: project is LocalOCR Qualification",
+        "Invoice:: Q-104",
+        "Invoice Q-104: has total $144.17",
+        "LocalOCR Qualification: is the project"
+    ])
+    func colonIsAcceptedOnlyAsAnExplicitLabelValueConnector(
+        text: String
+    ) async throws {
+        let page = text.localizedCaseInsensitiveContains("invoice") ? 1 : 2
         let quote = page == 1
             ? "Invoice Q-104. Date: 2026-08-29. Total: $144.17."
             : "Project: LocalOCR Qualification. Status: synthetic test only."
@@ -826,6 +975,73 @@ func task6QualificationService(
         now: { task6Now },
         cacheDirectory: nil
     )
+}
+
+func task6Provenance(
+    identity: LocalModelIdentity = task6OllamaIdentity
+) -> LocalModelProvenance {
+    LocalModelProvenance(
+        provider: identity.provider,
+        providerDisplayName: identity.provider == .ollama ? "Ollama" : "LM Studio",
+        model: identity.model,
+        processing: .onDeviceLoopback,
+        fingerprint: identity.fingerprint,
+        qualifiedAt: task6Now
+    )
+}
+
+private struct Task6QualificationGroundedDriver: StructuredIntelligenceSessionDriving {
+    let contextSize = 4_096
+
+    func summarize(prompt: String) async throws -> GeneratedSummary {
+        guard prompt.contains("page number=\"1\"") else {
+            return .init(items: [])
+        }
+        let evidence = "Invoice Q-104. Date: 2026-08-29. Total: $144.17."
+        return .init(items: [
+            .init(text: "Invoice reference Q-104.", page: 1, evidence: evidence),
+            .init(text: "Invoice Q-104 has total $144.17.", page: 1, evidence: evidence)
+        ])
+    }
+
+    func organize(prompt: String) async throws -> GeneratedOrganization {
+        if prompt.contains("page number=\"1\"") {
+            return .init(
+                title: .init(value: "Invoice Q-104", page: 1, evidence: "Invoice Q-104"),
+                category: nil,
+                tags: []
+            )
+        }
+        return .init(
+            title: nil,
+            category: .init(
+                value: "LocalOCR Qualification",
+                page: 2,
+                evidence: "LocalOCR Qualification"
+            ),
+            tags: [
+                .init(value: "synthetic test only", page: 2, evidence: "synthetic test only")
+            ]
+        )
+    }
+
+    func extract(names: [String], prompt: String) async throws -> GeneratedExtraction {
+        guard prompt.contains("page number=\"1\"") else {
+            return .init(fields: [])
+        }
+        return .init(fields: names.map { name in
+            switch name {
+            case "date":
+                .init(name: name, value: "2026-08-29", page: 1, evidence: "Date: 2026-08-29")
+            case "total":
+                .init(name: name, value: "$144.17", page: 1, evidence: "Total: $144.17")
+            case "reference_number":
+                .init(name: name, value: "Q-104", page: 1, evidence: "Invoice Q-104")
+            default:
+                .init(name: name, value: nil, page: nil, evidence: nil)
+            }
+        })
+    }
 }
 
 actor Task6FixtureProvider: DocumentIntelligenceProviding {

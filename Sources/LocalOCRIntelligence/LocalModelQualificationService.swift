@@ -42,6 +42,18 @@ public actor LocalModelQualificationService {
         let model: String
     }
 
+    private enum SummaryDomain: Hashable {
+        case invoice
+        case project
+
+        var page: Int {
+            switch self {
+            case .invoice: 1
+            case .project: 2
+            }
+        }
+    }
+
     private struct QualificationCacheEntry: Codable, Sendable, Equatable {
         static let currentSchemaVersion = 1
 
@@ -458,24 +470,66 @@ public actor LocalModelQualificationService {
         else {
             return false
         }
-        let items = summaryItems(in: summary.text)
-        guard !items.isEmpty, items.count == summary.citations.count else {
+        let citationDomains = summary.citations.compactMap {
+            canonicalSummaryDomain(for: $0, in: document)
+        }
+        guard citationDomains.count == summary.citations.count else {
             return false
         }
-        return zip(items, summary.citations).allSatisfy { item, citation in
+        let items = summaryItems(in: summary.text)
+        guard !items.isEmpty else {
+            return false
+        }
+        let itemDomains = items.compactMap { item -> SummaryDomain? in
             let clauses = summaryClauses(in: item)
-            return !clauses.isEmpty && clauses.allSatisfy { clause in
-                validSummaryClause(clause, citedPages: [citation.page])
+            guard !clauses.isEmpty else { return nil }
+            let domains = clauses.compactMap(summaryClauseDomain)
+            guard domains.count == clauses.count,
+                  Set(domains).count == 1
+            else {
+                return nil
             }
+            return domains[0]
+        }
+        guard itemDomains.count == items.count else { return false }
+        let citedDomains = Set(citationDomains)
+        return itemDomains.allSatisfy(citedDomains.contains)
+    }
+
+    private nonisolated static func canonicalSummaryDomain(
+        for citation: IntelligenceCitation,
+        in document: IntelligenceDocument
+    ) -> SummaryDomain? {
+        guard let page = document.pages.first(where: { $0.number == citation.page }),
+              citation.quote == page.text
+        else {
+            return nil
+        }
+        switch citation.page {
+        case SummaryDomain.invoice.page: return .invoice
+        case SummaryDomain.project.page: return .project
+        default: return nil
         }
     }
 
-    private nonisolated static func validSummaryClause(
-        _ clause: String,
-        citedPages: Set<Int>
-    ) -> Bool {
+    private nonisolated static func summaryClauseDomain(
+        _ clause: String
+    ) -> SummaryDomain? {
         let tokens = summaryTokens(in: clause)
-        guard !tokens.isEmpty, !tokens.contains("or") else { return false }
+        guard !tokens.isEmpty,
+              !tokens.contains("or"),
+              validColonConnectors(in: clause)
+        else {
+            return nil
+        }
+        let boundaryConnectors: Set<String> = [
+            "and", "or", "but", "plus", "with", "has", "is"
+        ]
+        guard !boundaryConnectors.contains(tokens[0]),
+              !boundaryConnectors.contains(tokens[tokens.count - 1])
+        else {
+            return nil
+        }
         let tokenSet = Set(tokens)
         let invoiceIndicators: Set<String> = [
             "invoice", "reference", "number", "q", "104", "date", "dated", "datetime",
@@ -487,11 +541,10 @@ public actor LocalModelQualificationService {
         ]
         let hasInvoiceFacts = !tokenSet.isDisjoint(with: invoiceIndicators)
         let hasProjectFacts = !tokenSet.isDisjoint(with: projectIndicators)
-        guard hasInvoiceFacts != hasProjectFacts else { return false }
+        guard hasInvoiceFacts != hasProjectFacts else { return nil }
 
         let clauseGlue: Set<String> = ["a", "an", "and", "has", "is", "the", "with"]
         if hasInvoiceFacts {
-            guard citedPages == [1] else { return false }
             let relations: [[String]] = [
                 ["invoice", "q", "104"],
                 ["invoice", "reference", "q", "104"],
@@ -514,10 +567,9 @@ public actor LocalModelQualificationService {
                 tokens,
                 relations: relations,
                 clauseGlue: clauseGlue
-            )
+            ) ? .invoice : nil
         }
 
-        guard citedPages == [2] else { return false }
         return everyMaterialTokenIsInACompleteRelation(
             tokens,
             relations: [
@@ -529,16 +581,33 @@ public actor LocalModelQualificationService {
                 ["status", "is", "synthetic", "test", "only"]
             ],
             clauseGlue: clauseGlue
-        )
+        ) ? .project : nil
     }
 
     private nonisolated static func summaryItems(in value: String) -> [String] {
+        var normalized = ""
+        var previousWasCarriageReturn = false
+        for scalar in value.unicodeScalars {
+            if scalar == "\r" {
+                normalized.append("\n")
+                previousWasCarriageReturn = true
+            } else if scalar == "\n" {
+                if !previousWasCarriageReturn { normalized.append("\n") }
+                previousWasCarriageReturn = false
+            } else if CharacterSet.newlines.contains(scalar) {
+                normalized.append("\n")
+                previousWasCarriageReturn = false
+            } else {
+                normalized.unicodeScalars.append(scalar)
+                previousWasCarriageReturn = false
+            }
+        }
         var items: [String] = []
         var lines: [String] = []
-        for line in value.components(separatedBy: .newlines) {
+        for line in normalized.components(separatedBy: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty {
-                let item = lines.joined(separator: " ")
+                let item = lines.joined(separator: "\n")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if !item.isEmpty { items.append(item) }
                 lines.removeAll(keepingCapacity: true)
@@ -546,7 +615,7 @@ public actor LocalModelQualificationService {
                 lines.append(trimmed)
             }
         }
-        let item = lines.joined(separator: " ")
+        let item = lines.joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if !item.isEmpty { items.append(item) }
         return items
@@ -573,21 +642,53 @@ public actor LocalModelQualificationService {
                 (previous?.properties.numericType != nil && next?.properties.numericType != nil) ||
                 (previous == "q" && next?.properties.numericType != nil)
             )
-            let strippedWrapper = ["\"", "'", "(", ")", "[", "]", "{", "}"].contains(scalar)
-            if scalar == ":" || strippedWrapper {
+            let attachedCurrency = scalar == "$" && next?.properties.numericType != nil
+            let ordinaryWhitespace = scalar == " " || scalar == "\t" ||
+                scalar.properties.generalCategory == .spaceSeparator
+            if CharacterSet.newlines.contains(scalar) {
+                flush()
+            } else if scalar == ":" {
+                current.append(":")
+            } else if decimalPoint || relationHyphen || attachedCurrency ||
+                CharacterSet.alphanumerics.contains(scalar) {
+                current.unicodeScalars.append(scalar)
+            } else if ordinaryWhitespace {
                 current.append(" ")
-            } else if decimalPoint || relationHyphen || !CharacterSet.punctuationCharacters.contains(scalar) {
-                if scalar == "\n" || scalar == "\r" {
-                    flush()
-                } else {
-                    current.unicodeScalars.append(scalar)
-                }
             } else {
                 flush()
             }
         }
         flush()
         return clauses
+    }
+
+    private nonisolated static func validColonConnectors(in clause: String) -> Bool {
+        let segments = clause.split(separator: ":", omittingEmptySubsequences: false)
+        guard segments.count > 1 else { return true }
+        let expectedValueStart: [String: String] = [
+            "invoice": "q",
+            "reference": "q",
+            "number": "q",
+            "date": "2026",
+            "datetime": "2026",
+            "total": "144",
+            "totals": "144",
+            "amount": "144",
+            "value": "144",
+            "project": "localocr",
+            "status": "synthetic"
+        ]
+        for index in 0..<(segments.count - 1) {
+            let labels = summaryTokens(in: String(segments[index]))
+            let values = summaryTokens(in: String(segments[index + 1]))
+            guard let label = labels.last,
+                  let value = values.first,
+                  expectedValueStart[label] == value
+            else {
+                return false
+            }
+        }
+        return true
     }
 
     private nonisolated static func summaryTokens(in value: String) -> [String] {
