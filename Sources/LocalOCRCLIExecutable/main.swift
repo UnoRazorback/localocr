@@ -4,6 +4,10 @@ import LocalOCRCommandKit
 import LocalOCRIntelligence
 import LocalOCRService
 
+let intelligenceEnvironment = LocalIntelligenceEnvironment.live(
+    bridgeLocator: RelativeModelBridgeExecutableLocator()
+)
+
 let application = CLIApplication(
     service: LocalOCRService(),
     output: CommandOutput(
@@ -15,7 +19,8 @@ let application = CLIApplication(
         }
     ),
     consentStore: ExternalDataConsentStore(),
-    consentIO: StandardConsentCommandIO()
+    consentIO: StandardConsentCommandIO(),
+    intelligenceManager: intelligenceEnvironment.manager
 )
 
 let arguments = Array(CommandLine.arguments.dropFirst())

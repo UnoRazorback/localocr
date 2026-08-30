@@ -9,7 +9,7 @@ public struct LocalOCRCommandSurface: AsyncParsableCommand {
         version: LocalOCRRuntime.version,
         subcommands: [
             PageCount.self, Inspect.self, OCR.self, Batch.self, Image.self, Searchable.self,
-            MCPConsent.self
+            MCPConsent.self, Intelligence.self
         ]
     )
 
@@ -102,6 +102,50 @@ public struct LocalOCRCommandSurface: AsyncParsableCommand {
         }
 
         public struct Revoke: AsyncParsableCommand {
+            public init() {}
+            public mutating func run() async throws {}
+        }
+    }
+
+    public struct Intelligence: AsyncParsableCommand {
+        public static let configuration = CommandConfiguration(
+            commandName: "intelligence",
+            subcommands: [Models.self, Test.self, Select.self, Status.self, Reset.self]
+        )
+
+        public init() {}
+
+        public mutating func run() async throws {}
+
+        public struct Models: AsyncParsableCommand {
+            @Flag(name: .long) public var json = false
+            public init() {}
+            public mutating func run() async throws {}
+        }
+
+        public struct Test: AsyncParsableCommand {
+            @Argument public var provider: String
+            @Argument public var model: String
+            @Flag(name: .long) public var json = false
+            public init() {}
+            public mutating func run() async throws {}
+        }
+
+        public struct Select: AsyncParsableCommand {
+            @Argument public var provider: String
+            @Argument public var model: String
+            public init() {}
+            public mutating func run() async throws {}
+        }
+
+        public struct Status: AsyncParsableCommand {
+            @Flag(name: .long) public var json = false
+            public init() {}
+            public mutating func run() async throws {}
+        }
+
+        public struct Reset: AsyncParsableCommand {
+            @Flag(name: .long) public var json = false
             public init() {}
             public mutating func run() async throws {}
         }
