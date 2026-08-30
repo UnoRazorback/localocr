@@ -10,6 +10,7 @@ from pathlib import Path
 import platform
 import shutil
 import stat
+import subprocess
 import tempfile
 
 from mcp import ClientSession, StdioServerParameters
@@ -88,7 +89,7 @@ def _install_test_receipt(home: Path) -> Path:
     current = home
     for component in ("Library", "Application Support", "com.rayconsulting.localocr"):
         current = current / component
-        current.mkdir(mode=0o700)
+        current.mkdir(mode=0o700, exist_ok=True)
         os.chmod(current, 0o700)
         _assert_private_directory(current)
 
@@ -179,6 +180,65 @@ def test_native_stdio_server_keeps_protocol_stdout_clean_and_survives_tool_error
 
     # The MCP client consumed every newline-delimited stdout record as JSON-RPC;
     # any diagnostic stdout would have made one of the session calls fail parsing.
+    assert stderr_path.read_text() == ""
+
+
+def test_native_mcp_reads_the_shared_model_selection_without_mutating_it(tmp_path):
+    root = Path(__file__).parents[2]
+    mcp_binary = root / ".build" / "debug" / "localocr-mcp"
+    cli_binary = root / ".build" / "debug" / "localocr"
+    fixture = root / "tests" / "LocalOCRCoreTests" / "Fixtures" / "mixed.pdf"
+    stderr_path = tmp_path / "selection.stderr"
+
+    assert mcp_binary.is_file(), "build localocr-mcp before running this contract test"
+    assert cli_binary.is_file(), "build localocr before running this contract test"
+
+    async def exercise(home: Path, errlog) -> None:
+        environment = _make_environment(home)
+        current = home
+        for component in ("Library", "Application Support"):
+            current = current / component
+            current.mkdir(mode=0o700)
+            os.chmod(current, 0o700)
+            _assert_private_directory(current)
+        reset = subprocess.run(
+            [str(cli_binary), "intelligence", "reset", "--json"],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert reset.returncode == 0, reset.stderr
+        assert json.loads(reset.stdout)["state"] == "reset"
+        selection_receipt = (
+            home
+            / "Library"
+            / "Application Support"
+            / "com.rayconsulting.localocr"
+            / "local-intelligence-selection.json"
+        )
+        before = selection_receipt.read_bytes()
+        _install_test_receipt(home)
+
+        async with stdio_client(
+            StdioServerParameters(command=str(mcp_binary), args=[], env=environment),
+            errlog=errlog,
+        ) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "summarize_document", {"file_path": str(fixture)}
+                )
+                assert result.isError is True
+                payload = _result_json(result)
+                assert payload["error"]["code"] == "local_intelligence_selection_required"
+
+        assert selection_receipt.read_bytes() == before
+
+    with _isolated_test_home(root / ".build") as home:
+        with stderr_path.open("w+") as errlog:
+            anyio.run(exercise, home, errlog)
+
     assert stderr_path.read_text() == ""
 
 

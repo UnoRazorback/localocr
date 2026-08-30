@@ -6,20 +6,13 @@ import LocalOCRService
 let currentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
 let service = LocalOCRService()
 let textLoader = LocalOCRDocumentTextLoader(service: service)
-let intelligence: any DocumentIntelligenceProviding
-#if canImport(FoundationModels)
-if #available(macOS 26.0, *) {
-    intelligence = FoundationModelsIntelligenceProvider()
-} else {
-    intelligence = UnavailableIntelligenceProvider(.requiresMacOS26)
-}
-#else
-intelligence = UnavailableIntelligenceProvider(.requiresMacOS26)
-#endif
+let intelligenceEnvironment = LocalIntelligenceEnvironment.live(
+    bridgeLocator: RelativeModelBridgeExecutableLocator()
+)
 let dispatcher = MCPToolDispatcher(
     service: service,
     textLoader: textLoader,
-    intelligence: intelligence,
+    intelligence: intelligenceEnvironment.router,
     consentStore: ExternalDataConsentStore(),
     currentDirectory: currentDirectory
 )

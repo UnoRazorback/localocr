@@ -296,9 +296,24 @@ def test_foundation_models_symbols_are_compile_and_availability_guarded() -> Non
 
     assert "@available(macOS 26.0, *)" in provider
     assert "@available(macOS 26.0, *)" in generated_types
-    for entry_source in (mcp_entry, intelligence_environment):
-        available_body = _available_block_body(entry_source, "macOS 26.0")
-        assert "FoundationModelsIntelligenceProvider()" in available_body
+    available_body = _available_block_body(intelligence_environment, "macOS 26.0")
+    assert "FoundationModelsIntelligenceProvider()" in available_body
+
+
+def test_mcp_uses_the_shared_read_only_local_model_selection_router() -> None:
+    mcp_entry = _read(MCP_ENTRY_POINT)
+
+    assert "LocalIntelligenceEnvironment.live(" in mcp_entry
+    assert "bridgeLocator: RelativeModelBridgeExecutableLocator()" in mcp_entry
+    assert "intelligence: intelligenceEnvironment.router" in mcp_entry
+    assert "FoundationModelsIntelligenceProvider()" not in mcp_entry
+    for prohibited in (
+        ".selectApple(",
+        ".selectExternal(",
+        ".resetSelection(",
+        "LocalIntelligenceSelectionStore(",
+    ):
+        assert prohibited not in mcp_entry
 
 
 def test_foundation_models_guard_contract_rejects_appended_unguarded_symbols() -> None:
