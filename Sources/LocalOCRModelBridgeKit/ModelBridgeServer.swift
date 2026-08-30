@@ -1,6 +1,18 @@
 import Foundation
 import LocalOCRModelBridgeProtocol
 
+protocol ModelBridgeInputReading: Sendable {
+    func read(upToCount count: Int) throws -> Data?
+}
+
+private struct FileHandleModelBridgeInput: ModelBridgeInputReading {
+    let handle: FileHandle
+
+    func read(upToCount count: Int) throws -> Data? {
+        try handle.read(upToCount: count)
+    }
+}
+
 public struct UnimplementedModelBridgeHandler: ModelBridgeHandling {
     public init() {}
 
@@ -68,11 +80,29 @@ public actor ModelBridgeServer {
         output: FileHandle,
         diagnostics: FileHandle
     ) async {
+        await run(
+            input: FileHandleModelBridgeInput(handle: input),
+            output: output,
+            diagnostics: diagnostics
+        )
+    }
+
+    func run<Input: ModelBridgeInputReading>(
+        input: Input,
+        output: FileHandle,
+        diagnostics: FileHandle
+    ) async {
         var frame = Data()
         var discardingOversizedFrame = false
 
         while !Task.isCancelled {
-            let chunk = input.availableData
+            let chunk: Data
+            do {
+                chunk = try input.read(upToCount: 64 * 1_024) ?? Data()
+            } catch {
+                Self.writeDiagnostic("model bridge input failure\n", to: diagnostics)
+                return
+            }
             guard !chunk.isEmpty else {
                 return
             }

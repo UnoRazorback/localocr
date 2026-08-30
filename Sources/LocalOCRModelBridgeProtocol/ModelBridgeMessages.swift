@@ -234,6 +234,17 @@ public struct ModelBridgeResponse: Codable, Sendable, Equatable {
         if let payloadJSON, payloadJSON.utf8.count > ModelBridgeLimits.maximumPromptBytes {
             throw DecodingError.dataCorruptedError(forKey: .payloadJSON, in: container, debugDescription: "Payload exceeds the bounded limit.")
         }
+        if let payloadJSON,
+           (try? JSONSerialization.jsonObject(
+               with: Data(payloadJSON.utf8),
+               options: [.fragmentsAllowed]
+           )) == nil {
+            throw DecodingError.dataCorruptedError(forKey: .payloadJSON, in: container, debugDescription: "Payload is not valid JSON.")
+        }
+        if error != nil,
+           (!candidates.isEmpty || payloadJSON != nil || identity != nil) {
+            throw DecodingError.dataCorruptedError(forKey: .error, in: container, debugDescription: "Error responses cannot contain success fields.")
+        }
     }
 }
 

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import LocalOCRModelBridgeProtocol
 
 public protocol ModelBridgeTransporting: Sendable {
@@ -139,11 +140,37 @@ public actor StdioModelBridgeClient: ModelBridgeTransporting {
         guard response.id == request.id else {
             throw ModelBridgeClientError.responseIDMismatch(expected: request.id, actual: response.id)
         }
+        guard Self.isValidResponseShape(response, for: request.action) else {
+            throw ModelBridgeClientError.malformedResponse
+        }
         return response
+    }
+
+    private static func isValidResponseShape(
+        _ response: ModelBridgeResponse,
+        for action: ModelBridgeAction
+    ) -> Bool {
+        if response.error != nil {
+            return true
+        }
+        switch action {
+        case .discover:
+            return response.payloadJSON == nil && response.identity == nil
+        case .status:
+            return response.candidates.isEmpty
+                && response.payloadJSON == nil
+                && response.identity != nil
+        case .generate:
+            return response.candidates.isEmpty
+                && response.payloadJSON != nil
+                && response.identity != nil
+        }
     }
 }
 
 private final class ModelBridgeProcessExecution: @unchecked Sendable {
+    private static let terminationGrace = Duration.milliseconds(200)
+
     private let executableURL: URL
     private let lock = NSLock()
     private var process: Process?
@@ -244,8 +271,8 @@ private final class ModelBridgeProcessExecution: @unchecked Sendable {
             cancelled = true
             return (process, pipes)
         }
-        if let process = snapshot.0, process.isRunning {
-            process.terminate()
+        if let process = snapshot.0 {
+            terminateAndScheduleForcedKill(process)
         }
         for pipe in snapshot.1 {
             try? pipe.fileHandleForWriting.close()
@@ -255,8 +282,23 @@ private final class ModelBridgeProcessExecution: @unchecked Sendable {
 
     private func terminateProcess() {
         let runningProcess = lock.withLock { process }
-        if let runningProcess, runningProcess.isRunning {
-            runningProcess.terminate()
+        if let runningProcess {
+            terminateAndScheduleForcedKill(runningProcess)
+        }
+    }
+
+    private func terminateAndScheduleForcedKill(_ process: Process) {
+        guard process.isRunning else {
+            return
+        }
+        process.terminate()
+        let processBox = ProcessBox(process)
+        Task.detached(priority: .high) {
+            try? await Task.sleep(for: Self.terminationGrace)
+            guard processBox.process.isRunning else {
+                return
+            }
+            _ = Darwin.kill(processBox.process.processIdentifier, SIGKILL)
         }
     }
 

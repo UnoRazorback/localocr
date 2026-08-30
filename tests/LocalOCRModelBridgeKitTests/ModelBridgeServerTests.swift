@@ -1,5 +1,5 @@
 import Foundation
-import LocalOCRModelBridgeKit
+@testable import LocalOCRModelBridgeKit
 import LocalOCRModelBridgeProtocol
 import Testing
 
@@ -137,6 +137,45 @@ struct ModelBridgeServerTests {
         #expect((try output.fileHandleForReading.readToEnd()) ?? Data() == Data())
         #expect((try diagnostics.fileHandleForReading.readToEnd()) ?? Data() == Data())
     }
+
+    @Test
+    func runReadsOversizedRegularFileInBoundedChunksAndWritesOneError() async throws {
+        let fixtureURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("model-bridge-oversized-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: fixtureURL) }
+        try (Data(repeating: 65, count: 4 * 1_048_576) + Data([10])).write(
+            to: fixtureURL,
+            options: .atomic
+        )
+        let baseHandle = try FileHandle(forReadingFrom: fixtureURL)
+        defer { try? baseHandle.close() }
+        let input = RecordingBoundedFileInput(handle: baseHandle)
+        let output = Pipe()
+        let diagnostics = Pipe()
+        let server = ModelBridgeServer(handler: UnimplementedModelBridgeHandler())
+
+        await server.run(
+            input: input,
+            output: output.fileHandleForWriting,
+            diagnostics: diagnostics.fileHandleForWriting
+        )
+        try output.fileHandleForWriting.close()
+        try diagnostics.fileHandleForWriting.close()
+
+        let outputData = try #require(try output.fileHandleForReading.readToEnd())
+        let lines = outputData.split(separator: 10)
+        let response = try JSONDecoder().decode(
+            ModelBridgeResponse.self,
+            from: Data(try #require(lines.first))
+        )
+        #expect(lines.count == 1)
+        #expect(response.id == 0)
+        #expect(response.error?.code == .messageTooLarge)
+        #expect(response.error?.message == "Request exceeds the one-MiB limit.")
+        #expect(input.requestedReadCounts.count > 1)
+        #expect(input.requestedReadCounts.allSatisfy { $0 <= 65_536 })
+        #expect((try diagnostics.fileHandleForReading.readToEnd()) ?? Data() == Data())
+    }
 }
 
 private actor RecordingBridgeHandler: ModelBridgeHandling {
@@ -158,4 +197,23 @@ private func framedJSON(_ object: [String: Any]) throws -> Data {
     var data = try JSONSerialization.data(withJSONObject: object)
     data.append(10)
     return data
+}
+
+private final class RecordingBoundedFileInput: ModelBridgeInputReading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var readCounts: [Int] = []
+    private let handle: FileHandle
+
+    init(handle: FileHandle) {
+        self.handle = handle
+    }
+
+    var requestedReadCounts: [Int] {
+        lock.withLock { readCounts }
+    }
+
+    func read(upToCount count: Int) throws -> Data? {
+        lock.withLock { readCounts.append(count) }
+        return try handle.read(upToCount: count)
+    }
 }
