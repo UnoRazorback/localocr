@@ -313,8 +313,8 @@ if ! printf '%s\n' "$initialize_response" | grep -q '"serverInfo"'; then
     echo "native MCP server did not complete initialization" >&2
     exit 1
 fi
-if ! printf '%s\n' "$initialize_response" | grep -q '"version":"0.3.0"'; then
-    echo "native MCP server did not negotiate version 0.3.0" >&2
+if ! printf '%s\n' "$initialize_response" | grep -q '"version":"0.3.1"'; then
+    echo "native MCP server did not negotiate version 0.3.1" >&2
     exit 1
 fi
 tools_response="$(printf '%s\n' "$initialize_response" | grep '"id":2')"

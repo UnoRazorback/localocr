@@ -263,7 +263,7 @@ def test_common_client_initialize_handshakes_need_no_client_configuration_change
     # would prevent those clients from attaching to the unconfigured helper.
     initialization = initialize(mcp_process, protocol_version=protocol_version, capabilities=capabilities, client_name=client_name)
     assert initialization["result"]["protocolVersion"] == expected_protocol_version
-    assert initialization["result"]["serverInfo"] == {"name": "localocr", "version": "0.3.0"}
+    assert initialization["result"]["serverInfo"] == {"name": "localocr", "version": "0.3.1"}
     mcp_process.send(request(93, "ping", {}))
     assert mcp_process.receive() == {"id": 93, "jsonrpc": "2.0", "result": {}}
 

@@ -138,7 +138,7 @@ async def _exercise_server(
         async with ClientSession(read, write) as session:
             initialization = await session.initialize()
             assert initialization.serverInfo.name == "localocr"
-            assert initialization.serverInfo.version == "0.3.0"
+            assert initialization.serverInfo.version == "0.3.1"
 
             tools = await session.list_tools()
             assert {tool.name for tool in tools.tools} == EXPECTED_TOOL_NAMES

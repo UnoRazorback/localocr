@@ -8,19 +8,19 @@ stored locally.
 LocalOCR is an open-core project for **macOS 14 or later**. The open-source
 core includes the Swift OCR engine, the `localocr` command-line tool, and the
 `localocr-mcp` stdio server. The repository also contains the release pipeline
-for a directly distributed LocalOCR Studio Mac app. The published prerelease is
-[v0.3.0-beta.2](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.2).
-See the [Beta Tester Guide](BETA_TESTING.md) for the verified download,
-installation, desktop batch, privacy, and optional MCP setup. The
-[v0.3 release notes](docs/release/v0.3.0-beta.2-notes.md) describe the exact
-release boundary.
+for a directly distributed LocalOCR Studio Mac app. The Beta 2.1 release
+candidate is version `0.3.1`, build `4`, with planned tag
+`v0.3.1-beta.1`. Signing, notarization, target-Mac acceptance, and publication
+remain separate gates; no Beta 2.1 download is being claimed before those
+gates pass. See the [Beta Tester Guide](BETA_TESTING.md) for the desktop-first
+test, privacy boundary, Local Intelligence providers, and optional MCP setup.
 
 ## What it does
 
 - Inspect a PDF's existing text layer before OCR.
 - OCR selected PDF pages or ImageIO-decodable images with Apple Vision.
 - Create a new searchable PDF with an invisible recognized-text layer.
-- In the next-version candidate, produce temporary, grounded summaries,
+- Produce temporary, grounded summaries,
   organization suggestions, and requested fields with Apple's on-device
   Foundation Models framework on eligible Macs.
 - Expose nine purpose-limited document operations to MCP clients over local
@@ -46,23 +46,26 @@ text-file outputs. Existing output names are preserved by choosing a numbered
 name instead of overwriting. You can cancel, retry failed items, reveal the
 chosen output folder, or start a new batch. See [the Studio guide](docs/studio.md)
 for the full desktop flow and [the v0.3 release notes](docs/release/v0.3.0-beta.2-notes.md)
-for its release boundary. MCP and CLI remain advanced, local-use interfaces.
+for the previous published release boundary. MCP and CLI remain advanced,
+local-use interfaces.
 Start with the desktop app; configure an agent only if you need automation, and
 then follow the canonical [advanced MCP setup and FAQ](docs/mcp.md#advanced-setup).
 
-### Next-version Local Intelligence candidate
+### Beta 2.1 Local Intelligence
 
-For a single processed document, the current source candidate adds three
+For a single processed document, Beta 2.1 adds three
 optional actions: summarize, suggest a name/category/tags, and extract `date`,
 `total`, and `reference_number`. The results are temporary and non-destructive;
 they clear when the document/workspace/window changes and never rename or move
 the source. Desktop batch remains OCR-only.
 
-These actions require macOS 26 or later, an eligible Mac, Apple Intelligence
-enabled, its on-device model ready, and a supported Apple Intelligence
-language. LocalOCR uses no Private Cloud Compute and has no cloud model
-fallback. This work is not part of the published v0.3 Beta 2 and has no new
-version, tag, signed download, notarization, or release acceptance yet.
+Apple Foundation Models requires macOS 26 or later, an eligible Mac, Apple
+Intelligence enabled, its on-device model ready, and a supported Apple
+Intelligence language. Beta 2.1 can also detect verified loopback Ollama and
+LM Studio installations and offer their local models. It never silently
+switches providers, refuses remote or locality-ambiguous endpoints, and
+requires explicit acknowledgment before document text is sent to an external
+local runtime. LocalOCR uses no Private Cloud Compute and has no cloud fallback.
 
 ## Quick start from source
 
@@ -94,29 +97,27 @@ scripts/smoke-native-tools.sh
 ./dist/native-tools/localocr ocr /path/to/document.pdf --pages 1-3 --json
 ```
 
-The resulting executables are `dist/native-tools/localocr` and
-`dist/native-tools/localocr-mcp`. The build script creates local development
+The resulting executables are `dist/native-tools/localocr`,
+`dist/native-tools/localocr-mcp`, and
+`dist/native-tools/localocr-model-bridge`. The build script creates local development
 artifacts only; it does not sign, notarize, install, or publish them.
 
-## Published prerelease distribution
+## Beta 2.1 release candidate
 
-The published prerelease is
-[v0.3.0-beta.2](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.2).
-Its release identity is version `0.3.0`, build `3`, source commit
-`54828938f4b8bf23a4ae0e7a63fa9552548e7f78`, and verified ZIP SHA-256
-`a60fb34f5f9b9c19413bb2222d2846f472398c73ad4a0a7a1ac19eee09b55691`.
-It was built with stable Xcode 26.6 (`17F113`), Swift 6, and arm64, with
-deployment target macOS 14.0. The downloaded package was verified on the build
-Mac (Mac17,3) running macOS 27.0 beta build `26A5421a`. Exact-build second-Mac
-acceptance also passed on Scott’s Mac mini running the same macOS build. Future
-Apple beta compatibility is not guaranteed.
+The candidate identity is version `0.3.1`, build `4`, planned tag
+`v0.3.1-beta.1`, and planned assets `LocalOCR-Studio-0.3.1-4.zip` and
+`LocalOCR-Studio-0.3.1-4.sha256`. The exact release commit, ZIP SHA-256,
+notarization submission, downloaded-package verification, and target-Mac
+results must be filled from evidence after those gates pass. Development uses
+stable Xcode 26.6 (`17F113`), Swift 6, arm64, and deployment target macOS 14.0.
+Future Apple beta compatibility is not guaranteed.
 
-Download `LocalOCR-Studio-0.3.0-3.zip` and
-`LocalOCR-Studio-0.3.0-3.sha256` into the same directory and verify them before
+After the release is published, download `LocalOCR-Studio-0.3.1-4.zip` and
+`LocalOCR-Studio-0.3.1-4.sha256` into the same directory and verify them before
 expanding the ZIP:
 
 ```bash
-shasum -a 256 -c "LocalOCR-Studio-0.3.0-3.sha256"
+shasum -a 256 -c "LocalOCR-Studio-0.3.1-4.sha256"
 ```
 
 Continue only if the command reports `OK`. Move the expanded `LocalOCR
@@ -151,9 +152,9 @@ corresponding facts for the available build.
 - LocalOCR's OCR, cache, Foundation Models, and stdio-server processing remain
   local; there is no cloud OCR, cloud storage, or network MCP transport. A
   connected client/provider may separately transmit MCP arguments and results.
-- The MCP server uses local stdio and client configuration remains manual.
-- The published v0.3 Beta 2 helper has the six OCR/PDF tools. The
-  nine-tool external-consent work remains an unpublished next-version candidate.
+- The MCP server uses local stdio. Beta 2.1 provides guided setup for detected
+  Codex and Claude installations; other clients receive copy-only instructions.
+- All nine MCP document tools require the external-provider acknowledgment.
 - Windows, Linux, and Intel Macs are not supported.
 - Beta behavior and file-format results may change; keep original documents
   and report substantive issues through the feedback URL in the published
@@ -174,8 +175,8 @@ program will consume the result. See [the full CLI reference](docs/cli.md).
 
 ## MCP server
 
-The next-version `localocr-mcp` source candidate exposes the following local
-tools after the current external-data acknowledgment is accepted:
+Beta 2.1 `localocr-mcp` exposes the following local tools after the current
+external-data acknowledgment is accepted:
 
 | Tool | Purpose |
 | --- | --- |
@@ -213,12 +214,9 @@ PyMuPDF, Homebrew, or a network service at runtime.
 
 ## Scope and beta operations
 
-LocalOCR currently targets local, on-device PDF and image OCR. It does not
-provide cloud OCR, cloud document storage, automatic client configuration, or
-cross-platform support. The published v0.3 beta includes the default
-single-document desktop flow, reviewed sequential desktop batches, and the
-advanced local CLI/MCP interfaces. The newer Local Intelligence, consent,
-nine-tool, and alternative-model work is an unpublished candidate that still
-requires fresh release verification. Continue collecting desktop and advanced-
-MCP feedback as input to later product decisions while preserving local-only
-behavior.
+LocalOCR targets local, on-device PDF and image OCR. It does not provide cloud
+OCR, cloud document storage, remote MCP transport, or cross-platform support.
+Beta 2.1 combines the default single-document desktop flow, reviewed sequential
+desktop batches, offline Help, guided Codex/Claude connection, nine local stdio
+tools, and explicitly selected local-model providers. Release verification and
+publication remain evidence-backed gates.

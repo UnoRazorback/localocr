@@ -61,21 +61,22 @@ batch is processing.
 - **Process Another Document** immediately returns to the drop/open screen
   without relaunching the app or deleting any saved output.
 
-## Local Intelligence in the next-version candidate
+## Beta 2.1 Local Intelligence
 
-After one document finishes OCR, the next-version candidate can use Apple
-Foundation Models to **Summarize**, **Suggest Name & Tags**, or **Extract
+After one document finishes OCR, Beta 2.1 can use a selected local model to
+**Summarize**, **Suggest Name & Tags**, or **Extract
 Fields** (`date`, `total`, and `reference_number`). These are separate actions
 in the single-document result view. They use the recognized page text, retain
 page citations or evidence, and do not send the original PDF or image bytes to
 the model.
 
-The Local Intelligence card identifies the active local model as **Apple
-Foundation Models (system default)**. In technical terms, LocalOCR uses
-`SystemLanguageModel.default`. Apple chooses the installed system model and
-does not expose its specific model name or version through the public API. This
-disclosure records the model baseline without implying that LocalOCR currently
-supports selecting a different model.
+The Local Intelligence card identifies the active provider and exact identity
+available from that harness. Apple Foundation Models uses
+`SystemLanguageModel.default`; Apple chooses the installed system model and
+does not expose its specific model name or version through the public API.
+**Manage Local Models** can detect qualified Ollama and LM Studio models on
+verified loopback. LocalOCR refuses remote, relayed, wildcard, and
+locality-ambiguous endpoints and never silently switches providers.
 
 Local Intelligence results are temporary and non-destructive. They remain in
 the current result view only until you process another document, switch
@@ -84,17 +85,19 @@ automatically save the source based on a suggestion. Copy or save anything you
 want to retain, and keep the original document because OCR and model output can
 contain errors.
 
-Batch remains OCR-only: it never invokes Local Intelligence. The three actions
-require macOS 26 or later, an eligible Mac, Apple Intelligence enabled, the
-on-device model ready, and a supported Apple Intelligence language. When any
-requirement is unavailable, the app explains the applicable state and normal
-single-document and batch OCR continue to work.
+Batch remains OCR-only: it never invokes Local Intelligence. Apple Foundation
+Models requires macOS 26 or later, an eligible Mac, Apple Intelligence enabled,
+the on-device model ready, and a supported Apple Intelligence language. Ollama
+or LM Studio requires an already-running supported local harness, a qualified
+model, explicit selection, and the displayed acknowledgment. When the selected
+provider is unavailable, normal single-document and batch OCR continue to work.
 
-This desktop use stays inside LocalOCR and Apple's on-device Foundation Models
-framework. It does not use Private Cloud Compute, a third-party model, or a
-cloud fallback. It does not require MCP consent because no external agent or
-MCP client is involved. The separate acknowledgment described below is
-required only before an MCP client can call document tools.
+Apple Foundation Models stays inside LocalOCR and Apple's on-device framework;
+it does not use Private Cloud Compute or a cloud fallback. A selected Ollama or
+LM Studio route sends OCR text only to that acknowledged harness over loopback
+on this Mac. The harness may keep its own logs or history. Studio Local
+Intelligence does not require MCP consent because no external agent is involved;
+the local-runtime acknowledgment and MCP acknowledgment are separate choices.
 
 ## Advanced CLI and MCP
 
@@ -125,27 +128,20 @@ external-provider risk, consent, and current client-configuration examples.
 The adjacent `Contents/Helpers/localocr` executable provides the command-line
 interface.
 
-## Beta status
+## Beta 2.1 status
 
-The published prerelease is
-[v0.3.0-beta.2](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.2),
-version `0.3.0`, build `3`. Follow the [Beta Tester Guide](../BETA_TESTING.md)
-to verify `LocalOCR-Studio-0.3.0-3.zip` with its matching `.sha256` file, then move the
-expanded app to `/Applications` and open it normally. Do not use a staging
-copy or bypass Gatekeeper. The [v0.3 release notes](release/v0.3.0-beta.2-notes.md)
-document the desktop batch and exact release boundary.
-
-The Local Intelligence and nine-tool consent work is also a next-version
-candidate until it independently passes its remaining build, live-model,
-signature, notarization, downloaded-package, and target-Mac release gates. No
-new version, tag, download, or publication is claimed here.
+The release candidate is version `0.3.1`, build `4`, with planned tag
+`v0.3.1-beta.1`. Follow the [Beta Tester Guide](../BETA_TESTING.md) for the
+desktop-first acceptance path. The planned assets are
+`LocalOCR-Studio-0.3.1-4.zip` and its matching `.sha256` file. Do not use a
+staging copy or bypass Gatekeeper. Signing, notarization, downloaded-package,
+and target-Mac acceptance remain separate gates, so no published Beta 2.1
+download is claimed before their evidence exists.
 
 ## Compatibility and build provenance
 
-The published v0.3 beta was built with stable Xcode 26.6 (`17F113`), Swift 6,
-and arm64, with deployment target macOS 14.0. It is Apple notarized, stapled,
-and Gatekeeper accepted. The downloaded package verifier passed on the build
-Mac (Mac17,3) running macOS 27.0 beta build `26A5421a`. Exact-build second-Mac
-acceptance passed on Scott’s Mac mini running the same macOS build. Future
-Apple beta compatibility is not guaranteed;
-include the exact macOS version and build number in feedback.
+The candidate uses stable Xcode 26.6 (`17F113`), Swift 6, arm64, and deployment
+target macOS 14.0. Final signing, notarization, Gatekeeper, download, and
+target-Mac facts will be added from completed evidence. Future Apple beta
+compatibility is not guaranteed; include the exact macOS version and build
+number in feedback.

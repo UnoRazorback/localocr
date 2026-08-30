@@ -4,7 +4,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOYMENT_TARGET = "deployment target macOS 14.0"
-TESTED_ON_BUILD = "macOS 27.0 beta build `26A5421a`"
+VERSION = "0.3.1"
+BUILD = "4"
+TAG = "v0.3.1-beta.1"
 FILES = {
     "readme": ROOT / "README.md",
     "studio": ROOT / "docs/studio.md",
@@ -19,21 +21,19 @@ def test_repository_docs_link_to_beta_guide():
     assert "../BETA_TESTING.md" in FILES["mcp"].read_text()
 
 
-def test_readme_and_studio_describe_published_beta_and_reset():
+def test_readme_and_studio_describe_beta_2_1_candidate_and_reset():
     for key in ("readme", "studio"):
         text = FILES[key].read_text()
-        assert "v0.3.0-beta.2" in text
+        prose = " ".join(text.split())
+        assert VERSION in text
+        assert BUILD in text
+        assert TAG in text
+        assert "release candidate" in text.lower()
+        assert "no published Beta 2.1 download is claimed" in prose or "no Beta 2.1 download is being claimed" in prose
         assert "Process Another Document" in text
         assert "Xcode 26.6" in text
-        assert DEPLOYMENT_TARGET in text
-        assert TESTED_ON_BUILD in text
-        assert "no supported localocr studio beta download" not in text.lower()
-        assert re.search(
-            r"The published prerelease is\s+"
-            r"\[v0\.3\.0-beta\.2\]"
-            r"\(https://github\.com/UnoRazorback/localocr/releases/tag/v0\.3\.0-beta\.2\)",
-            text,
-        )
+        assert DEPLOYMENT_TARGET in prose
+        assert "Future Apple beta compatibility is not guaranteed" in prose
 
 
 def test_mcp_guide_has_installed_helper_and_verified_client_commands():
@@ -43,6 +43,21 @@ def test_mcp_guide_has_installed_helper_and_verified_client_commands():
     assert "claude mcp add --transport stdio --scope local localocr --" in text
     assert "https://learn.chatgpt.com/docs/extend/mcp" in text
     assert "https://code.claude.com/docs/en/mcp" in text
+    assert "requires a separate confirmation" in text
+    assert "Generic clients remain" in text and "copy-only" in text
+
+
+def test_current_docs_align_on_beta_2_1_providers_help_and_helpers():
+    for path in (*FILES.values(), ROOT / "BETA_TESTING.md"):
+        text = path.read_text()
+        prose = " ".join(text.split())
+        if path.name in {"README.md", "studio.md", "mcp.md", "BETA_TESTING.md"}:
+            assert "Ollama" in text
+            assert "LM Studio" in text
+            assert "never silently switches" in prose
+    readme = FILES["readme"].read_text()
+    assert "localocr-model-bridge" in readme
+    assert "offline Help" in readme
 
 
 def test_desktop_first_docs_point_to_one_canonical_advanced_setup():

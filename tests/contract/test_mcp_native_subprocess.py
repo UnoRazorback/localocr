@@ -165,7 +165,7 @@ def test_native_helper_preserves_localocr_stdio_contract_and_clean_eof(tmp_path:
     initialization = server.receive(1)["result"]
     assert isinstance(initialization, dict)
     assert initialization["protocolVersion"] == "2025-06-18"
-    assert initialization["serverInfo"] == {"name": "localocr", "version": "0.3.0"}
+    assert initialization["serverInfo"] == {"name": "localocr", "version": "0.3.1"}
     server.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
     server.send(_request(2, "tools/list", {}))

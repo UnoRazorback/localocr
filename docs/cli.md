@@ -16,7 +16,7 @@ localocr <command> [options]
 ```
 
 Available commands are `page-count`, `inspect`, `ocr`, `batch`, `image`,
-`searchable`, and `mcp-consent`. `localocr --help` (or `-h`) lists commands,
+`searchable`, `mcp-consent`, and `intelligence`. `localocr --help` (or `-h`) lists commands,
 `localocr <command> --help` (or `-h`) shows command usage, and
 `localocr --version` (or `-V`) prints the version.
 
@@ -156,6 +156,31 @@ The local consent receipt is content-free: it does not record document paths,
 recognized text, or a provider identity. Read the [canonical MCP FAQ](mcp.md)
 before enabling agent access; a local stdio connection does not guarantee that
 the client or its AI provider keeps arguments and results on this Mac.
+
+### `intelligence <models|test|select|status|reset>`
+
+Inspect and manage Local Intelligence providers without changing OCR behavior:
+
+```bash
+localocr intelligence models --json
+localocr intelligence test ollama gemma4:8b --json
+localocr intelligence select ollama gemma4:8b
+localocr intelligence status --json
+localocr intelligence reset --json
+```
+
+`models` reports Apple Foundation Models availability and detected Ollama or
+LM Studio candidates. `test` runs the bounded local qualification suite for one
+exact provider/model identity. `select` makes a qualified identity active;
+third-party loopback providers require the interactive acknowledgment and
+cannot be selected by a noninteractive flag. `status` reports the current
+selection and qualification/acknowledgment provenance. `reset` returns to the
+Apple system model when available and clears any external-provider selection.
+
+Detection never means consent or selection. Remote, relayed, wildcard, generic
+OpenAI-compatible, and locality-ambiguous endpoints are refused. LocalOCR never
+silently switches providers. These commands do not perform OCR and never send
+document text merely to list or test provider metadata.
 
 ## Output streams and exit codes
 

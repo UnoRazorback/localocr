@@ -45,7 +45,7 @@ def test_canonical_faq_documents_exact_tool_and_consent_contracts():
         assert f'"{installed_cli}" mcp-consent {operation}' in text
 
 
-def test_canonical_faq_documents_client_setup_without_automatic_edits():
+def test_canonical_faq_documents_guided_known_clients_and_copy_only_generic_setup():
     text = MCP.read_text()
     prose = " ".join(text.split())
     codex = text.split("### Codex", 1)[1].split("### Claude Code", 1)[0]
@@ -65,7 +65,8 @@ def test_canonical_faq_documents_client_setup_without_automatic_edits():
     assert "--scope user" in claude
     assert '"command": "/Applications/LocalOCR Studio.app/Contents/Helpers/localocr-mcp"' in text
     assert ".build/release/localocr-mcp" in text
-    assert "does not automatically edit" in prose
+    assert "requires a separate confirmation" in prose
+    assert "Generic clients remain copy-only" in prose
     assert "filesystem permissions" in text
 
 
@@ -117,6 +118,10 @@ def test_canonical_faq_preserves_local_intelligence_and_provider_boundaries():
         assert unavailable in text
     assert "does not use Private Cloud Compute" in text
     assert "no cloud fallback" in text
+    assert "Ollama" in text
+    assert "LM Studio" in text
+    assert "Generic OpenAI-compatible endpoints are not accepted" in prose
+    assert "never silently switches providers" in prose
     assert "do not assume that data remains on your Mac" in prose
     assert "privacy, retention, training, and provider behavior may change" in prose
 

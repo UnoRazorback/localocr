@@ -14,7 +14,7 @@ import Testing
         try await server.start(transport: transport)
         let initialization = try await initialize(transport)
         #expect(initialization.serverInfo.name == "localocr")
-        #expect(initialization.serverInfo.version == "0.3.0")
+        #expect(initialization.serverInfo.version == "0.3.1")
 
         let listResponse = try await exchange(
             ListTools.request(id: 2, .init()),

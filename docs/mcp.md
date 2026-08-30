@@ -5,11 +5,10 @@ agent to automate LocalOCR. The desktop app requires no MCP setup. This page is
 the canonical advanced-use guide for connecting the `localocr-mcp` helper to an
 MCP client.
 
-The current published v0.3 Beta 2 is the six-tool build. The source tree
-described here contains a next-version candidate with nine tools and an
-external-data acknowledgment. That candidate is not yet published; this page
-does not claim a new version, signed package, notarization, installation, or
-release acceptance.
+Beta 2.1 is version `0.3.1`, build `4`, with nine tools and an external-data
+acknowledgment. Its planned tag is `v0.3.1-beta.1`. This guide describes the
+candidate behavior but does not claim signing, notarization, installation, or
+release acceptance before those evidence gates pass.
 
 ## What does local stdio MCP mean?
 
@@ -18,8 +17,10 @@ MCP messages over the helper's standard input and standard output. LocalOCR
 does not open an HTTP port or expose a network MCP service. The helper exits
 when the client closes that stdio connection.
 
-LocalOCR itself uses Apple Vision, PDFKit, and optional Apple Foundation Models
-on the Mac and makes no network request. Connecting an agent creates a separate
+LocalOCR uses Apple Vision, PDFKit, and optional Apple Foundation Models on the
+Mac without an Internet service. An explicitly selected Ollama or LM Studio
+provider uses a separate app-owned bridge restricted to verified loopback on
+this Mac. Connecting an agent creates a separate
 privacy boundary: the client decides which tool arguments and results enter its
 conversation or provider. Local stdio describes the transport between the
 client and helper; it is not a promise about the client's account, model, logs,
@@ -90,9 +91,11 @@ invalid, revoked, or outdated receipt fails closed.
 
 ## Advanced setup
 
-LocalOCR only displays and copies setup instructions. It does not automatically
-edit Codex, Claude Code, or another client's configuration, and it never runs
-these commands for you.
+LocalOCR can detect supported Codex and Claude Code installations. After MCP
+consent is current, it shows the exact client, helper path, and scope and
+requires a separate confirmation before running that client's own `mcp add` or
+`mcp remove` command. It never force-quits the client. Generic clients remain
+copy-only because their configuration contract is unknown.
 
 ### Installed LocalOCR Studio app
 
@@ -103,10 +106,12 @@ installation, the bundled helper path is:
 /Applications/LocalOCR Studio.app/Contents/Helpers/localocr-mcp
 ```
 
-The same bundle contains two different executables:
+The same bundle contains three different executables:
 
 - `Contents/Helpers/localocr-mcp` is the stdio MCP server configured in the client.
 - `Contents/Helpers/localocr` is the CLI used for consent status, acceptance, and revocation.
+- `Contents/Helpers/localocr-model-bridge` is an app-owned bridge for bounded,
+  verified loopback Ollama and LM Studio operations. It is not an MCP server.
 
 ### Codex
 
@@ -173,8 +178,10 @@ Manage consent with the CLI from that same source build:
 ```
 
 The repository's `scripts/build-native-tools.sh` alternative writes
-both `dist/native-tools/localocr` and `dist/native-tools/localocr-mcp`. Use the
-first for consent commands and give the client an absolute path to the second.
+`dist/native-tools/localocr`, `dist/native-tools/localocr-mcp`, and
+`dist/native-tools/localocr-model-bridge`. Use the first for consent commands,
+give the client an absolute path to the second, and do not configure the third
+as an MCP server.
 The extension manifest invokes
 `localocr-mcp` by name instead; put a built native executable on that client's
 `PATH` before enabling the extension. The extension does not bundle an
@@ -316,7 +323,9 @@ facts without source support.
 The six OCR/PDF tools remain available on supported macOS 14-or-later Apple
 silicon systems even when Local Intelligence is unavailable. The three tools
 `summarize_document`, `organize_document`, and `extract_document_fields`
-additionally require all of the following:
+additionally require an available, explicitly selected local provider.
+
+Apple Foundation Models requires all of the following:
 
 - macOS 26 or later;
 - an eligible Mac for Apple Intelligence;
@@ -329,20 +338,26 @@ is not eligible, Apple Intelligence is not enabled, the model is not ready, or
 the current language is not supported. These states do not disable ordinary
 OCR and PDF tools.
 
-Local Intelligence sends only required recognized text and page markers to
-Apple's on-device Foundation Models framework. It does not pass the source PDF
-or image bytes to the model. LocalOCR does not use Private Cloud Compute, a
-third-party model, an API key, or any network model, and there is no cloud
-fallback. The outputs are constrained to the requested summary, organization,
-or named-field task and checked against source text before being returned.
+On compatible Macs, LocalOCR can also detect Ollama and LM Studio models through
+exact IPv4 or IPv6 loopback routes. Detection is not selection. A model must
+pass locality, identity, and grounded-task qualification, and the user must
+select it and accept the displayed third-party harness acknowledgment. Remote,
+relayed, wildcard, and locality-ambiguous endpoints are refused. Generic
+OpenAI-compatible endpoints are not accepted in Beta 2.1.
 
-Every Local Intelligence result includes a `local_model` object identifying
-the provider as `Apple Foundation Models`, the model as
-`SystemLanguageModel.default`, and processing as `on_device`. Apple selects the
-installed system model and does not expose its specific model name or version
-through the public Foundation Models API. The field is provenance for the
-current result; it does not indicate that LocalOCR currently supports selecting
-another model.
+Local Intelligence sends only required recognized text and page markers to the
+selected provider. It does not pass the source PDF or image bytes to the model.
+Apple Foundation Models does not use Private Cloud Compute and has no cloud fallback.
+For Ollama or LM Studio, text goes only to the acknowledged harness over
+loopback on this Mac; that harness may keep its own logs or history. LocalOCR
+never silently switches providers.
+
+Every Local Intelligence result includes a `local_model` object identifying the
+selected provider, model identity available from that harness, and local
+processing route. Apple results identify `SystemLanguageModel.default`; Apple
+does not expose the installed system model's specific name or version through
+the public Foundation Models API. Ollama and LM Studio results identify the
+exact qualified model and harness metadata used for that operation.
 
 That local LocalOCR boundary ends at the MCP client. The client may send paths,
 arguments, recognized text, and results to its configured service, so do not
@@ -411,19 +426,18 @@ document-tool access, run `localocr mcp-consent revoke` or revoke it in Help.
 
 ### Local Intelligence unavailable
 
-First confirm macOS 26 or later and an eligible Mac. Then confirm Apple
-Intelligence is enabled, its model download/setup is complete, and the current
-Apple Intelligence language is supported. When those conditions are not met,
-use the six OCR/PDF tools; LocalOCR has no cloud fallback.
+Confirm the selected provider in **Manage Local Models**. For Apple, confirm
+macOS 26 or later, an eligible Mac, Apple Intelligence enabled, model setup
+complete, and a supported language. For Ollama or LM Studio, start the existing
+local harness, run detection again, review qualification, and reselect the exact
+model if its identity changed. When no provider is available, use the six
+OCR/PDF tools; LocalOCR has no cloud fallback.
 
 ## Compatibility and release boundary
 
 The package and app keep a macOS 14 deployment target; Foundation Models code
 is availability-guarded for macOS 26 or later. Development compilation and
-automated verification for this candidate use stable Xcode 26.6 (`17F113`),
-Swift 6.3.3, and the macOS 26.5 SDK. That is development evidence, not a live
-Foundation Models run or release acceptance. Published v0.3 Beta 2 provenance and
-its separate macOS 27 beta acceptance evidence remain documented in the
-[Beta Tester Guide](../BETA_TESTING.md). None of that historical evidence is a
-signature, notarization, download, or target-Mac acceptance claim for this
-next-version candidate. Those remain separate release gates.
+automated verification use stable Xcode 26.6 (`17F113`), Swift 6.3.3, and the
+macOS 26.5 SDK. That is development evidence, not a live provider or release
+acceptance claim. Signature, notarization, download, and target-Mac acceptance
+remain separate gates documented in the [Beta Tester Guide](../BETA_TESTING.md).

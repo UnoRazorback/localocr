@@ -65,7 +65,7 @@ struct AgentConnectionGuideModelTests {
             "make_searchable_pdf",
         ])
         #expect(model.localIntelligenceRequirements == """
-        summarize_document, organize_document, and extract_document_fields use Apple Foundation Models through SystemLanguageModel.default and identify that model in each result. They require macOS 26 or later, an eligible Mac, Apple Intelligence enabled, the on-device model ready, and a currently supported Apple Intelligence language. Apple does not expose the installed system model's specific name or version. The six OCR and PDF tools remain available when Local Intelligence is unavailable.
+        summarize_document, organize_document, and extract_document_fields use the explicitly selected local provider and identify it in each result. Apple Foundation Models uses SystemLanguageModel.default and requires macOS 26 or later, an eligible Mac, Apple Intelligence enabled, the on-device model ready, and a supported language. Apple does not expose the installed system model's specific name or version. Qualified Ollama and LM Studio models may be selected only after verified loopback detection and the local-runtime acknowledgment. Remote or locality-ambiguous endpoints are refused, and LocalOCR never silently switches providers. The six OCR and PDF tools remain available when Local Intelligence is unavailable.
         """)
     }
 
