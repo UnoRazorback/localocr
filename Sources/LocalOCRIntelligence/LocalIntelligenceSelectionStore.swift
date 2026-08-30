@@ -25,7 +25,8 @@ public actor LocalIntelligenceSelectionStore: LocalIntelligenceSelectionStoring 
             allowedTopLevelMemberSets: [
                 ["schema_version", "policy_version", "state", "reset_at"],
                 ["schema_version", "policy_version", "state", "selection"]
-            ]
+            ],
+            receiptSchema: Self.receiptSchema
         )
     }
 
@@ -37,8 +38,73 @@ public actor LocalIntelligenceSelectionStore: LocalIntelligenceSelectionStoring 
             allowedTopLevelMemberSets: [
                 ["schema_version", "policy_version", "state", "reset_at"],
                 ["schema_version", "policy_version", "state", "selection"]
+            ],
+            receiptSchema: Self.receiptSchema
+        )
+    }
+
+    init(receiptURL: URL, hooks: SecureJSONReceiptStoreHooks) {
+        self.receiptURL = receiptURL
+        receiptStore = SecureJSONReceiptStore(
+            receiptURL: receiptURL,
+            allowedTopLevelMemberSets: [
+                ["schema_version", "policy_version", "state", "reset_at"],
+                ["schema_version", "policy_version", "state", "selection"]
+            ],
+            receiptSchema: Self.receiptSchema,
+            hooks: hooks
+        )
+    }
+
+    private nonisolated static var receiptSchema: SecureJSONReceiptSchema {
+        let identity = SecureJSONReceiptSchema.object(
+            required: [
+                "provider": .value,
+                "model": .value
+            ],
+            optional: [
+                "fingerprint": .value,
+                "harnessVersion": .value
             ]
         )
+        let qualification = SecureJSONReceiptSchema.object(required: [
+            "policy_version": .value,
+            "fixture_version": .value,
+            "identity": identity,
+            "passed_actions": .array(.value),
+            "qualified_at": .value
+        ])
+        let acknowledgment = SecureJSONReceiptSchema.object(required: [
+            "policy_version": .value,
+            "identity": identity,
+            "accepted_at": .value
+        ])
+        let selection = SecureJSONReceiptSchema.oneOf([
+            .object(required: [
+                "appleSystemDefault": .object(required: [:])
+            ]),
+            .object(required: [
+                "external": .object(required: [
+                    "identity": identity,
+                    "qualification": qualification,
+                    "acknowledgment": acknowledgment
+                ])
+            ])
+        ])
+        return .oneOf([
+            .object(required: [
+                "schema_version": .value,
+                "policy_version": .value,
+                "state": .value,
+                "reset_at": .value
+            ]),
+            .object(required: [
+                "schema_version": .value,
+                "policy_version": .value,
+                "state": .value,
+                "selection": selection
+            ])
+        ])
     }
 
     public func state() async -> LocalIntelligenceSelectionState {
@@ -47,8 +113,10 @@ public actor LocalIntelligenceSelectionStore: LocalIntelligenceSelectionStoring 
         } catch SecureJSONReceiptStoreError.missingPath {
             let migrated = LocalIntelligenceSelection.appleSystemDefault
             do {
-                try await receiptStore.replace(with: .selected(migrated))
-                return .selected(migrated)
+                if try await receiptStore.createIfAbsent(with: .selected(migrated)) {
+                    return .selected(migrated)
+                }
+                return validate(try await receiptStore.read())
             } catch {
                 return .invalid(.corruptReceipt)
             }
@@ -91,7 +159,8 @@ public actor LocalIntelligenceSelectionStore: LocalIntelligenceSelectionStoring 
         case .selected(.appleSystemDefault):
             return .selected(.appleSystemDefault)
         case let .selected(.external(identity, qualification, acknowledgment)):
-            guard identity.provider != .appleFoundationModels,
+            guard Self.hasBoundedIdentityFields(identity),
+                  identity.provider != .appleFoundationModels,
                   qualification.policyVersion == LocalModelQualificationReceipt.currentPolicyVersion,
                   qualification.fixtureVersion == LocalModelQualificationReceipt.currentFixtureVersion,
                   qualification.identity == identity,
@@ -110,5 +179,13 @@ public actor LocalIntelligenceSelectionStore: LocalIntelligenceSelectionStoring 
                 acknowledgment: acknowledgment
             ))
         }
+    }
+
+    private nonisolated static func hasBoundedIdentityFields(
+        _ identity: LocalModelIdentity
+    ) -> Bool {
+        identity.model.utf8.count <= 1_024 &&
+            (identity.fingerprint?.utf8.count ?? 0) <= 1_024 &&
+            (identity.harnessVersion?.utf8.count ?? 0) <= 256
     }
 }

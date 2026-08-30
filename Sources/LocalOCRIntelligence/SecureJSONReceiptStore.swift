@@ -1,6 +1,8 @@
 import Darwin
 import Foundation
 
+private let secureJSONReceiptMaximumSize = 16 * 1_024
+
 public enum SecureJSONReceiptStoreError: Error, Sendable, Equatable {
     case invalidReceiptPath
     case missingPath
@@ -40,6 +42,40 @@ struct SecureJSONReceiptStoreHooks: Sendable {
     }
 }
 
+indirect enum SecureJSONReceiptSchema: Sendable {
+    case value
+    case array(SecureJSONReceiptSchema)
+    case object(
+        required: [String: SecureJSONReceiptSchema],
+        optional: [String: SecureJSONReceiptSchema] = [:]
+    )
+    case oneOf([SecureJSONReceiptSchema])
+
+    func accepts(_ value: Any) -> Bool {
+        switch self {
+        case .value:
+            return true
+        case let .array(memberSchema):
+            guard let values = value as? [Any] else { return false }
+            return values.allSatisfy(memberSchema.accepts)
+        case let .object(required, optional):
+            guard let members = value as? [String: Any] else { return false }
+            let actualNames = Set(members.keys)
+            let requiredNames = Set(required.keys)
+            guard requiredNames.isSubset(of: actualNames),
+                  actualNames.isSubset(of: requiredNames.union(optional.keys))
+            else {
+                return false
+            }
+            return members.allSatisfy { name, member in
+                (required[name] ?? optional[name])?.accepts(member) == true
+            }
+        case let .oneOf(schemas):
+            return schemas.contains { $0.accepts(value) }
+        }
+    }
+}
+
 actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
     private struct FileIdentity: Sendable, Equatable {
         let device: UInt64
@@ -63,12 +99,14 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
     private let directoryComponents: [String]
     private let expectedReceiptOwnerID: uid_t
     private let allowedTopLevelMemberSets: Set<Set<String>>?
+    private let receiptSchema: SecureJSONReceiptSchema?
     private let hooks: SecureJSONReceiptStoreHooks
 
     init(
         receiptURL: URL,
         expectedReceiptOwnerID: uid_t = geteuid(),
         allowedTopLevelMemberSets: Set<Set<String>>? = nil,
+        receiptSchema: SecureJSONReceiptSchema? = nil,
         hooks: SecureJSONReceiptStoreHooks = SecureJSONReceiptStoreHooks()
     ) {
         self.receiptURL = receiptURL
@@ -76,6 +114,7 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
         directoryComponents = Array(receiptURL.pathComponents.dropFirst().dropLast())
         self.expectedReceiptOwnerID = expectedReceiptOwnerID
         self.allowedTopLevelMemberSets = allowedTopLevelMemberSets
+        self.receiptSchema = receiptSchema
         self.hooks = hooks
     }
 
@@ -260,6 +299,82 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
                 throw error
             }
         }
+    }
+
+    func createIfAbsent(with receipt: Receipt) throws -> Bool {
+        let data = try encodeReceipt(receipt)
+        let handles = try openDirectoryChain(createApplicationDirectory: true)
+        defer { close(handles) }
+        try reprove(handles)
+        let parent = try requiredParent(in: handles)
+        guard try entryMetadata(named: receiptName, beneath: parent.descriptor) == nil else {
+            return false
+        }
+
+        let temporary = try createTemporaryReceipt(beneath: parent.descriptor)
+        var shouldQuarantineTemporary = true
+        defer {
+            Darwin.close(temporary.descriptor)
+            if shouldQuarantineTemporary {
+                try? moveToPermanentQuarantine(
+                    named: temporary.name,
+                    beneath: parent.descriptor,
+                    expectedIdentity: temporary.identity,
+                    beforeFinalMutation: hooks.beforeTemporaryCleanupFinalMutation
+                )
+            }
+        }
+
+        try writeAll(data, to: temporary.descriptor)
+        try synchronize(temporary.descriptor)
+        try hooks.beforeAcceptReproof()
+        try reprove(handles)
+        guard try entryMetadata(named: receiptName, beneath: parent.descriptor) == nil else {
+            return false
+        }
+        try requireEntry(
+            named: temporary.name,
+            beneath: parent.descriptor,
+            matches: temporary.identity
+        )
+        try hooks.beforeAcceptFinalMutation()
+
+        let renameStatus = exclusiveRename(
+            temporary.name,
+            receiptName,
+            beneath: parent.descriptor
+        )
+        if renameStatus != 0 {
+            let renameError = errno
+            if renameError == EEXIST || renameError == ELOOP {
+                return false
+            }
+            throw SecureJSONReceiptStoreError.filesystemOperationFailed(renameError)
+        }
+        shouldQuarantineTemporary = false
+
+        guard entryIdentity(named: receiptName, beneath: parent.descriptor) == temporary.identity else {
+            try? quarantineCurrent(beneath: parent.descriptor)
+            throw SecureJSONReceiptStoreError.insecureFilesystemState
+        }
+        do {
+            try reprove(handles)
+            try synchronize(parent.descriptor)
+            try requireEntry(
+                named: receiptName,
+                beneath: parent.descriptor,
+                matches: temporary.identity
+            )
+        } catch {
+            try? moveToPermanentQuarantine(
+                named: receiptName,
+                beneath: parent.descriptor,
+                expectedIdentity: temporary.identity,
+                beforeFinalMutation: {}
+            )
+            throw error
+        }
+        return true
     }
 
     func removeIfPresent() throws {
@@ -723,7 +838,6 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
     }
 
     private func readAll(from descriptor: Int32) throws -> Data {
-        let maximumReceiptSize = 16 * 1024
         var data = Data()
         var buffer = [UInt8](repeating: 0, count: 4096)
         while true {
@@ -735,7 +849,7 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
                 if errno == EINTR { continue }
                 throw SecureJSONReceiptStoreError.filesystemOperationFailed(errno)
             }
-            guard data.count + count <= maximumReceiptSize else {
+            guard data.count + count <= secureJSONReceiptMaximumSize else {
                 throw SecureJSONReceiptStoreError.invalidReceiptEncoding
             }
             data.append(buffer, count: count)
@@ -747,7 +861,11 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys]
         do {
-            return try encoder.encode(receipt)
+            let data = try encoder.encode(receipt)
+            guard data.count <= secureJSONReceiptMaximumSize else {
+                throw SecureJSONReceiptStoreError.invalidReceiptEncoding
+            }
+            return data
         } catch {
             throw SecureJSONReceiptStoreError.invalidReceiptEncoding
         }
@@ -757,7 +875,9 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
         do {
             var memberScanner = JSONTopLevelMemberScanner(data: data)
             let serializedMemberNames = try memberScanner.uniqueMemberNames()
-            guard try JSONSerialization.jsonObject(with: data) is [String: Any],
+            let object = try JSONSerialization.jsonObject(with: data)
+            guard object is [String: Any],
+                  receiptSchema?.accepts(object) ?? true,
                   allowedTopLevelMemberSets?.contains(serializedMemberNames) ?? true
             else {
                 throw SecureJSONReceiptStoreError.invalidReceiptEncoding

@@ -16,6 +16,21 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: fixture.applicationDirectory.path))
     }
 
+    @Test func secureStoreRejectsReceiptLargerThanReadLimitBeforeMutation() async throws {
+        let fixture = try ConsentFixture()
+        defer { fixture.remove() }
+        let store = SecureJSONReceiptStore<OversizedSecureReceipt>(
+            receiptURL: fixture.receiptURL
+        )
+
+        await #expect(throws: SecureJSONReceiptStoreError.invalidReceiptEncoding) {
+            try await store.replace(with: OversizedSecureReceipt(
+                payload: String(repeating: "x", count: 16 * 1_024)
+            ))
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.applicationDirectory.path))
+    }
+
     @Test func validReceiptIsCurrent() async throws {
         let fixture = try ConsentFixture()
         defer { fixture.remove() }
@@ -227,14 +242,14 @@ import Testing
         try fixture.writeReceipt(acceptedAt: firstDate)
         try chmod(fixture.applicationDirectory.path, 0o755).requireSuccess()
         let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL)
-        let descriptorsBefore = try openFileDescriptorCount()
+        let descriptorsBefore = try openFileDescriptorCount(rootedAt: fixture.baseURL)
 
         for _ in 0..<32 {
             #expect(await store.status() == .required)
         }
 
-        let descriptorsAfter = try openFileDescriptorCount()
-        #expect(descriptorsAfter <= descriptorsBefore + 2)
+        let descriptorsAfter = try openFileDescriptorCount(rootedAt: fixture.baseURL)
+        #expect(descriptorsAfter <= descriptorsBefore)
     }
 
     @Test func receiptOwnedByAnotherUserRequiresConsent() async throws {
@@ -785,6 +800,10 @@ private struct ConsentFixture {
     }
 }
 
+private struct OversizedSecureReceipt: Codable, Sendable {
+    let payload: String
+}
+
 private enum ConsentProbeError: Error {
     case receiptChangedBeforeCommit
     case secureTemporaryFileMissing
@@ -881,8 +900,24 @@ private struct POSIXTestError: Error {
     let code: Int32
 }
 
-private func openFileDescriptorCount() throws -> Int {
-    try FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count
+private func openFileDescriptorCount(rootedAt rootURL: URL) throws -> Int {
+    let descriptorNames = try FileManager.default.contentsOfDirectory(atPath: "/dev/fd")
+    let rootPath = rootURL.path
+    return descriptorNames.reduce(into: 0) { count, name in
+        guard let descriptor = Int32(name) else { return }
+        var info = vnode_fdinfowithpath()
+        let byteCount = MemoryLayout<vnode_fdinfowithpath>.size
+        let status = withUnsafeMutablePointer(to: &info) { pointer in
+            proc_pidfdinfo(getpid(), descriptor, PROC_PIDFDVNODEPATHINFO, pointer, Int32(byteCount))
+        }
+        guard status == byteCount else { return }
+        let descriptorPath = withUnsafeBytes(of: info.pvip.vip_path) { bytes in
+            String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        if descriptorPath == rootPath || descriptorPath.hasPrefix("\(rootPath)/") {
+            count += 1
+        }
+    }
 }
 
 private func physicalURL(for url: URL) throws -> URL {

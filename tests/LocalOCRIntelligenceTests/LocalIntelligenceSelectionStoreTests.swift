@@ -72,6 +72,47 @@ import Testing
         #expect(try selectionPermissions(of: fixture.receiptURL) == 0o600)
     }
 
+    @Test func concurrentResetWinsOverMissingReceiptMigration() async throws {
+        let fixture = try SelectionFixture()
+        defer { fixture.remove() }
+        let resetReceipt = LocalIntelligenceSelectionReceipt.none(resetAt: selectedAt)
+        let resetData = try selectionReceiptData(resetReceipt)
+        let receiptURL = fixture.receiptURL
+        let store = LocalIntelligenceSelectionStore(
+            receiptURL: receiptURL,
+            hooks: SecureJSONReceiptStoreHooks(beforeAcceptFinalMutation: {
+                try resetData.write(to: receiptURL)
+                try chmod(receiptURL.path, 0o600).requireSelectionSuccess()
+            })
+        )
+
+        #expect(await store.state() == .none)
+        #expect(try Data(contentsOf: receiptURL) == resetData)
+    }
+
+    @Test func concurrentExplicitSelectionWinsOverMissingReceiptMigration() async throws {
+        let fixture = try SelectionFixture()
+        defer { fixture.remove() }
+        let identity = fixtureOllamaIdentity
+        let winningSelection = LocalIntelligenceSelection.external(
+            identity: identity,
+            qualification: fixtureQualification(identity),
+            acknowledgment: fixtureAcknowledgment(identity)
+        )
+        let winningData = try selectionReceiptData(.selected(winningSelection))
+        let receiptURL = fixture.receiptURL
+        let store = LocalIntelligenceSelectionStore(
+            receiptURL: receiptURL,
+            hooks: SecureJSONReceiptStoreHooks(beforeAcceptFinalMutation: {
+                try winningData.write(to: receiptURL)
+                try chmod(receiptURL.path, 0o600).requireSelectionSuccess()
+            })
+        )
+
+        #expect(await store.state() == .selected(winningSelection))
+        #expect(try Data(contentsOf: receiptURL) == winningData)
+    }
+
     @Test func explicitResetPersistsNoneAndNeverRemigratesAsLegacyAbsence() async throws {
         let fixture = try SelectionFixture()
         defer { fixture.remove() }
@@ -176,6 +217,95 @@ import Testing
         }
     }
 
+    @Test func oversizedExternalIdentityIsRejectedBeforeFilesystemMutation() async throws {
+        let fixture = try SelectionFixture()
+        defer { fixture.remove() }
+        let identity = LocalModelIdentity(
+            provider: .ollama,
+            model: String(repeating: "m", count: 1_025),
+            fingerprint: "sha256:fixture",
+            harnessVersion: "0.11.8"
+        )
+        let store = LocalIntelligenceSelectionStore(receiptURL: fixture.receiptURL)
+
+        await #expect(throws: IntelligenceError.selection(.qualificationRequired(identity))) {
+            try await store.selectExternal(
+                identity,
+                qualification: fixtureQualification(identity),
+                acknowledgment: fixtureAcknowledgment(identity)
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.applicationDirectory.path))
+    }
+
+    @Test func oversizedIdentityFingerprintIsRejectedBeforeFilesystemMutation() async throws {
+        let fixture = try SelectionFixture()
+        defer { fixture.remove() }
+        let identity = LocalModelIdentity(
+            provider: .ollama,
+            model: "gemma4:8b",
+            fingerprint: String(repeating: "f", count: 1_025),
+            harnessVersion: "0.11.8"
+        )
+        let store = LocalIntelligenceSelectionStore(receiptURL: fixture.receiptURL)
+
+        await #expect(throws: IntelligenceError.selection(.qualificationRequired(identity))) {
+            try await store.selectExternal(
+                identity,
+                qualification: fixtureQualification(identity),
+                acknowledgment: fixtureAcknowledgment(identity)
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.applicationDirectory.path))
+    }
+
+    @Test func oversizedIdentityHarnessVersionIsRejectedBeforeFilesystemMutation() async throws {
+        let fixture = try SelectionFixture()
+        defer { fixture.remove() }
+        let identity = LocalModelIdentity(
+            provider: .lmStudio,
+            model: "local-model",
+            fingerprint: "sha256:fixture",
+            harnessVersion: String(repeating: "h", count: 257)
+        )
+        let store = LocalIntelligenceSelectionStore(receiptURL: fixture.receiptURL)
+
+        await #expect(throws: IntelligenceError.selection(.qualificationRequired(identity))) {
+            try await store.selectExternal(
+                identity,
+                qualification: fixtureQualification(identity),
+                acknowledgment: fixtureAcknowledgment(identity)
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.applicationDirectory.path))
+    }
+
+    @Test func boundedExternalIdentityWriteAndReadAreSymmetric() async throws {
+        let fixture = try SelectionFixture()
+        defer { fixture.remove() }
+        let identity = LocalModelIdentity(
+            provider: .ollama,
+            model: String(repeating: "m", count: 1_024),
+            fingerprint: String(repeating: "f", count: 1_024),
+            harnessVersion: String(repeating: "h", count: 256)
+        )
+        let selection = LocalIntelligenceSelection.external(
+            identity: identity,
+            qualification: fixtureQualification(identity),
+            acknowledgment: fixtureAcknowledgment(identity)
+        )
+        let store = LocalIntelligenceSelectionStore(receiptURL: fixture.receiptURL)
+
+        try await store.selectExternal(
+            identity,
+            qualification: fixtureQualification(identity),
+            acknowledgment: fixtureAcknowledgment(identity)
+        )
+
+        #expect(await store.state() == .selected(selection))
+        #expect(try Data(contentsOf: fixture.receiptURL).count <= 16 * 1_024)
+    }
+
     @Test func corruptOrUnsupportedReceiptReturnsInvalidWithoutOverwritingIt() async throws {
         let fixture = try SelectionFixture()
         defer { fixture.remove() }
@@ -207,6 +337,45 @@ import Testing
             with: "\(marker),\(marker)"
         )
         try fixture.writeRaw(Data(duplicateJSON.utf8))
+
+        #expect(await LocalIntelligenceSelectionStore(
+            receiptURL: fixture.receiptURL
+        ).state() == .invalid(.corruptReceipt))
+    }
+
+    @Test(arguments: prohibitedNestedMemberInjections)
+    fileprivate func prohibitedNestedMemberMakesReceiptCorrupt(
+        injection: NestedMemberInjection
+    ) async throws {
+        let fixture = try SelectionFixture()
+        defer { fixture.remove() }
+        let identity = fixtureOllamaIdentity
+        let receipt = LocalIntelligenceSelectionReceipt.selected(.external(
+            identity: identity,
+            qualification: fixtureQualification(identity),
+            acknowledgment: fixtureAcknowledgment(identity)
+        ))
+        let data = try selectionReceiptData(receipt)
+        try fixture.writeRaw(try addingNestedMember(
+            named: injection.memberName,
+            at: injection.objectPath,
+            to: data
+        ))
+
+        #expect(await LocalIntelligenceSelectionStore(
+            receiptURL: fixture.receiptURL
+        ).state() == .invalid(.corruptReceipt))
+    }
+
+    @Test func prohibitedAppleSelectionMemberMakesReceiptCorrupt() async throws {
+        let fixture = try SelectionFixture()
+        defer { fixture.remove() }
+        let data = try selectionReceiptData(.selected(.appleSystemDefault))
+        try fixture.writeRaw(try addingNestedMember(
+            named: "prompt",
+            at: ["selection", "appleSystemDefault"],
+            to: data
+        ))
 
         #expect(await LocalIntelligenceSelectionStore(
             receiptURL: fixture.receiptURL
@@ -251,6 +420,34 @@ private let fixtureOllamaIdentity = LocalModelIdentity(
     harnessVersion: "0.11.8"
 )
 
+private struct NestedMemberInjection: Sendable, CustomTestStringConvertible {
+    let objectPath: [String]
+    let memberName: String
+
+    var testDescription: String {
+        "\(objectPath.joined(separator: "."))+\(memberName)"
+    }
+}
+
+private let prohibitedNestedMemberInjections = [
+    NestedMemberInjection(objectPath: ["selection"], memberName: "ocr_text"),
+    NestedMemberInjection(objectPath: ["selection", "external"], memberName: "generated_output"),
+    NestedMemberInjection(objectPath: ["selection", "external", "identity"], memberName: "prompt"),
+    NestedMemberInjection(objectPath: ["selection", "external", "qualification"], memberName: "source_path"),
+    NestedMemberInjection(
+        objectPath: ["selection", "external", "qualification", "identity"],
+        memberName: "ocr_text"
+    ),
+    NestedMemberInjection(
+        objectPath: ["selection", "external", "acknowledgment"],
+        memberName: "generated_output"
+    ),
+    NestedMemberInjection(
+        objectPath: ["selection", "external", "acknowledgment", "identity"],
+        memberName: "source_path"
+    )
+]
+
 private func fixtureQualification(
     _ identity: LocalModelIdentity
 ) -> LocalModelQualificationReceipt {
@@ -280,6 +477,39 @@ private func selectionReceiptData(
     encoder.dateEncodingStrategy = .iso8601
     encoder.outputFormatting = [.sortedKeys]
     return try encoder.encode(receipt)
+}
+
+private func addingNestedMember(
+    named memberName: String,
+    at objectPath: [String],
+    to data: Data
+) throws -> Data {
+    let object = try JSONSerialization.jsonObject(with: data)
+    let mutated = try addingNestedMember(
+        named: memberName,
+        at: objectPath[...],
+        to: object
+    )
+    return try JSONSerialization.data(withJSONObject: mutated, options: [.sortedKeys])
+}
+
+private func addingNestedMember(
+    named memberName: String,
+    at objectPath: ArraySlice<String>,
+    to object: Any
+) throws -> Any {
+    var members = try #require(object as? [String: Any])
+    guard let next = objectPath.first else {
+        members[memberName] = "must not be persisted"
+        return members
+    }
+    let child = try #require(members[next])
+    members[next] = try addingNestedMember(
+        named: memberName,
+        at: objectPath.dropFirst(),
+        to: child
+    )
+    return members
 }
 
 private struct SelectionFixture {
