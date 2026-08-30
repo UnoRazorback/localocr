@@ -19,13 +19,15 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.rayconsulting.localocr
         PRODUCT_NAME: LocalOCR Studio
         MARKETING_VERSION: 0.3.0
-        CURRENT_PROJECT_VERSION: 2
+        CURRENT_PROJECT_VERSION: 3
         MACOSX_DEPLOYMENT_TARGET: 14.0
         ARCHS: arm64
         SWIFT_VERSION: 6.0
         ENABLE_HARDENED_RUNTIME: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: LocalOCR Studio
+        INFOPLIST_KEY_CFBundleIconName: AppIcon
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
   LocalOCR StudioUITests:
     type: bundle.ui-testing

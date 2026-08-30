@@ -9,11 +9,11 @@ LocalOCR is an open-core project for **macOS 14 or later**. The open-source
 core includes the Swift OCR engine, the `localocr` command-line tool, and the
 `localocr-mcp` stdio server. The repository also contains the release pipeline
 for a directly distributed LocalOCR Studio Mac app. The published prerelease is
-[v0.2.0-beta.1](https://github.com/UnoRazorback/localocr/releases/tag/v0.2.0-beta.1).
-See the [Beta Tester Guide](BETA_TESTING.md)
-for the verified Beta 1 download, installation, privacy, and optional MCP setup.
-The [Beta 2 candidate notes](docs/release/v0.3.0-beta.1-notes.md) describe the
-next desktop workflow without changing the published-download instructions.
+[v0.3.0-beta.2](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.2).
+See the [Beta Tester Guide](BETA_TESTING.md) for the verified download,
+installation, desktop batch, privacy, and optional MCP setup. The
+[v0.3 release notes](docs/release/v0.3.0-beta.2-notes.md) describe the exact
+release boundary.
 
 ## What it does
 
@@ -45,7 +45,7 @@ never overwritten. PDFs receive new searchable-PDF outputs and images receive
 text-file outputs. Existing output names are preserved by choosing a numbered
 name instead of overwriting. You can cancel, retry failed items, reveal the
 chosen output folder, or start a new batch. See [the Studio guide](docs/studio.md)
-for the full desktop flow and [the Beta 2 candidate notes](docs/release/v0.3.0-beta.1-notes.md)
+for the full desktop flow and [the v0.3 release notes](docs/release/v0.3.0-beta.2-notes.md)
 for its release boundary. MCP and CLI remain advanced, local-use interfaces.
 Start with the desktop app; configure an agent only if you need automation, and
 then follow the canonical [advanced MCP setup and FAQ](docs/mcp.md#advanced-setup).
@@ -61,7 +61,7 @@ the source. Desktop batch remains OCR-only.
 These actions require macOS 26 or later, an eligible Mac, Apple Intelligence
 enabled, its on-device model ready, and a supported Apple Intelligence
 language. LocalOCR uses no Private Cloud Compute and has no cloud model
-fallback. This work is not part of the published Beta 1 and has no new
+fallback. This work is not part of the published v0.3 Beta 2 and has no new
 version, tag, signed download, notarization, or release acceptance yet.
 
 ## Quick start from source
@@ -101,23 +101,27 @@ artifacts only; it does not sign, notarize, install, or publish them.
 ## Published prerelease distribution
 
 The published prerelease is
-[v0.2.0-beta.1](https://github.com/UnoRazorback/localocr/releases/tag/v0.2.0-beta.1).
-Its release identity is version `0.2.0`, build `1`, source commit
-`2cb03cc9684ed9bb4b449a0f7d79f0588fb7ae38`, and verified ZIP SHA-256
-`3a6a1c754ee369ab9a8ffe01bcc96e7f4927ac44eb1f82b410f538aee901c0d5`.
-It was built with Xcode 26.6 (`17F113`), Swift 6, and arm64, with deployment target macOS 14.0; acceptance covered Apple M5 and Apple M4 Macs tested on macOS 27 beta build `26A5388g`.
+[v0.3.0-beta.2](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.2).
+Its release identity is version `0.3.0`, build `3`, source commit
+`54828938f4b8bf23a4ae0e7a63fa9552548e7f78`, and verified ZIP SHA-256
+`a60fb34f5f9b9c19413bb2222d2846f472398c73ad4a0a7a1ac19eee09b55691`.
+It was built with stable Xcode 26.6 (`17F113`), Swift 6, and arm64, with
+deployment target macOS 14.0. The downloaded package was verified on the build
+Mac (Mac17,3) running macOS 27.0 beta build `26A5421a`. Exact-build second-Mac
+acceptance also passed on Scott’s Mac mini running the same macOS build. Future
+Apple beta compatibility is not guaranteed.
 
-Download `LocalOCR-Studio-0.2.0-1.zip` and
-`LocalOCR-Studio-0.2.0-1.sha256` into the same directory and verify them before
+Download `LocalOCR-Studio-0.3.0-3.zip` and
+`LocalOCR-Studio-0.3.0-3.sha256` into the same directory and verify them before
 expanding the ZIP:
 
 ```bash
-shasum -a 256 -c "LocalOCR-Studio-0.2.0-1.sha256"
+shasum -a 256 -c "LocalOCR-Studio-0.3.0-3.sha256"
 ```
 
 Continue only if the command reports `OK`. Move the expanded `LocalOCR
 Studio.app` to `/Applications` and open it normally. Do not bypass Gatekeeper
-or use an unverified build or staging copy. The [Beta 1 Tester Guide](BETA_TESTING.md)
+or use an unverified build or staging copy. The [Beta Tester Guide](BETA_TESTING.md)
 contains the complete install, five-minute desktop test, compatibility, and
 feedback instructions.
 
@@ -136,10 +140,10 @@ scripts/test-downloaded-release.sh \
   "/absolute/path/to/LocalOCR-Studio-<version>-<build>.sha256"
 ```
 
-The private release notes workflow applies only to an unpublished candidate;
-it identifies the approved version, exact release commit, installation steps,
-known limitations, and the owner-approved feedback URL. The published
-prerelease notes identify the corresponding facts for an available build.
+The private release workflow identifies the approved version, exact release
+commit, installation steps, known limitations, and owner-approved feedback
+URL before publication. The published prerelease notes identify the
+corresponding facts for the available build.
 
 ### Beta limitations
 
@@ -148,7 +152,7 @@ prerelease notes identify the corresponding facts for an available build.
   local; there is no cloud OCR, cloud storage, or network MCP transport. A
   connected client/provider may separately transmit MCP arguments and results.
 - The MCP server uses local stdio and client configuration remains manual.
-- The published Beta 1 helper has the historical six OCR/PDF tools. The
+- The published v0.3 Beta 2 helper has the six OCR/PDF tools. The
   nine-tool external-consent work remains an unpublished next-version candidate.
 - Windows, Linux, and Intel Macs are not supported.
 - Beta behavior and file-format results may change; keep original documents
@@ -211,9 +215,10 @@ PyMuPDF, Homebrew, or a network service at runtime.
 
 LocalOCR currently targets local, on-device PDF and image OCR. It does not
 provide cloud OCR, cloud document storage, automatic client configuration, or
-cross-platform support. Beta 1 remains the current published release. The
-implemented desktop-batch Beta 2 candidate and the newer Local Intelligence,
-consent, and nine-tool work are unpublished and still require fresh
-candidate/release verification. Continue collecting desktop and advanced-MCP
-feedback as input to later product decisions while preserving local-only
+cross-platform support. The published v0.3 beta includes the default
+single-document desktop flow, reviewed sequential desktop batches, and the
+advanced local CLI/MCP interfaces. The newer Local Intelligence, consent,
+nine-tool, and alternative-model work is an unpublished candidate that still
+requires fresh release verification. Continue collecting desktop and advanced-
+MCP feedback as input to later product decisions while preserving local-only
 behavior.

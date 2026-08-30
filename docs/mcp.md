@@ -5,7 +5,7 @@ agent to automate LocalOCR. The desktop app requires no MCP setup. This page is
 the canonical advanced-use guide for connecting the `localocr-mcp` helper to an
 MCP client.
 
-The current published Beta 1 is the historical six-tool build. The source tree
+The current published v0.3 Beta 2 is the six-tool build. The source tree
 described here contains a next-version candidate with nine tools and an
 external-data acknowledgment. That candidate is not yet published; this page
 does not claim a new version, signed package, notarization, installation, or
@@ -422,7 +422,7 @@ The package and app keep a macOS 14 deployment target; Foundation Models code
 is availability-guarded for macOS 26 or later. Development compilation and
 automated verification for this candidate use stable Xcode 26.6 (`17F113`),
 Swift 6.3.3, and the macOS 26.5 SDK. That is development evidence, not a live
-Foundation Models run or release acceptance. Published Beta 1 provenance and
+Foundation Models run or release acceptance. Published v0.3 Beta 2 provenance and
 its separate macOS 27 beta acceptance evidence remain documented in the
 [Beta Tester Guide](../BETA_TESTING.md). None of that historical evidence is a
 signature, notarization, download, or target-Mac acceptance claim for this

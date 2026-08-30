@@ -15,7 +15,7 @@ build_root=""
 studio_physical_tmp_root="$(cd /tmp && pwd -P)"
 studio_bundle_identifier="com.rayconsulting.localocr"
 studio_release_version="0.3.0"
-studio_release_build="2"
+studio_release_build="3"
 studio_minimum_os="14.0"
 studio_output_candidate=""
 studio_output_candidate_identity=""
@@ -184,6 +184,31 @@ validate_studio_minimum_os() {
     }
 }
 
+validate_studio_app_icon() {
+    local app_path="$1"
+    local info_plist="$app_path/Contents/Info.plist"
+    local icon_name
+    local icon_file="$app_path/Contents/Resources/AppIcon.icns"
+    local asset_catalog="$app_path/Contents/Resources/Assets.car"
+
+    icon_name="$(
+        "$release_plist_buddy" -c "Print :CFBundleIconName" "$info_plist"
+    )" || {
+        echo "could not read CFBundleIconName from Studio Info.plist" >&2
+        return 1
+    }
+    [[ "$icon_name" == "AppIcon" ]] || {
+        echo "CFBundleIconName mismatch: expected 'AppIcon', found '$icon_name'" >&2
+        return 1
+    }
+    for icon_resource in "$icon_file" "$asset_catalog"; do
+        [[ -f "$icon_resource" && ! -L "$icon_resource" && -s "$icon_resource" ]] || {
+            echo "Studio app icon resource is missing or invalid: $icon_resource" >&2
+            return 1
+        }
+    done
+}
+
 validate_studio_app_bundle() {
     local app_path="$1"
     local executable="$app_path/Contents/MacOS/LocalOCR Studio"
@@ -193,6 +218,7 @@ validate_studio_app_bundle() {
     export LOCALOCR_RELEASE_BUILD="$studio_release_build"
     validate_release_bundle_metadata "$app_path"
     validate_studio_minimum_os "$app_path"
+    validate_studio_app_icon "$app_path"
 
     [[ -f "$executable" && -x "$executable" && ! -L "$executable" ]] || {
         echo "unsigned Studio executable is missing or invalid" >&2

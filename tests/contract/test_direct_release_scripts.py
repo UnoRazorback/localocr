@@ -1261,7 +1261,7 @@ def _real_app_stage_environment(unsigned_app: Path) -> dict[str, str]:
         {
             "LOCALOCR_UNSIGNED_APP": str(unsigned_app),
             "LOCALOCR_RELEASE_VERSION": "0.3.0",
-            "LOCALOCR_RELEASE_BUILD": "2",
+            "LOCALOCR_RELEASE_BUILD": "3",
             "LOCALOCR_EXPECTED_BUNDLE_ID": "com.rayconsulting.localocr",
         }
     )
@@ -1860,12 +1860,12 @@ def test_real_app_staging_rejects_altered_release_input_before_cleanup(
         unexpected.chmod(0o755)
     elif mutation == "unexpected_nested_code":
         unexpected = candidate / "Contents" / "Resources" / "hidden-tool"
-        unexpected.parent.mkdir()
+        unexpected.parent.mkdir(exist_ok=True)
         unexpected.write_bytes(main.read_bytes())
         unexpected.chmod(0o755)
     elif mutation == "private_resource":
         resource = candidate / "Contents" / "Resources" / "build-path.txt"
-        resource.parent.mkdir()
+        resource.parent.mkdir(exist_ok=True)
         resource.write_text("/Users/example/private/source.swift\n")
     else:
         raise AssertionError(f"unhandled mutation: {mutation}")
@@ -1891,7 +1891,7 @@ def test_real_app_staging_preserves_known_good_release_when_resource_scan_fails(
         tmp_path / "Unreadable Resource LocalOCR Studio.app",
     )
     resource = candidate / "Contents" / "Resources" / "unreadable-resource.dat"
-    resource.parent.mkdir()
+    resource.parent.mkdir(exist_ok=True)
     resource.write_text("benign fixture")
     resource.chmod(0)
     release_root = ROOT / "dist" / "direct-release"
@@ -2002,7 +2002,7 @@ def test_real_unsigned_studio_app_stages_under_exact_release_policy(
     assert staged_plist["CFBundleExecutable"] == "LocalOCR Studio"
     assert staged_plist["CFBundleIdentifier"] == "com.rayconsulting.localocr"
     assert staged_plist["CFBundleShortVersionString"] == "0.3.0"
-    assert staged_plist["CFBundleVersion"] == "2"
+    assert staged_plist["CFBundleVersion"] == "3"
 
     helpers = real_staged_studio_app / "Contents" / "Helpers"
     assert sorted(path.name for path in helpers.iterdir()) == [
@@ -2113,7 +2113,7 @@ def test_stage_strips_only_the_copied_main_executable(tmp_path: Path) -> None:
                 "CFBundleExecutable": "LocalOCR Studio",
                 "CFBundleIdentifier": "com.rayconsulting.localocr",
                 "CFBundleShortVersionString": "0.3.0",
-                "CFBundleVersion": "2",
+                "CFBundleVersion": "3",
             },
             plist_file,
         )
@@ -4066,7 +4066,7 @@ def test_readme_download_verifier_exports_all_metadata_inputs() -> None:
     readme = README.read_text()
     verifier_section = readme[
         readme.index("Release operators and second-Mac testers") :
-        readme.index("The private release notes")
+        readme.index("The private release workflow")
     ]
     assert 'export LOCALOCR_EXPECTED_BUNDLE_ID="<approved-bundle-id>"' in verifier_section
     assert 'export LOCALOCR_RELEASE_VERSION="<approved-version>"' in verifier_section

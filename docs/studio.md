@@ -128,13 +128,12 @@ interface.
 ## Beta status
 
 The published prerelease is
-[v0.2.0-beta.1](https://github.com/UnoRazorback/localocr/releases/tag/v0.2.0-beta.1).
-Follow the [Beta 1 Tester Guide](../BETA_TESTING.md) to verify
-`LocalOCR-Studio-0.2.0-1.zip` with its matching `.sha256` file, then move the
+[v0.3.0-beta.2](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.0-beta.2),
+version `0.3.0`, build `3`. Follow the [Beta Tester Guide](../BETA_TESTING.md)
+to verify `LocalOCR-Studio-0.3.0-3.zip` with its matching `.sha256` file, then move the
 expanded app to `/Applications` and open it normally. Do not use a staging
-copy or bypass Gatekeeper. The [Beta 2 candidate notes](release/v0.3.0-beta.1-notes.md)
-document the desktop batch candidate separately; they are not a download,
-signature, notarization, or acceptance record.
+copy or bypass Gatekeeper. The [v0.3 release notes](release/v0.3.0-beta.2-notes.md)
+document the desktop batch and exact release boundary.
 
 The Local Intelligence and nine-tool consent work is also a next-version
 candidate until it independently passes its remaining build, live-model,
@@ -143,6 +142,10 @@ new version, tag, download, or publication is claimed here.
 
 ## Compatibility and build provenance
 
-Beta 1 was built with Xcode 26.6 (`17F113`), Swift 6, and arm64, with deployment target macOS 14.0. Downloaded-package and GUI acceptance passed on Apple M5 and Apple M4 Macs tested on macOS 27 beta build `26A5388g`. Later Apple beta
-builds may introduce regressions; include the exact macOS version and build
-number in feedback.
+The published v0.3 beta was built with stable Xcode 26.6 (`17F113`), Swift 6,
+and arm64, with deployment target macOS 14.0. It is Apple notarized, stapled,
+and Gatekeeper accepted. The downloaded package verifier passed on the build
+Mac (Mac17,3) running macOS 27.0 beta build `26A5421a`. Exact-build second-Mac
+acceptance passed on Scott’s Mac mini running the same macOS build. Future
+Apple beta compatibility is not guaranteed;
+include the exact macOS version and build number in feedback.

@@ -11,6 +11,7 @@
 		85EFFB56E1EC2494D085AF88 /* LocalOCRStudioUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 440F32466F2B88C6C5495D73 /* LocalOCRStudioUITests.swift */; };
 		9EEE1C1217CE5D622BD5FA17 /* LocalOCRStudioApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81AD275C815A6814A01B4629 /* LocalOCRStudioApp.swift */; };
 		BF5A8C8BD190D68B7A6F268D /* LocalOCRStudioUITestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD99EEC3E460E29A91D78996 /* LocalOCRStudioUITestSupport.swift */; };
+		C292F7221C022AB5EA695F19 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0A32EACFE0C14DF0DC088F0C /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -24,12 +25,13 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		0A32EACFE0C14DF0DC088F0C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		3DC1F28B20AE533FF8CAA0C3 /* LocalOCR StudioUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "LocalOCR StudioUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		440F32466F2B88C6C5495D73 /* LocalOCRStudioUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalOCRStudioUITests.swift; sourceTree = "<group>"; };
 		81AD275C815A6814A01B4629 /* LocalOCRStudioApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalOCRStudioApp.swift; sourceTree = "<group>"; };
+		B1C6F7AA31EB1759AEAFC8F1 /* local-intelligence-mcp-faq */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "local-intelligence-mcp-faq"; path = .; sourceTree = SOURCE_ROOT; };
 		CD99EEC3E460E29A91D78996 /* LocalOCRStudioUITestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalOCRStudioUITestSupport.swift; sourceTree = "<group>"; };
 		DEB2E21326492ED48D82364F /* LocalOCR Studio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "LocalOCR Studio.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		E3C5E5ECE9D20414A98E0880 /* desktop-batch-beta2 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "desktop-batch-beta2"; path = .; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -47,7 +49,7 @@
 		35F810F381F458335EC5D1CB /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				E3C5E5ECE9D20414A98E0880 /* desktop-batch-beta2 */,
+				B1C6F7AA31EB1759AEAFC8F1 /* local-intelligence-mcp-faq */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -72,6 +74,7 @@
 		D5AA6E59D2D727823E78C396 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				0A32EACFE0C14DF0DC088F0C /* Assets.xcassets */,
 				81AD275C815A6814A01B4629 /* LocalOCRStudioApp.swift */,
 				CD99EEC3E460E29A91D78996 /* LocalOCRStudioUITestSupport.swift */,
 			);
@@ -114,6 +117,7 @@
 			buildConfigurationList = F3A8A84052C1B2C106B6E594 /* Build configuration list for PBXNativeTarget "LocalOCR Studio" */;
 			buildPhases = (
 				C2481108DF75BF07A5455A05 /* Sources */,
+				7F6486117B65BCD34ADEEC48 /* Resources */,
 				EE6BEC8BEF39B5C367F21BED /* Frameworks */,
 			);
 			buildRules = (
@@ -165,6 +169,17 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		7F6486117B65BCD34ADEEC48 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C292F7221C022AB5EA695F19 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		47E6C6ADB8DF58C2A8F02D4A /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -200,10 +215,11 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "LocalOCR Studio";
+				INFOPLIST_KEY_CFBundleIconName = AppIcon;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -280,10 +296,11 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "LocalOCR Studio";
+				INFOPLIST_KEY_CFBundleIconName = AppIcon;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
