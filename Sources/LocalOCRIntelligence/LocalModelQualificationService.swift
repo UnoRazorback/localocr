@@ -77,6 +77,7 @@ public actor LocalModelQualificationService {
     private let fixture: LocalModelQualificationFixture?
     private let cacheDirectory: URL?
     private let expectedCacheOwnerID: uid_t
+    private let cacheStoreHooks: SecureJSONReceiptStoreHooks
     private var outcomes: [ModelKey: LocalModelQualificationOutcome] = [:]
     private var outcomeIdentities: [ModelKey: LocalModelIdentity] = [:]
 
@@ -97,6 +98,7 @@ public actor LocalModelQualificationService {
         self.now = now
         self.cacheDirectory = cacheDirectory
         expectedCacheOwnerID = geteuid()
+        cacheStoreHooks = SecureJSONReceiptStoreHooks()
         fixture = try? Self.loadFixture()
     }
 
@@ -111,18 +113,21 @@ public actor LocalModelQualificationService {
         self.fixture = Self.isCanonicalFixture(fixture) ? fixture : nil
         self.cacheDirectory = cacheDirectory
         expectedCacheOwnerID = geteuid()
+        cacheStoreHooks = SecureJSONReceiptStoreHooks()
     }
 
     init(
         providerFactory: @escaping ProviderFactory,
         now: @escaping @Sendable () -> Date,
         cacheDirectory: URL?,
-        expectedCacheOwnerID: uid_t
+        expectedCacheOwnerID: uid_t,
+        cacheStoreHooks: SecureJSONReceiptStoreHooks = SecureJSONReceiptStoreHooks()
     ) {
         self.providerFactory = providerFactory
         self.now = now
         self.cacheDirectory = cacheDirectory
         self.expectedCacheOwnerID = expectedCacheOwnerID
+        self.cacheStoreHooks = cacheStoreHooks
         fixture = try? Self.loadFixture()
     }
 
@@ -136,6 +141,7 @@ public actor LocalModelQualificationService {
         self.now = now
         self.cacheDirectory = cacheDirectory
         expectedCacheOwnerID = geteuid()
+        cacheStoreHooks = SecureJSONReceiptStoreHooks()
         if let loaded = try? fixtureLoader(), Self.isCanonicalFixture(loaded) {
             fixture = loaded
         } else {
@@ -220,9 +226,9 @@ public actor LocalModelQualificationService {
             )
         }
         let key = ModelKey(provider: identity.provider, model: identity.model)
+        try await persist(outcome, identity: identity)
         outcomes[key] = outcome
         outcomeIdentities[key] = identity
-        try await persist(outcome, identity: identity)
         return outcome
     }
 
@@ -434,7 +440,8 @@ public actor LocalModelQualificationService {
                 ],
                 optional: ["receipt": receiptSchema]
             ),
-            receiptsEquivalent: ==
+            receiptsEquivalent: ==,
+            hooks: cacheStoreHooks
         )
     }
 
@@ -451,13 +458,15 @@ public actor LocalModelQualificationService {
         else {
             return false
         }
-        let clauses = summaryClauses(in: summary.text)
-        guard !clauses.isEmpty else { return false }
-        return clauses.allSatisfy { clause in
-            validSummaryClause(
-                clause,
-                citedPages: Set(summary.citations.map(\.page))
-            )
+        let items = summaryItems(in: summary.text)
+        guard !items.isEmpty, items.count == summary.citations.count else {
+            return false
+        }
+        return zip(items, summary.citations).allSatisfy { item, citation in
+            let clauses = summaryClauses(in: item)
+            return !clauses.isEmpty && clauses.allSatisfy { clause in
+                validSummaryClause(clause, citedPages: [citation.page])
+            }
         }
     }
 
@@ -469,7 +478,7 @@ public actor LocalModelQualificationService {
         guard !tokens.isEmpty, !tokens.contains("or") else { return false }
         let tokenSet = Set(tokens)
         let invoiceIndicators: Set<String> = [
-            "invoice", "reference", "number", "q", "104", "date", "dated",
+            "invoice", "reference", "number", "q", "104", "date", "dated", "datetime",
             "total", "totals", "amount", "value",
             "2026", "08", "29", "144", "17"
         ]
@@ -491,7 +500,9 @@ public actor LocalModelQualificationService {
                 ["date", "2026", "08", "29"],
                 ["date", "is", "2026", "08", "29"],
                 ["date", "of", "2026", "08", "29"],
-                ["dated", "2026", "08", "29"]
+                ["dated", "2026", "08", "29"],
+                ["datetime", "2026", "08", "29"],
+                ["datetime", "is", "2026", "08", "29"]
             ] + ["total", "totals", "amount", "value"].flatMap { label in
                 [
                     [label, "144", "17"],
@@ -511,7 +522,9 @@ public actor LocalModelQualificationService {
             tokens,
             relations: [
                 ["project", "localocr", "qualification"],
+                ["project", "is", "localocr", "qualification"],
                 ["localocr", "qualification", "is", "a", "project"],
+                ["localocr", "qualification", "is", "the", "project"],
                 ["status", "synthetic", "test", "only"],
                 ["status", "is", "synthetic", "test", "only"]
             ],
@@ -519,27 +532,61 @@ public actor LocalModelQualificationService {
         )
     }
 
-    private nonisolated static func summaryClauses(in value: String) -> [String] {
-        let characters = Array(value.lowercased())
-        var clauses: [String] = []
-        var current = ""
-        for index in characters.indices {
-            let character = characters[index]
-            let decimalPoint = character == "." &&
-                index > characters.startIndex &&
-                index < characters.index(before: characters.endIndex) &&
-                characters[characters.index(before: index)].isNumber &&
-                characters[characters.index(after: index)].isNumber
-            if !decimalPoint && [".", "!", "?", ";", ",", "\n", "\r"].contains(character) {
-                let clause = current.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !clause.isEmpty { clauses.append(clause) }
-                current = ""
+    private nonisolated static func summaryItems(in value: String) -> [String] {
+        var items: [String] = []
+        var lines: [String] = []
+        for line in value.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty {
+                let item = lines.joined(separator: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !item.isEmpty { items.append(item) }
+                lines.removeAll(keepingCapacity: true)
             } else {
-                current.append(character)
+                lines.append(trimmed)
             }
         }
-        let clause = current.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !clause.isEmpty { clauses.append(clause) }
+        let item = lines.joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !item.isEmpty { items.append(item) }
+        return items
+    }
+
+    private nonisolated static func summaryClauses(in value: String) -> [String] {
+        let scalars = Array(value.lowercased().unicodeScalars)
+        var clauses: [String] = []
+        var current = ""
+        func flush() {
+            let clause = current.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !clause.isEmpty { clauses.append(clause) }
+            current = ""
+        }
+        for index in scalars.indices {
+            let scalar = scalars[index]
+            let previous = index > scalars.startIndex ? scalars[scalars.index(before: index)] : nil
+            let next = index < scalars.index(before: scalars.endIndex)
+                ? scalars[scalars.index(after: index)]
+                : nil
+            let decimalPoint = scalar == "." && previous?.properties.numericType != nil &&
+                next?.properties.numericType != nil
+            let relationHyphen = scalar == "-" && (
+                (previous?.properties.numericType != nil && next?.properties.numericType != nil) ||
+                (previous == "q" && next?.properties.numericType != nil)
+            )
+            let strippedWrapper = ["\"", "'", "(", ")", "[", "]", "{", "}"].contains(scalar)
+            if scalar == ":" || strippedWrapper {
+                current.append(" ")
+            } else if decimalPoint || relationHyphen || !CharacterSet.punctuationCharacters.contains(scalar) {
+                if scalar == "\n" || scalar == "\r" {
+                    flush()
+                } else {
+                    current.unicodeScalars.append(scalar)
+                }
+            } else {
+                flush()
+            }
+        }
+        flush()
         return clauses
     }
 

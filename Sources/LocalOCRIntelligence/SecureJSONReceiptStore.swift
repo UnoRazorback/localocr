@@ -45,6 +45,7 @@ struct SecureJSONReceiptStoreHooks: Sendable {
     let beforeAcceptReproof: OperationHook
     let beforeAcceptFinalMutation: OperationHook
     let afterCreateIfAbsentRename: OperationHook
+    let beforeAdvisoryLockWait: OperationHook
     let beforeRevokeReproof: OperationHook
     let beforeRevokeFinalMutation: OperationHook
     let beforeTemporaryCleanupFinalMutation: OperationHook
@@ -55,6 +56,7 @@ struct SecureJSONReceiptStoreHooks: Sendable {
         beforeAcceptReproof: @escaping OperationHook = {},
         beforeAcceptFinalMutation: @escaping OperationHook = {},
         afterCreateIfAbsentRename: @escaping OperationHook = {},
+        beforeAdvisoryLockWait: @escaping OperationHook = {},
         beforeRevokeReproof: @escaping OperationHook = {},
         beforeRevokeFinalMutation: @escaping OperationHook = {},
         beforeTemporaryCleanupFinalMutation: @escaping OperationHook = {},
@@ -64,6 +66,7 @@ struct SecureJSONReceiptStoreHooks: Sendable {
         self.beforeAcceptReproof = beforeAcceptReproof
         self.beforeAcceptFinalMutation = beforeAcceptFinalMutation
         self.afterCreateIfAbsentRename = afterCreateIfAbsentRename
+        self.beforeAdvisoryLockWait = beforeAdvisoryLockWait
         self.beforeRevokeReproof = beforeRevokeReproof
         self.beforeRevokeFinalMutation = beforeRevokeFinalMutation
         self.beforeTemporaryCleanupFinalMutation = beforeTemporaryCleanupFinalMutation
@@ -186,6 +189,7 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
         defer { close(handles) }
         try reprove(handles)
         let parent = try requiredParent(in: handles)
+        try hooks.beforeAdvisoryLockWait()
         try await lockExclusively(parent.descriptor)
         defer { unlock(parent.descriptor) }
         try Task.checkCancellation()
@@ -218,7 +222,7 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
         defer {
             Darwin.close(temporary.descriptor)
             if shouldQuarantineTemporary {
-                try? moveToPermanentQuarantine(
+                _ = try? moveToPermanentQuarantine(
                     named: temporary.name,
                     beneath: parent.descriptor,
                     expectedIdentity: temporary.identity,
@@ -287,15 +291,16 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
                 shouldQuarantineTemporary = true
                 throw error
             }
+            let replacedReceiptQuarantine: String
             do {
-                try moveToPermanentQuarantine(
+                replacedReceiptQuarantine = try moveToPermanentQuarantine(
                     named: temporary.name,
                     beneath: parent.descriptor,
                     expectedIdentity: existingReceipt.identity,
                     beforeFinalMutation: hooks.beforeTemporaryCleanupFinalMutation
                 )
             } catch {
-                try? moveToPermanentQuarantine(
+                _ = try? moveToPermanentQuarantine(
                     named: receiptName,
                     beneath: parent.descriptor,
                     expectedIdentity: temporary.identity,
@@ -310,8 +315,19 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
                     beneath: parent.descriptor,
                     matches: temporary.identity
                 )
+                try removeVerifiedQuarantineIfUnchanged(
+                    named: replacedReceiptQuarantine,
+                    beneath: parent.descriptor,
+                    expectedIdentity: existingReceipt.identity
+                )
+                try reprove(handles)
+                try requireEntry(
+                    named: receiptName,
+                    beneath: parent.descriptor,
+                    matches: temporary.identity
+                )
             } catch {
-                try? moveToPermanentQuarantine(
+                _ = try? moveToPermanentQuarantine(
                     named: receiptName,
                     beneath: parent.descriptor,
                     expectedIdentity: temporary.identity,
@@ -350,7 +366,7 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
                     matches: temporary.identity
                 )
             } catch {
-                try? moveToPermanentQuarantine(
+                _ = try? moveToPermanentQuarantine(
                     named: receiptName,
                     beneath: parent.descriptor,
                     expectedIdentity: temporary.identity,
@@ -380,6 +396,7 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
         defer { close(handles) }
         try reprove(handles)
         let parent = try requiredParent(in: handles)
+        try hooks.beforeAdvisoryLockWait()
         try await lockExclusively(parent.descriptor)
         defer { unlock(parent.descriptor) }
         try Task.checkCancellation()
@@ -393,7 +410,7 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
         defer {
             Darwin.close(temporary.descriptor)
             if shouldQuarantineTemporary {
-                try? moveToPermanentQuarantine(
+                _ = try? moveToPermanentQuarantine(
                     named: temporary.name,
                     beneath: parent.descriptor,
                     expectedIdentity: temporary.identity,
@@ -844,12 +861,13 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
         }
     }
 
+    @discardableResult
     private func moveToPermanentQuarantine(
         named sourceName: String,
         beneath parentDescriptor: Int32,
         expectedIdentity: FileIdentity,
         beforeFinalMutation: SecureJSONReceiptStoreHooks.OperationHook
-    ) throws {
+    ) throws -> String {
         for _ in 0..<32 {
             let quarantineName = ".\(receiptName).\(UUID().uuidString).quarantine"
             try beforeFinalMutation()
@@ -868,9 +886,33 @@ actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
                 throw SecureJSONReceiptStoreError.insecureFilesystemState
             }
             try hooks.afterQuarantineVerification()
-            return
+            return quarantineName
         }
         throw SecureJSONReceiptStoreError.insecureFilesystemState
+    }
+
+    private func removeVerifiedQuarantineIfUnchanged(
+        named quarantineName: String,
+        beneath parentDescriptor: Int32,
+        expectedIdentity: FileIdentity
+    ) throws {
+        guard entryIdentity(named: quarantineName, beneath: parentDescriptor) == expectedIdentity else {
+            throw SecureJSONReceiptStoreError.insecureFilesystemState
+        }
+        try requireEntry(
+            named: quarantineName,
+            beneath: parentDescriptor,
+            matches: expectedIdentity
+        )
+        let status = quarantineName.withCString { unlinkat(parentDescriptor, $0, 0) }
+        guard status == 0 else {
+            let code = errno
+            if code == ELOOP || code == ENOENT {
+                throw SecureJSONReceiptStoreError.insecureFilesystemState
+            }
+            throw SecureJSONReceiptStoreError.filesystemOperationFailed(code)
+        }
+        try synchronize(parentDescriptor)
     }
 
     private func quarantineCurrent(beneath parentDescriptor: Int32) throws {

@@ -89,8 +89,8 @@ import Testing
             atPath: fixture.applicationDirectory.path
         )
         #expect(names.contains("mcp-consent.json"))
-        #expect(names.filter(isQuarantineName).count == 1)
-        #expect(try directoryContainsFile(with: originalData, at: fixture.applicationDirectory))
+        #expect(names.filter(isQuarantineName).isEmpty)
+        #expect(try !directoryContainsFile(with: originalData, at: fixture.applicationDirectory))
     }
 
     @Test func revokeRemovesOnlyTheValidatedReceipt() async throws {
@@ -480,7 +480,7 @@ import Testing
         #expect(try directoryContainsFile(with: replacementData, at: fixture.applicationDirectory))
     }
 
-    @Test func acceptPreservesAReplacementInsertedAfterQuarantineVerification() async throws {
+    @Test func acceptFailsClosedForAReplacementInsertedAfterQuarantineVerification() async throws {
         let fixture = try ConsentFixture()
         defer { fixture.remove() }
         try fixture.writeReceipt(acceptedAt: firstDate)
@@ -499,16 +499,11 @@ import Testing
         )
         let store = ExternalDataConsentStore(receiptURL: fixture.receiptURL, hooks: hooks)
 
-        try await store.acceptBothStatements(at: secondDate)
+        await #expect(throws: (any Error).self) {
+            try await store.acceptBothStatements(at: secondDate)
+        }
 
-        let expected = ExternalDataConsentReceipt(
-            schemaVersion: 1,
-            policyVersion: 1,
-            acceptedAt: secondDate,
-            externalProviderRiskAccepted: true,
-            documentToolAccessAccepted: true
-        )
-        #expect(await store.status() == .current(expected))
+        #expect(await store.status() == .required)
         #expect(try Data(contentsOf: preservedOriginal) == originalData)
         #expect(try directoryContainsFile(with: unknownData, at: applicationDirectory))
     }
