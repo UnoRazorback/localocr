@@ -1,4 +1,5 @@
 import Foundation
+import LocalOCRIntelligence
 
 public enum StudioDocumentKind: Sendable, Equatable {
     case pdf
@@ -20,6 +21,7 @@ public struct StudioDocumentResult: Sendable, Equatable {
     public let ocrNeededPages: Int
     public let text: String
     public let failedPages: [Int]
+    public let intelligenceDocument: IntelligenceDocument
 
     public init(
         sourceURL: URL,
@@ -29,7 +31,8 @@ public struct StudioDocumentResult: Sendable, Equatable {
         searchablePages: Int,
         ocrNeededPages: Int,
         text: String,
-        failedPages: [Int]
+        failedPages: [Int],
+        intelligenceDocument: IntelligenceDocument? = nil
     ) {
         self.sourceURL = sourceURL
         self.sourceSHA256 = sourceSHA256
@@ -39,6 +42,9 @@ public struct StudioDocumentResult: Sendable, Equatable {
         self.ocrNeededPages = ocrNeededPages
         self.text = text
         self.failedPages = failedPages
+        self.intelligenceDocument = intelligenceDocument ?? IntelligenceDocument(
+            pages: [IntelligenceSourcePage(number: 1, text: text)]
+        )
     }
 }
 

@@ -14,12 +14,30 @@ output_app="$output_root/LocalOCR Studio.app"
 build_root=""
 studio_physical_tmp_root="$(cd /tmp && pwd -P)"
 studio_bundle_identifier="com.rayconsulting.localocr"
-studio_release_version="0.3.0"
-studio_release_build="3"
+studio_release_version="0.3.1"
+studio_release_build="4"
 studio_minimum_os="14.0"
 studio_output_candidate=""
 studio_output_candidate_identity=""
 studio_output_root_identity=""
+
+validate_no_network_framework_dependency() {
+    release_validate_binary_dependencies "$1" || return 1
+    release_validate_no_network_symbols "$1"
+}
+
+validate_local_intelligence_candidate_binary() {
+    local binary="$1"
+    local minimum_macos
+
+    release_validate_binary_policy "$binary" true true || return 1
+    validate_no_network_framework_dependency "$binary" || return 1
+    minimum_macos="$(release_binary_minimum_macos "$binary")" || return 1
+    [[ "$minimum_macos" == "$studio_minimum_os" ]] || {
+        echo "Local Intelligence Studio candidate must target macOS $studio_minimum_os exactly: found $minimum_macos" >&2
+        return 1
+    }
+}
 
 set_validated_build_root() {
     local candidate="${1:-}"
@@ -222,7 +240,7 @@ validate_sanitized_studio_app_bundle() {
     local executable="$app_path/Contents/MacOS/LocalOCR Studio"
 
     validate_studio_app_bundle "$app_path" || return 1
-    release_validate_binary_policy "$executable" true true || return 1
+    validate_local_intelligence_candidate_binary "$executable" || return 1
 }
 
 validate_staged_app() {
@@ -423,6 +441,7 @@ run_studio_build() {
     local staging_root
     local temporary_build_root
 
+    release_validate_mcp_source_policy "$studio_repo_root"
     select_release_developer_dir
 
     temporary_build_root="$(/usr/bin/mktemp -d /tmp/localocr-studio-build.XXXXXX)"
@@ -436,7 +455,7 @@ run_studio_build() {
     derived_data="$build_root/DerivedData"
     /bin/mkdir "$derived_data"
 
-    "$release_xcodebuild_path" test \
+    "$release_xcodebuild_path" build-for-testing \
         -project "$project_path" \
         -scheme "$scheme_name" \
         -destination "platform=macOS,arch=arm64" \

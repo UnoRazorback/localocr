@@ -66,3 +66,52 @@ import Testing
         _ = try LocalOCRCommandSurface.parseAsRoot(["batch", "--json"])
     }
 }
+
+@Test func argumentSurfaceRegistersMCPConsentCommands() throws {
+    _ = try LocalOCRCommandSurface.parseAsRoot(["mcp-consent", "status"])
+    _ = try LocalOCRCommandSurface.parseAsRoot(["mcp-consent", "accept"])
+    _ = try LocalOCRCommandSurface.parseAsRoot(["mcp-consent", "revoke"])
+}
+
+@Test func argumentSurfaceRejectsConsentBypassFlags() {
+    #expect(throws: (any Error).self) {
+        _ = try LocalOCRCommandSurface.parseAsRoot(["mcp-consent", "accept", "--yes"])
+    }
+}
+
+@Test func argumentSurfaceRegistersIntelligenceCommandsAndAllowedJSONFlags() throws {
+    _ = try LocalOCRCommandSurface.parseAsRoot(["intelligence", "models"])
+    _ = try LocalOCRCommandSurface.parseAsRoot(["intelligence", "models", "--json"])
+    _ = try LocalOCRCommandSurface.parseAsRoot([
+        "intelligence", "test", "ollama", "gemma4:8b", "--json"
+    ])
+    _ = try LocalOCRCommandSurface.parseAsRoot([
+        "intelligence", "select", "ollama", "gemma4:8b"
+    ])
+    _ = try LocalOCRCommandSurface.parseAsRoot([
+        "intelligence", "select", "apple_foundation_models", "SystemLanguageModel.default"
+    ])
+    _ = try LocalOCRCommandSurface.parseAsRoot(["intelligence", "status", "--json"])
+    _ = try LocalOCRCommandSurface.parseAsRoot(["intelligence", "reset", "--json"])
+}
+
+@Test func argumentSurfaceRejectsIntelligenceBypassAndProviderManagementCommands() {
+    for arguments in [
+        ["intelligence", "select", "ollama", "gemma4:8b", "--json"],
+        ["intelligence", "select", "ollama", "gemma4:8b", "--yes"],
+        ["intelligence", "select", "ollama", "gemma4:8b", "--force"],
+        ["intelligence", "select", "ollama", "gemma4:8b", "--noninteractive"],
+        ["intelligence", "install", "ollama", "gemma4:8b"],
+        ["intelligence", "pull", "ollama", "gemma4:8b"],
+        ["intelligence", "delete", "ollama", "gemma4:8b"],
+        ["intelligence", "start", "ollama"],
+        ["intelligence", "stop", "ollama"],
+        ["intelligence", "load", "lm_studio", "model"],
+        ["intelligence", "unload", "lm_studio", "model"],
+        ["intelligence", "configure", "ollama"]
+    ] {
+        #expect(throws: (any Error).self) {
+            _ = try LocalOCRCommandSurface.parseAsRoot(arguments)
+        }
+    }
+}

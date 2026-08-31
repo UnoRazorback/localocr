@@ -1,4 +1,5 @@
 import AppKit
+import LocalOCRIntelligence
 import LocalOCRStudioKit
 import SwiftUI
 
@@ -18,6 +19,19 @@ struct LocalOCRStudioApp: App {
             CommandGroup(replacing: .appSettings) {
                 EmptyView()
             }
+            CommandGroup(replacing: .help) {
+                Button(HelpMenuContract.helpTitle) {
+                    appDelegate.showHelpCenter()
+                }
+                .keyboardShortcut("?", modifiers: .command)
+                Button(HelpMenuContract.agentTitle) {
+                    appDelegate.showAgentConnectionGuide()
+                }
+                Divider()
+                Button(HelpMenuContract.feedbackTitle) {
+                    NSWorkspace.shared.open(HelpMenuContract.feedbackURL)
+                }
+            }
         }
     }
 }
@@ -25,9 +39,17 @@ struct LocalOCRStudioApp: App {
 @MainActor
 final class LocalOCRStudioAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var mainWindow: NSWindow?
+    private var helpCenterWindow: NSWindow?
+    private var agentGuideWindow: NSWindow?
+    private var agentGuideModel: AgentConnectionGuideModel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         showMainWindow()
+        #if DEBUG
+        if let topic = LocalOCRStudioUITestSupport.helpTopicIfRequested() {
+            showHelpCenter(initialTopic: topic)
+        }
+        #endif
     }
 
     func applicationShouldHandleReopen(
@@ -59,6 +81,71 @@ final class LocalOCRStudioAppDelegate: NSObject, NSApplicationDelegate, NSWindow
             mainWindow = window
         }
 
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func showHelpCenter(initialTopic: HelpTopicID = .gettingStarted) {
+        let window: NSWindow
+        if let helpCenterWindow {
+            window = helpCenterWindow
+        } else {
+            window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 960, height: 680),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = HelpMenuContract.helpTitle
+            window.contentViewController = NSHostingController(
+                rootView: HelpCenterView(
+                    model: HelpCenterModel(bundle: .main),
+                    initialTopic: initialTopic
+                )
+            )
+            window.minSize = NSSize(width: 760, height: 520)
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.center()
+            helpCenterWindow = window
+        }
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func showAgentConnectionGuide() {
+        let model: AgentConnectionGuideModel
+        let window: NSWindow
+        if let agentGuideWindow, let agentGuideModel {
+            window = agentGuideWindow
+            model = agentGuideModel
+        } else {
+            #if DEBUG
+            model = LocalOCRStudioUITestSupport.makeAgentConnectionGuideModelIfRequested(
+                bundleURL: Bundle.main.bundleURL
+            ) ?? AgentConnectionGuideModel(bundleURL: Bundle.main.bundleURL)
+            #else
+            model = AgentConnectionGuideModel(bundleURL: Bundle.main.bundleURL)
+            #endif
+            window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 760, height: 700),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Connect to Your Agent"
+            window.contentViewController = NSHostingController(
+                rootView: AgentConnectionGuideView(model: model)
+            )
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.center()
+            agentGuideWindow = window
+            agentGuideModel = model
+        }
+
+        Task { await model.prepareForPresentation() }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -96,10 +183,22 @@ enum LocalOCRStudioRoot {
             planner: BatchOutputPlanner(),
             executor: StudioBatchExecutor(client: client)
         )
+        let intelligenceEnvironment = LocalIntelligenceEnvironment.live(
+            bridgeLocator: RelativeModelBridgeExecutableLocator()
+        )
+        let intelligenceModel = StudioIntelligenceViewModel(
+            provider: intelligenceEnvironment.router,
+            availability: .available
+        )
+        let localModelManager = StudioLocalModelManagerViewModel(
+            manager: intelligenceEnvironment.manager
+        )
         return LocalOCRStudioView(
             model: model,
             actions: actions,
-            batchCoordinator: batchCoordinator
+            batchCoordinator: batchCoordinator,
+            intelligenceModel: intelligenceModel,
+            localModelManager: localModelManager
         )
     }
 }

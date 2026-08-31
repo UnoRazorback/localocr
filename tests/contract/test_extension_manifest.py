@@ -16,18 +16,21 @@ def test_extension_manifest_starts_native_server_without_machine_runtime_paths()
     mcp_config = server["mcp_config"]
     serialized = json.dumps(manifest).lower()
 
-    assert manifest["version"] == "0.3.0"
+    assert manifest["version"] == "0.3.1"
     assert server["entry_point"] == "localocr-mcp"
     assert mcp_config["command"] == "localocr-mcp"
     assert mcp_config["args"] == []
     assert "on path" in manifest["description"].lower()
-    assert {tool["name"] for tool in manifest["tools"]} == {
+    assert [tool["name"] for tool in manifest["tools"]] == [
         "get_pdf_page_count",
         "inspect_pdf",
         "ocr_pdf",
         "ocr_pdf_batch",
         "ocr_image",
         "make_searchable_pdf",
-    }
+        "summarize_document",
+        "organize_document",
+        "extract_document_fields",
+    ]
     for forbidden in ("/users", ".venv", "python", "homebrew"):
         assert forbidden not in serialized

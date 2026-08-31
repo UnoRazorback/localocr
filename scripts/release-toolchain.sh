@@ -5,12 +5,15 @@ set -euo pipefail
 release_toolchain_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 release_repo_root="$(cd "$release_toolchain_script_dir/.." && pwd)"
 release_developer_dir="/Applications/Xcode.app/Contents/Developer"
+release_xcode_toolchain_dir="$release_developer_dir/Toolchains/XcodeDefault.xctoolchain"
+release_xcode_swift_path="$release_xcode_toolchain_dir/usr/bin/swift"
 release_signing_identity="Developer ID Application: John Scott Ray (DZ8B5454ZN)"
 release_plist_buddy="/usr/libexec/PlistBuddy"
 release_xcodebuild_path=""
 release_system_swift_rpath="/usr/lib/swift"
 release_removable_framework_rpath="@executable_path/../Frameworks"
 release_path_guard="$release_toolchain_script_dir/release-path-guard.swift"
+release_mcp_policy_validator="$release_toolchain_script_dir/validate-mcp-stdio-policy.py"
 release_symbols_root="$release_repo_root/dist/release-symbols"
 release_symbols_root_identity=""
 
@@ -47,19 +50,89 @@ release_cleanup_anchored_directory() {
     [[ ! -e "./$directory_name" && ! -L "./$directory_name" ]]
 }
 
+release_build_version_records_from_text() {
+    /usr/bin/awk '
+        function emit_record() {
+            if (platform_count != 1 || minos_count != 1) {
+                malformed = 1
+            }
+            record_count++
+            if (records != "") {
+                records = records ORS
+            }
+            records = records platform "\t" minos
+            platform = ""
+            minos = ""
+            platform_count = 0
+            minos_count = 0
+        }
+        $1 == "cmd" {
+            if (in_build_version) {
+                emit_record()
+            }
+            in_build_version = ($2 == "LC_BUILD_VERSION")
+            next
+        }
+        in_build_version && $1 == "platform" {
+            platform = $2
+            platform_count++
+            next
+        }
+        in_build_version && $1 == "minos" {
+            minos = $2
+            minos_count++
+            next
+        }
+        END {
+            if (in_build_version) {
+                emit_record()
+            }
+            if (malformed) {
+                exit 65
+            }
+            printf "%s", records
+        }
+    '
+}
+
+release_parse_build_version_text() {
+    local load_commands="${1:-}"
+    local records
+    local record_count
+
+    records="$(
+        printf '%s\n' "$load_commands" |
+            release_build_version_records_from_text
+    )" || {
+        echo "LC_BUILD_VERSION record is malformed" >&2
+        return 1
+    }
+    record_count="$(
+        printf '%s\n' "$records" |
+            /usr/bin/awk 'NF { count++ } END { print count + 0 }'
+    )"
+    [[ "$record_count" -eq 1 ]] || {
+        echo "release binary must contain exactly one LC_BUILD_VERSION" >&2
+        return 1
+    }
+    printf '%s\n' "$records"
+}
+
+release_binary_build_version() {
+    local load_commands
+
+    load_commands="$(/usr/bin/otool -l "$1")" || {
+        echo "could not inspect release binary build version: $1" >&2
+        return 1
+    }
+    release_parse_build_version_text "$load_commands"
+}
+
 release_binary_minimum_macos() {
-    /usr/bin/otool -l "$1" |
-        /usr/bin/awk '
-            $1 == "cmd" && $2 == "LC_BUILD_VERSION" {
-                in_build_version = 1
-                next
-            }
-            in_build_version && $1 == "minos" && !printed {
-                print $2
-                printed = 1
-                in_build_version = 0
-            }
-        '
+    local build_version
+
+    build_version="$(release_binary_build_version "$1")" || return 1
+    printf '%s\n' "${build_version#*$'\t'}"
 }
 
 release_validate_binary_architecture_and_target() {
@@ -67,7 +140,8 @@ release_validate_binary_architecture_and_target() {
     local file_description
     local architectures
     local minimum_macos
-    local minimum_major
+    local build_version
+    local platform
 
     file_description="$(/usr/bin/file -b "$binary")" || {
         echo "could not inspect copied release binary: $binary" >&2
@@ -85,17 +159,22 @@ release_validate_binary_architecture_and_target() {
         echo "release binaries must contain only the arm64 architecture" >&2
         return 1
     }
-    minimum_macos="$(release_binary_minimum_macos "$binary")" || {
+    build_version="$(release_binary_build_version "$binary")" || {
         echo "could not inspect copied release binary minimum macOS: $binary" >&2
+        return 1
+    }
+    platform="${build_version%%$'\t'*}"
+    minimum_macos="${build_version#*$'\t'}"
+    [[ "$platform" == "1" ]] || {
+        echo "LC_BUILD_VERSION platform must be macOS: $binary" >&2
         return 1
     }
     [[ "$minimum_macos" =~ ^[0-9]+([.][0-9]+){1,2}$ ]] || {
         echo "invalid minimum macOS version: $minimum_macos" >&2
         return 1
     }
-    minimum_major="${minimum_macos%%.*}"
-    [[ "$minimum_major" -ge 14 ]] || {
-        echo "release binaries must require macOS 14 or later" >&2
+    [[ "$minimum_macos" == "14.0" ]] || {
+        echo "Local Intelligence release binaries must target macOS 14.0 exactly" >&2
         return 1
     }
 }
@@ -126,8 +205,46 @@ release_validate_canonical_system_install_name() {
     done
 }
 
+release_is_forbidden_network_install_name() {
+    local install_name="$1"
+    local relative_path
+    local -a components
+
+    release_validate_canonical_system_install_name "$install_name" || return 1
+    case "$install_name" in
+        /System/Library/Frameworks/?*) ;;
+        *) return 1 ;;
+    esac
+    relative_path="${install_name#/System/Library/Frameworks/}"
+    IFS=/ read -r -a components <<< "$relative_path"
+    for component in "${components[@]}"; do
+        case "$component" in
+            CFNetwork.framework|Network.framework) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+release_validate_local_only_install_name() {
+    local install_name="${1:-}"
+    local allow_system_network="${2:-false}"
+
+    if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
+        return 0
+    fi
+    release_validate_canonical_system_install_name "$install_name" || {
+        echo "unapproved dynamic-library install name: ${install_name:-<empty>}" >&2
+        return 1
+    }
+    if [[ "$allow_system_network" != true ]] && release_is_forbidden_network_install_name "$install_name"; then
+        echo "network framework dependency is forbidden in local-only candidate: $install_name" >&2
+        return 1
+    fi
+}
+
 release_validate_binary_dependencies() {
     local binary="$1"
+    local allow_system_network="${2:-false}"
     local dependency_output
     local dependency_line
     local install_name
@@ -138,10 +255,12 @@ release_validate_binary_dependencies() {
     }
     while IFS= read -r dependency_line; do
         [[ -n "$dependency_line" ]] || continue
-        install_name="$(
-            printf '%s\n' "$dependency_line" |
-                /usr/bin/awk '{ print $1 }'
-        )"
+        if [[ "$dependency_line" =~ ^(.+)\ \(compatibility\ version\ [^,\(\)[:space:]]+,\ current\ version\ [^,\(\)[:space:]]+(,\ weak)?\)$ ]]; then
+            install_name="${BASH_REMATCH[1]}"
+        else
+            echo "malformed dynamic-library dependency record: $dependency_line" >&2
+            return 1
+        fi
         if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
             [[ "$dependency_line" == *", weak)" ]] || {
                 echo "libswiftCompatibilitySpan.dylib must be weak-linked" >&2
@@ -149,14 +268,42 @@ release_validate_binary_dependencies() {
             }
             continue
         fi
-        release_validate_canonical_system_install_name "$install_name" || {
-            echo "unapproved dynamic-library install name: ${install_name:-<empty>}" >&2
-            return 1
-        }
+        release_validate_local_only_install_name "$install_name" "$allow_system_network" || return 1
     done < <(
         printf '%s\n' "$dependency_output" |
             /usr/bin/awk 'NR > 1 { sub(/^[[:space:]]+/, ""); print }'
     )
+}
+
+release_validate_no_network_symbol_text() {
+    local symbol_text="$1"
+    local binary="${2:-binary}"
+    local grep_status
+
+    if /usr/bin/grep -E -q -- \
+        '(CFNetwork|NSURLSession|URLSession(Configuration|Task|DataTask|DownloadTask|UploadTask|StreamTask|WebSocketTask)?|_nw_[A-Za-z0-9_]+)' \
+        <<< "$symbol_text"
+    then
+        echo "network symbol is forbidden in local-only candidate: $binary" >&2
+        return 1
+    else
+        grep_status=$?
+        [[ "$grep_status" -eq 1 ]] || {
+            echo "could not inspect release binary network symbols: $binary" >&2
+            return 1
+        }
+    fi
+}
+
+release_validate_no_network_symbols() {
+    local binary="$1"
+    local symbols
+
+    symbols="$(/usr/bin/nm -u "$binary")" || {
+        echo "could not inspect release binary network symbols: $binary" >&2
+        return 1
+    }
+    release_validate_no_network_symbol_text "$symbols" "$binary"
 }
 
 release_binary_rpaths() {
@@ -177,7 +324,16 @@ release_binary_rpaths() {
                 next
             }
             awaiting_path && $1 == "path" {
-                print $2
+                line = $0
+                sub(/^[[:space:]]*path[[:space:]]+/, "", line)
+                if (!match(line, /[[:space:]]+[(]offset[[:space:]]+[0-9]+[)]$/)) {
+                    exit 65
+                }
+                path = substr(line, 1, RSTART - 1)
+                if (path == "") {
+                    exit 65
+                }
+                print path
                 awaiting_path = 0
             }
             END {
@@ -186,6 +342,22 @@ release_binary_rpaths() {
                 }
             }
         '
+}
+
+release_validate_rpath_value() {
+    local rpath="${1:-}"
+    local allow_framework_rpath="${2:-false}"
+
+    if [[
+        "$allow_framework_rpath" == true &&
+        "$rpath" == "$release_removable_framework_rpath"
+    ]]; then
+        return 0
+    fi
+    [[ "$rpath" == "$release_system_swift_rpath" ]] || {
+        echo "unapproved LC_RPATH: ${rpath:-<empty>}" >&2
+        return 1
+    }
 }
 
 release_validate_binary_rpaths() {
@@ -200,46 +372,149 @@ release_validate_binary_rpaths() {
     }
     while IFS= read -r rpath; do
         [[ -n "$rpath" ]] || continue
-        if [[
-            "$allow_framework_rpath" == true &&
-            "$rpath" == "$release_removable_framework_rpath"
-        ]]; then
-            continue
-        fi
-        [[ "$rpath" == "$release_system_swift_rpath" ]] || {
-            echo "unapproved LC_RPATH: $rpath" >&2
-            return 1
-        }
+        release_validate_rpath_value "$rpath" "$allow_framework_rpath" || return 1
     done <<< "$rpaths"
 }
 
-release_reject_private_user_path() {
-    local binary="$1"
+release_validate_no_private_or_build_path_text() {
+    local strings_output="$1"
+    local subject="${2:-release input}"
+    local repo_root="${3:-$release_repo_root}"
+    local forbidden
     local grep_status
 
-    if /usr/bin/grep -a -F -q -- "/Users/" "$binary"; then
-        echo "release binary contains a private /Users/ path: $binary" >&2
+    if /usr/bin/grep -F -q -- "/Users/" <<< "$strings_output"; then
+        echo "private /Users/ path marker found in $subject" >&2
         return 1
     else
         grep_status=$?
         [[ "$grep_status" -eq 1 ]] || {
-            echo "could not inspect release binary for private paths: $binary" >&2
+            echo "could not inspect release input for private or build paths: $subject" >&2
             return 1
         }
     fi
+    if /usr/bin/grep -E -q -- \
+        '(/tmp/|(^|/)DerivedData(/|$)|(^|/)[.]build(/|$)|(^|/)worktrees(/|$)|(^|/)checkout(/|$))' \
+        <<< "$strings_output"
+    then
+        echo "private or build path marker found in $subject" >&2
+        return 1
+    else
+        grep_status=$?
+        [[ "$grep_status" -eq 1 ]] || {
+            echo "could not inspect release input for private or build paths: $subject" >&2
+            return 1
+        }
+    fi
+    for forbidden in \
+        "/Applications/Xcode" \
+        "/opt/homebrew/" \
+        "/usr/local/" \
+        "/.venv/" \
+        "$repo_root"
+    do
+        [[ -n "$forbidden" && "$forbidden" != "/" ]] || continue
+        if /usr/bin/grep -F -i -q -- "$forbidden" <<< "$strings_output"; then
+            echo "private or build path marker found in $subject: $forbidden" >&2
+            return 1
+        else
+            grep_status=$?
+            [[ "$grep_status" -eq 1 ]] || {
+                echo "could not inspect release input for private or build paths: $subject" >&2
+                return 1
+            }
+        fi
+    done
+}
+
+release_reject_private_or_build_path() {
+    local input_path="$1"
+    local repo_root="${2:-$release_repo_root}"
+    local forbidden
+    local grep_status
+    local strings_output
+
+    if /usr/bin/grep -a -F -q -- "/Users/" "$input_path"; then
+        echo "private /Users/ path marker found in $input_path" >&2
+        return 1
+    else
+        grep_status=$?
+        [[ "$grep_status" -eq 1 ]] || return 1
+    fi
+    if /usr/bin/grep -a -E -q -- \
+        '(/tmp/|/DerivedData/|/[.]build/|/worktrees/|/checkout/)' \
+        "$input_path"
+    then
+        echo "private or build path marker found in $input_path" >&2
+        return 1
+    else
+        grep_status=$?
+        [[ "$grep_status" -eq 1 ]] || return 1
+    fi
+    for forbidden in \
+        "/Applications/Xcode" \
+        "/opt/homebrew/" \
+        "/usr/local/" \
+        "/.venv/" \
+        "$repo_root"
+    do
+        [[ -n "$forbidden" && "$forbidden" != "/" ]] || continue
+        if /usr/bin/grep -a -F -i -q -- "$forbidden" "$input_path"; then
+            echo "private or build path marker found in $input_path: $forbidden" >&2
+            return 1
+        else
+            grep_status=$?
+            [[ "$grep_status" -eq 1 ]] || return 1
+        fi
+    done
+    strings_output="$(/usr/bin/strings -a "$input_path")" || {
+        echo "could not inspect release input for private or build paths: $input_path" >&2
+        return 1
+    }
+    release_validate_no_private_or_build_path_text \
+        "$strings_output" "$input_path" "$repo_root"
+}
+
+release_reject_private_user_path() {
+    release_reject_private_or_build_path "$1" "${2:-$release_repo_root}"
 }
 
 release_validate_binary_policy() {
     local binary="$1"
     local allow_framework_rpath="${2:-false}"
     local reject_private_path="${3:-true}"
+    local allow_system_network="${4:-false}"
 
     release_validate_binary_architecture_and_target "$binary" || return 1
-    release_validate_binary_dependencies "$binary" || return 1
+    release_validate_binary_dependencies "$binary" "$allow_system_network" || return 1
+    if [[ "$allow_system_network" != true ]]; then
+        release_validate_no_network_symbols "$binary" || return 1
+    fi
     release_validate_binary_rpaths "$binary" "$allow_framework_rpath" || return 1
     if [[ "$reject_private_path" == true ]]; then
         release_reject_private_user_path "$binary" || return 1
     fi
+}
+
+release_validate_mcp_source_policy() {
+    local repo_root="${1:-$release_repo_root}"
+
+    if [[ ! -e "$repo_root/Package.swift" ]]; then
+        if [[ -e "$repo_root/Sources" || -e "$repo_root/App" ]]; then
+            echo "MCP stdio source policy rejected: Package.swift is missing" >&2
+            return 1
+        fi
+        return 0
+    fi
+    [[ -f "$repo_root/Package.swift" && ! -L "$repo_root/Package.swift" ]] || {
+        echo "MCP stdio source policy rejected: Package.swift is invalid" >&2
+        return 1
+    }
+    [[ -f "$release_mcp_policy_validator" && ! -L "$release_mcp_policy_validator" ]] || {
+        echo "MCP stdio source policy rejected: canonical validator is missing or symlinked" >&2
+        return 1
+    }
+    /usr/bin/python3 "$release_mcp_policy_validator" --repo-root "$repo_root"
 }
 
 release_macho_arm64_uuid() {
@@ -424,7 +699,7 @@ release_preserve_matching_dsym() {
 
     [[ -n "$source_dsym" ]] || return 0
     case "$symbol_label" in
-        localocr|localocr-mcp|LocalOCR-Studio) ;;
+        localocr|localocr-mcp|localocr-model-bridge|LocalOCR-Studio) ;;
         *)
             echo "unexpected release symbol label: $symbol_label" >&2
             return 1
@@ -580,6 +855,7 @@ sanitize_validated_release_binary() {
     local expected_binary="${2:-}"
     local allow_framework_rpath="${3:-false}"
     local remove_non_system_rpaths="${4:-false}"
+    local allow_system_network="${5:-false}"
     local parent
     local physical_parent
     local physical_binary
@@ -664,7 +940,7 @@ sanitize_validated_release_binary() {
         return 1
     }
     release_validate_binary_policy \
-        "$working_binary" "$allow_framework_rpath" false || {
+        "$working_binary" "$allow_framework_rpath" false "$allow_system_network" || {
         cleanup_sanitize_root "$sanitize_root" || true
         return 1
     }
@@ -685,7 +961,7 @@ sanitize_validated_release_binary() {
         return 1
     }
     release_validate_binary_policy \
-        "$working_binary" "$allow_framework_rpath" true || {
+        "$working_binary" "$allow_framework_rpath" true "$allow_system_network" || {
         cleanup_sanitize_root "$sanitize_root" || true
         return 1
     }
@@ -696,7 +972,8 @@ sanitize_validated_release_binary() {
         cleanup_sanitize_root "$sanitize_root" || true
         return 1
     }
-    release_validate_binary_policy "$binary" "$allow_framework_rpath" true || {
+    release_validate_binary_policy \
+        "$binary" "$allow_framework_rpath" true "$allow_system_network" || {
         cleanup_sanitize_root "$sanitize_root" || true
         return 1
     }
@@ -728,6 +1005,48 @@ validate_release_developer_dir() {
     esac
 }
 
+select_release_swift_toolchain() {
+    local physical_developer_dir
+    local physical_swift
+    local physical_toolchain
+
+    DEVELOPER_DIR="$release_developer_dir"
+    export DEVELOPER_DIR
+    unset SDKROOT
+    validate_release_developer_dir "$DEVELOPER_DIR" || return 1
+    [[ -d "$release_developer_dir" && ! -L "$release_developer_dir" ]] || {
+        echo "stable Xcode developer directory is missing or symlinked: $release_developer_dir" >&2
+        return 1
+    }
+    physical_developer_dir="$(cd "$release_developer_dir" && pwd -P)" || return 1
+    validate_release_developer_dir "$physical_developer_dir" || return 1
+    [[ -d "$release_xcode_toolchain_dir" && ! -L "$release_xcode_toolchain_dir" ]] || {
+        echo "stable Xcode default toolchain is missing or symlinked: $release_xcode_toolchain_dir" >&2
+        return 1
+    }
+    physical_toolchain="$(cd "$release_xcode_toolchain_dir" && pwd -P)" || return 1
+    [[ "$physical_toolchain" == "$release_xcode_toolchain_dir" ]] || {
+        echo "stable Xcode default toolchain resolved unexpectedly" >&2
+        return 1
+    }
+    [[ -x "$release_xcode_swift_path" ]] || {
+        echo "stable Xcode Swift executable is unavailable: $release_xcode_swift_path" >&2
+        return 1
+    }
+    physical_swift="$(/bin/realpath "$release_xcode_swift_path")" || return 1
+    case "$physical_swift" in
+        "$physical_toolchain/usr/bin/"*) ;;
+        *)
+            echo "stable Xcode Swift executable escaped the default toolchain" >&2
+            return 1
+            ;;
+    esac
+    [[ -f "$physical_swift" && ! -L "$physical_swift" && -x "$physical_swift" ]] || {
+        echo "stable Xcode Swift executable did not resolve to a physical executable" >&2
+        return 1
+    }
+}
+
 select_release_developer_dir() {
     local resolved_developer_dir
 
@@ -751,11 +1070,13 @@ select_release_developer_dir() {
 
 prepare_release_evidence_directory() {
     local requested_repo_root="${1:-$release_repo_root}"
+    local requested_release_dir="${2:-}"
     local physical_repo
     local dist_dir
     local release_dir
     local evidence_dir
     local directory
+    local explicit_release_dir=false
     local label
 
     [[ -d "$requested_repo_root" && ! -L "$requested_repo_root" ]] || {
@@ -768,7 +1089,35 @@ prepare_release_evidence_directory() {
         return 1
     }
     dist_dir="$physical_repo/dist"
-    release_dir="$dist_dir/direct-release"
+    if [[ -n "$requested_release_dir" ]]; then
+        [[ "$requested_release_dir" == /* ]] || {
+            echo "release evidence directory must be absolute" >&2
+            return 1
+        }
+        case "$requested_release_dir" in
+            "$dist_dir"/.direct-release.candidate.*) ;;
+            *)
+                echo "release evidence directory must be a private direct-release candidate" >&2
+                return 1
+                ;;
+        esac
+        [[ "$(/usr/bin/dirname "$requested_release_dir")" == "$dist_dir" ]] || {
+            echo "release evidence candidate must remain directly inside dist" >&2
+            return 1
+        }
+        [[ -d "$requested_release_dir" && ! -L "$requested_release_dir" ]] || {
+            echo "release evidence candidate must be a physical directory" >&2
+            return 1
+        }
+        [[ "$(cd "$requested_release_dir" && pwd -P)" == "$requested_release_dir" ]] || {
+            echo "release evidence candidate must not escape through a symlink" >&2
+            return 1
+        }
+        release_dir="$requested_release_dir"
+        explicit_release_dir=true
+    else
+        release_dir="$dist_dir/direct-release"
+    fi
     evidence_dir="$release_dir/evidence"
 
     for directory in "$dist_dir" "$release_dir" "$evidence_dir"; do
@@ -791,6 +1140,10 @@ prepare_release_evidence_directory() {
                 return 1
             }
         else
+            if [[ "$directory" == "$release_dir" && "$explicit_release_dir" == true ]]; then
+                echo "release evidence candidate disappeared" >&2
+                return 1
+            fi
             /bin/mkdir "$directory" || return 1
         fi
     done
@@ -798,6 +1151,7 @@ prepare_release_evidence_directory() {
 }
 
 record_release_toolchain_evidence() {
+    local release_dir="${1:-}"
     local evidence_dir
     local version_file
     local version_file_partial
@@ -806,7 +1160,9 @@ record_release_toolchain_evidence() {
         echo "stable Xcode must be selected before recording evidence" >&2
         return 1
     }
-    evidence_dir="$(prepare_release_evidence_directory)" || return
+    evidence_dir="$(
+        prepare_release_evidence_directory "$release_repo_root" "$release_dir"
+    )" || return
     version_file="$evidence_dir/xcode-version.txt"
     [[ ! -L "$version_file" ]] || {
         echo "Xcode evidence leaf must not be a symlink" >&2
@@ -830,8 +1186,10 @@ record_release_toolchain_evidence() {
 }
 
 configure_release_developer_dir() {
+    local release_dir="${1:-}"
+
     select_release_developer_dir
-    record_release_toolchain_evidence
+    record_release_toolchain_evidence "$release_dir"
 }
 
 validate_release_inputs() {

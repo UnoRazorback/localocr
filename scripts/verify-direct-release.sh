@@ -24,62 +24,27 @@ validate_arm64_architecture() {
 
 validate_minimum_macos() {
     local version="${1:-}"
-    local major
 
     [[ "$version" =~ ^[0-9]+([.][0-9]+){1,2}$ ]] || {
         echo "invalid minimum macOS version: $version" >&2
         return 1
     }
-    major="${version%%.*}"
-    [[ "$major" -ge 14 ]] || {
-        echo "release binaries must require macOS 14 or later" >&2
+    [[ "$version" == "14.0" ]] || {
+        echo "Local Intelligence release binaries must target macOS 14.0 exactly" >&2
         return 1
     }
 }
 
 validate_canonical_system_install_name() {
-    local install_name="$1"
-    local relative_path
-    local component
-    local -a components
-
-    case "$install_name" in
-        /System/Library/?*)
-            relative_path="${install_name#/System/Library/}"
-            ;;
-        /usr/lib/?*)
-            relative_path="${install_name#/usr/lib/}"
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-    [[ "$install_name" != *//* && "$install_name" != */ ]] || return 1
-    IFS=/ read -r -a components <<< "$relative_path"
-    for component in "${components[@]}"; do
-        [[ -n "$component" && "$component" != "." && "$component" != ".." ]] || {
-            return 1
-        }
-    done
+    release_validate_canonical_system_install_name "$1"
 }
 
 validate_install_name() {
-    local install_name="${1:-}"
-
-    if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
-        return 0
-    fi
-    validate_canonical_system_install_name "$install_name" || {
-        echo "unapproved dynamic-library install name: ${install_name:-<empty>}" >&2
-        return 1
-    }
+    release_validate_local_only_install_name "${1:-}" "${2:-false}"
 }
 
 validate_rpath() {
-    [[ "${1:-}" == "/usr/lib/swift" ]] || {
-        echo "unapproved LC_RPATH: ${1:-<empty>}" >&2
-        return 1
-    }
+    release_validate_rpath_value "${1:-}" false
 }
 
 validate_no_debug_entitlement_text() {
@@ -102,128 +67,28 @@ validate_no_debug_entitlement_text() {
 }
 
 binary_minimum_macos() {
-    /usr/bin/otool -l "$1" |
-        /usr/bin/awk '
-            $1 == "cmd" && $2 == "LC_BUILD_VERSION" {
-                in_build_version = 1
-                next
-            }
-            in_build_version && $1 == "minos" && !printed {
-                print $2
-                printed = 1
-                in_build_version = 0
-            }
-        '
+    release_binary_minimum_macos "$1"
 }
 
 verify_binary_architecture_and_target() {
     local binary="$1"
-    local file_description
-    local architectures
-    local minimum_macos
-
     [[ -f "$binary" && ! -L "$binary" ]] || {
         echo "release binary is missing or symlinked: $binary" >&2
         return 1
     }
-    file_description="$(/usr/bin/file -b "$binary")"
-    [[ "$file_description" == *"Mach-O"* ]] || {
-        echo "release binary is not Mach-O: $binary" >&2
-        return 1
-    }
-    architectures="$(/usr/bin/lipo -archs "$binary")"
-    validate_arm64_architecture "$architectures"
-    minimum_macos="$(binary_minimum_macos "$binary")"
-    validate_minimum_macos "$minimum_macos"
+    release_validate_binary_architecture_and_target "$binary"
 }
 
 verify_binary_dependencies() {
-    local binary="$1"
-    local dependency_output
-    local dependency_line
-    local install_name
-
-    dependency_output="$(/usr/bin/otool -L "$binary")"
-    while IFS= read -r dependency_line; do
-        [[ -n "$dependency_line" ]] || continue
-        install_name="$(
-            printf '%s\n' "$dependency_line" |
-                /usr/bin/awk '{ print $1 }'
-        )"
-        validate_install_name "$install_name"
-        if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
-            [[ "$dependency_line" == *", weak)" ]] || {
-                echo "libswiftCompatibilitySpan.dylib must be weak-linked" >&2
-                return 1
-            }
-        fi
-    done < <(
-        printf '%s\n' "$dependency_output" |
-            /usr/bin/awk 'NR > 1 { sub(/^[[:space:]]+/, ""); print }'
-    )
+    release_validate_binary_dependencies "$1" "${2:-false}"
 }
 
 verify_binary_rpaths() {
-    local binary="$1"
-    local load_commands
-    local rpath_output
-    local rpath
-
-    load_commands="$(/usr/bin/otool -l "$binary")"
-    rpath_output="$(
-        printf '%s\n' "$load_commands" |
-            /usr/bin/awk '
-                $1 == "cmd" {
-                    if (awaiting_path) {
-                        exit 65
-                    }
-                    awaiting_path = ($2 == "LC_RPATH")
-                    next
-                }
-                awaiting_path && $1 == "path" {
-                    print $2
-                    awaiting_path = 0
-                }
-                END {
-                    if (awaiting_path) {
-                        exit 65
-                    }
-                }
-            '
-    )" || {
-        echo "could not parse every LC_RPATH in: $binary" >&2
-        return 1
-    }
-    while IFS= read -r rpath; do
-        [[ -n "$rpath" ]] || continue
-        validate_rpath "$rpath"
-    done <<< "$rpath_output"
+    release_validate_binary_rpaths "$1" false
 }
 
 verify_no_private_paths() {
-    local binary="$1"
-    local strings_output
-    local forbidden
-
-    release_reject_private_user_path "$binary"
-    strings_output="$(/usr/bin/strings -a "$binary")"
-    for forbidden in \
-        "/Applications/Xcode" \
-        "/Users/" \
-        "$verify_repo_root" \
-        "/opt/homebrew" \
-        "/usr/local" \
-        ".venv" \
-        "python" \
-        "pyobjc" \
-        "pymupdf" \
-        "ruby"
-    do
-        if /usr/bin/grep -F -i -q -- "$forbidden" <<< "$strings_output"; then
-            echo "private or non-native build path marker found in $binary: $forbidden" >&2
-            return 1
-        fi
-    done
+    release_reject_private_or_build_path "$1" "$verify_repo_root"
 }
 
 verify_signature() {
@@ -327,10 +192,16 @@ resolve_staged_main_executable() {
 }
 
 verify_binary_policy() {
-    verify_binary_architecture_and_target "$1"
-    verify_binary_dependencies "$1"
-    verify_binary_rpaths "$1"
-    verify_no_private_paths "$1"
+    local binary="$1"
+    local allow_system_network="${2:-false}"
+
+    verify_binary_architecture_and_target "$binary"
+    verify_binary_dependencies "$binary" "$allow_system_network"
+    if [[ "$allow_system_network" != true ]]; then
+        release_validate_no_network_symbols "$binary"
+    fi
+    verify_binary_rpaths "$binary"
+    verify_no_private_paths "$binary"
 }
 
 verify_signed_code_object() {
@@ -346,10 +217,15 @@ verify_direct_release_signatures() {
 
     validate_release_bundle_metadata "$app_path"
     main_executable="$(resolve_staged_main_executable "$app_path")"
-    for helper in localocr localocr-mcp; do
-        verify_binary_policy "$app_path/Contents/Helpers/$helper"
+    for helper in localocr localocr-mcp localocr-model-bridge; do
+        verify_binary_policy \
+            "$app_path/Contents/Helpers/$helper" \
+            "$([[ "$helper" == localocr-model-bridge ]] && printf true || printf false)"
         verify_signed_code_object "$app_path/Contents/Helpers/$helper"
     done
+    "$verify_script_dir/validate-model-bridge-policy.py" \
+        --source-root "$verify_repo_root" \
+        --binary "$app_path/Contents/Helpers/localocr-model-bridge" >/dev/null
     verify_binary_policy "$main_executable"
     verify_signed_code_object "$app_path"
     /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"

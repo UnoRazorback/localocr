@@ -15,6 +15,17 @@ import pytest
 
 
 ROOT = Path(__file__).parents[2]
+PACKAGE_MANIFEST = ROOT / "Package.swift"
+INTELLIGENCE_PROVIDER = (
+    ROOT / "Sources" / "LocalOCRIntelligence" / "FoundationModelsIntelligenceProvider.swift"
+)
+INTELLIGENCE_GENERATED_TYPES = (
+    ROOT / "Sources" / "LocalOCRIntelligence" / "FoundationModelsGeneratedTypes.swift"
+)
+INTELLIGENCE_ENVIRONMENT = (
+    ROOT / "Sources" / "LocalOCRIntelligence" / "LocalIntelligenceEnvironment.swift"
+)
+MCP_ENTRY_POINT = ROOT / "Sources" / "LocalOCRMCPExecutable" / "main.swift"
 ROOT_VIEW = ROOT / "Sources" / "LocalOCRStudioKit" / "LocalOCRStudioView.swift"
 RESULT_VIEW = ROOT / "Sources" / "LocalOCRStudioKit" / "StudioResultView.swift"
 PROJECT_SPEC = ROOT / "project.yml"
@@ -29,6 +40,12 @@ SHARED_SCHEME = (
 APP_ENTRY_POINT = ROOT / "App" / "LocalOCRStudioApp.swift"
 UI_TEST_SUPPORT = ROOT / "App" / "LocalOCRStudioUITestSupport.swift"
 UI_TESTS = ROOT / "AppUITests" / "LocalOCRStudioUITests.swift"
+AGENT_GUIDE_MODEL = (
+    ROOT / "Sources" / "LocalOCRStudioKit" / "AgentConnectionGuideModel.swift"
+)
+AGENT_GUIDE_VIEW = (
+    ROOT / "Sources" / "LocalOCRStudioKit" / "AgentConnectionGuideView.swift"
+)
 BATCH_WORKSPACE = ROOT / "Sources" / "LocalOCRStudioKit" / "BatchWorkspaceView.swift"
 BATCH_STATUS_VIEWS = ROOT / "Sources" / "LocalOCRStudioKit" / "BatchStatusViews.swift"
 BUILD_SCRIPT = ROOT / "scripts" / "build-unsigned-studio-app.sh"
@@ -38,8 +55,8 @@ RELEASE_PATH_GUARD = ROOT / "scripts" / "release-path-guard.swift"
 EXPECTED_SETTINGS = {
     "PRODUCT_BUNDLE_IDENTIFIER": "com.rayconsulting.localocr",
     "PRODUCT_NAME": "LocalOCR Studio",
-    "MARKETING_VERSION": "0.3.0",
-    "CURRENT_PROJECT_VERSION": "3",
+    "MARKETING_VERSION": "0.3.1",
+    "CURRENT_PROJECT_VERSION": "4",
     "MACOSX_DEPLOYMENT_TARGET": "14.0",
     "ARCHS": "arm64",
     "SWIFT_VERSION": "6.0",
@@ -87,6 +104,57 @@ def _assert_fragments_in_order(source: str, fragments: tuple[str, ...]) -> None:
         position = source.find(fragment, cursor)
         assert position >= 0, f"missing or out-of-order source fragment: {fragment}"
         cursor = position + len(fragment)
+
+
+FOUNDATION_MODELS_SYMBOLS = (
+    "import FoundationModels",
+    "FoundationModelsIntelligenceProvider",
+    "SystemLanguageModel",
+    "LanguageModelSession",
+    "GenerationOptions",
+    "@Generable",
+    "@Guide",
+)
+
+
+def _assert_foundation_models_references_are_compile_guarded(
+    source: str,
+    source_name: str,
+) -> None:
+    conditional_stack: list[str] = []
+    active_foundation_guards = 0
+
+    for line_number, line in enumerate(source.splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith("#if canImport(FoundationModels)"):
+            conditional_stack.append("foundation-positive")
+            active_foundation_guards += 1
+            continue
+        if stripped.startswith("#if"):
+            conditional_stack.append("other")
+            continue
+        if stripped.startswith(("#else", "#elseif")):
+            if conditional_stack and conditional_stack[-1] == "foundation-positive":
+                conditional_stack[-1] = "foundation-negative"
+                active_foundation_guards -= 1
+            continue
+        if stripped.startswith("#endif"):
+            assert conditional_stack, f"unmatched #endif in {source_name}:{line_number}"
+            if conditional_stack.pop() == "foundation-positive":
+                active_foundation_guards -= 1
+            continue
+        if stripped.startswith("//"):
+            continue
+        referenced = [symbol for symbol in FOUNDATION_MODELS_SYMBOLS if symbol in line]
+        assert not referenced or active_foundation_guards > 0, (
+            f"unguarded Foundation Models reference in {source_name}:{line_number}: {referenced}"
+        )
+
+    assert not conditional_stack, f"unterminated compile condition in {source_name}"
+
+
+def _available_block_body(source: str, availability: str) -> str:
+    return _swift_function_body(source, f"if #available({availability}, *)")
 
 
 def test_result_screen_has_a_visible_process_another_reset_action() -> None:
@@ -138,6 +206,43 @@ def test_required_app_project_files_exist() -> None:
         assert path.is_file(), f"missing required app-project file: {path}"
 
 
+def test_agent_guide_has_guided_safe_client_controls_and_offline_fixtures() -> None:
+    model = _read(AGENT_GUIDE_MODEL)
+    view = _read(AGENT_GUIDE_VIEW)
+    support = _read(UI_TEST_SUPPORT)
+
+    for state in (
+        "case unavailable",
+        "case inspecting",
+        "case disconnected",
+        "case connected(helperPath: String)",
+        "case conflict",
+        "case failed",
+    ):
+        assert state in model
+
+    for identifier in (
+        "studio.agent-guide.client.",
+        "studio.agent-guide.scope",
+        "studio.agent-guide.confirm-change",
+        "studio.agent-guide.connect",
+        "studio.agent-guide.disconnect",
+        "studio.agent-guide.client-status",
+    ):
+        assert identifier in view
+
+    assert "Other stdio clients" in view
+    assert "copy-only" in view
+    assert "restart or reload normally" in model
+    for prohibited in ("forceQuit", "terminate()", "kill("):
+        assert prohibited not in view
+        assert prohibited not in model
+
+    assert "LOCALOCR_STUDIO_AGENT_STATE" in support
+    for fixture in ("disconnected", "connected", "conflict", "failure"):
+        assert f"case {fixture}" in support
+
+
 def test_project_source_of_truth_has_exact_release_settings() -> None:
     spec = _read(PROJECT_SPEC)
 
@@ -156,6 +261,132 @@ def test_project_source_of_truth_has_exact_release_settings() -> None:
         r"\s+product:\s*LocalOCRStudioKit\s*$",
         spec,
     )
+
+
+def test_local_intelligence_is_linked_to_every_shipping_surface() -> None:
+    manifest = _read(PACKAGE_MANIFEST)
+
+    assert 'platforms: [.macOS(.v14)]' in manifest
+    for target in ("LocalOCRStudioKit", "LocalOCRCommandKit", "LocalOCRMCP"):
+        target_block = re.search(
+            rf'\.target\(\s*name: "{target}",(?P<body>.*?)\n\s*\),',
+            manifest,
+            re.DOTALL,
+        )
+        assert target_block, f"missing package target {target}"
+        assert '"LocalOCRIntelligence"' in target_block["body"]
+
+
+def test_foundation_models_symbols_are_compile_and_availability_guarded() -> None:
+    provider = _read(INTELLIGENCE_PROVIDER)
+    generated_types = _read(INTELLIGENCE_GENERATED_TYPES)
+    intelligence_environment = _read(INTELLIGENCE_ENVIRONMENT)
+    mcp_entry = _read(MCP_ENTRY_POINT)
+    app_entry = _read(APP_ENTRY_POINT)
+
+    guarded_sources = {
+        str(INTELLIGENCE_PROVIDER): provider,
+        str(INTELLIGENCE_GENERATED_TYPES): generated_types,
+        str(INTELLIGENCE_ENVIRONMENT): intelligence_environment,
+        str(MCP_ENTRY_POINT): mcp_entry,
+        str(APP_ENTRY_POINT): app_entry,
+    }
+    for source_name, source in guarded_sources.items():
+        _assert_foundation_models_references_are_compile_guarded(source, source_name)
+
+    assert "@available(macOS 26.0, *)" in provider
+    assert "@available(macOS 26.0, *)" in generated_types
+    available_body = _available_block_body(intelligence_environment, "macOS 26.0")
+    assert "FoundationModelsIntelligenceProvider()" in available_body
+
+
+def test_mcp_uses_the_shared_read_only_local_model_selection_router() -> None:
+    mcp_entry = _read(MCP_ENTRY_POINT)
+
+    assert "LocalIntelligenceEnvironment.live(" in mcp_entry
+    assert "bridgeLocator: RelativeModelBridgeExecutableLocator()" in mcp_entry
+    assert "intelligence: intelligenceEnvironment.router" in mcp_entry
+    assert "FoundationModelsIntelligenceProvider()" not in mcp_entry
+    for prohibited in (
+        ".selectApple(",
+        ".selectExternal(",
+        ".resetSelection(",
+        "LocalIntelligenceSelectionStore(",
+    ):
+        assert prohibited not in mcp_entry
+
+
+def test_foundation_models_guard_contract_rejects_appended_unguarded_symbols() -> None:
+    for source_path in (
+        INTELLIGENCE_PROVIDER,
+        INTELLIGENCE_GENERATED_TYPES,
+        INTELLIGENCE_ENVIRONMENT,
+        MCP_ENTRY_POINT,
+        APP_ENTRY_POINT,
+    ):
+        malicious = _read(source_path) + "\nlet leaked = FoundationModelsIntelligenceProvider()\n"
+        with pytest.raises(AssertionError, match="unguarded Foundation Models reference"):
+            _assert_foundation_models_references_are_compile_guarded(
+                malicious,
+                str(source_path),
+            )
+
+
+def test_shipping_sources_do_not_import_network_frameworks() -> None:
+    shipping_sources = [
+        *ROOT.glob("App/**/*.swift"),
+        *ROOT.glob("Sources/**/*.swift"),
+    ]
+    network_import = re.compile(r"(?m)^\s*import\s+(?:CFNetwork|Network)\s*$")
+
+    assert shipping_sources
+    assert not [path for path in shipping_sources if network_import.search(_read(path))]
+
+
+def test_unsigned_studio_build_rejects_source_policy_drift_before_xcodebuild(
+    tmp_path: Path,
+) -> None:
+    copy = tmp_path / "policy-repo"
+    shutil.copytree(
+        ROOT,
+        copy,
+        ignore=shutil.ignore_patterns(".build", ".git", ".venv", "dist"),
+    )
+    vendored_source = copy / "Sources" / "MCPStdio" / "MCPStdio.swift"
+    vendored_source.write_text(vendored_source.read_text() + "\npublic let drift = true\n")
+    build_script = copy / "scripts" / "build-unsigned-studio-app.sh"
+    xcode_marker = tmp_path / "xcodebuild-was-called"
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            (
+                'source "$1"\n'
+                'marker="$2"\n'
+                'select_release_developer_dir() { : > "$marker"; return 91; }\n'
+                "run_studio_build\n"
+            ),
+            "unsigned-source-policy",
+            str(build_script),
+            str(xcode_marker),
+        ],
+        cwd=copy,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "MCP stdio source policy rejected" in result.stderr
+    assert not xcode_marker.exists(), "Xcode build began before source policy passed"
+
+
+def test_unsigned_release_build_compiles_ui_tests_without_requiring_automation_mode() -> None:
+    script = _read(BUILD_SCRIPT)
+
+    assert '"$release_xcodebuild_path" build-for-testing' in script
+    assert '"$release_xcodebuild_path" test \\' not in script
 
 
 def test_project_enables_hardening_without_network_or_debug_entitlements() -> None:
@@ -228,6 +459,17 @@ def test_ui_fixtures_are_debug_only_and_require_a_test_session_marker() -> None:
         "empty",
         "result",
         "resultBusy",
+        "intelligenceAvailable",
+        "intelligenceRunning",
+        "intelligenceResults",
+        "intelligenceMacOSUnavailable",
+        "intelligenceDeviceIneligible",
+        "intelligenceDisabled",
+        "intelligenceNotReady",
+        "intelligenceUnsupportedLanguage",
+        "intelligenceError",
+        "modelManager",
+        "modelRecovery",
         "error",
         "batchReview",
         "batchProcessing",
@@ -279,6 +521,7 @@ def test_unsigned_build_script_has_stable_toolchain_and_confined_paths() -> None
     assert "CODE_SIGNING_REQUIRED=NO" in script
     assert "ARCHS=arm64" in script
     assert "validate_release_bundle_metadata" in script
+    assert "validate_local_intelligence_candidate_binary" in script
     assert re.search(
         r'/usr/bin/lipo\s+"[$]executable"\s+-verify_arch\s+arm64',
         script,
@@ -833,8 +1076,8 @@ def _write_staged_app(
             {
                 "CFBundleIdentifier": bundle_identifier,
                 "CFBundleIconName": "AppIcon",
-                "CFBundleShortVersionString": "0.3.0",
-                "CFBundleVersion": "3",
+                "CFBundleShortVersionString": "0.3.1",
+                "CFBundleVersion": "4",
                 "LSMinimumSystemVersion": minimum_os,
             },
             plist,
@@ -847,6 +1090,7 @@ def _write_staged_app(
                 "/usr/bin/clang",
                 "-arch",
                 "arm64",
+                f"-mmacosx-version-min={minimum_os}",
                 "-x",
                 "c",
                 "-o",

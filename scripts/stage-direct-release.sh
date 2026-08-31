@@ -14,6 +14,11 @@ native_tools_dir="$release_root/native-tools"
 plist_buddy="/usr/libexec/PlistBuddy"
 physical_unsigned_app=""
 expected_main_executable_name="LocalOCR Studio"
+canonical_release_root=""
+release_candidate=""
+release_candidate_identity=""
+release_dist_identity=""
+release_target_identity="missing"
 
 validate_arm64_architecture() {
     [[ "${1:-}" == "arm64" ]] || {
@@ -24,15 +29,13 @@ validate_arm64_architecture() {
 
 validate_minimum_macos() {
     local version="${1:-}"
-    local major
 
     [[ "$version" =~ ^[0-9]+([.][0-9]+){1,2}$ ]] || {
         echo "invalid minimum macOS version: $version" >&2
         return 1
     }
-    major="${version%%.*}"
-    [[ "$major" -ge 14 ]] || {
-        echo "release binaries must require macOS 14 or later" >&2
+    [[ "$version" == "14.0" ]] || {
+        echo "Local Intelligence release binaries must target macOS 14.0 exactly" >&2
         return 1
     }
 }
@@ -123,6 +126,124 @@ clean_release_root() {
     /bin/rm -rf -- "$release_root"
 }
 
+validate_release_candidate_path() {
+    local candidate="${1:-}"
+    local dist_root="$stage_repo_root/dist"
+
+    case "$candidate" in
+        "$dist_root"/.direct-release.candidate.*) ;;
+        *) return 1 ;;
+    esac
+    [[ "$(/usr/bin/dirname "$candidate")" == "$dist_root" ]] || return 1
+    [[ -d "$candidate" && ! -L "$candidate" ]] || return 1
+    [[ "$(cd "$candidate" && pwd -P)" == "$candidate" ]]
+}
+
+cleanup_release_candidate() {
+    local candidate_name
+
+    [[ -n "$release_candidate" ]] || return 0
+    if [[ ! -e "$release_candidate" && ! -L "$release_candidate" ]]; then
+        release_candidate=""
+        release_candidate_identity=""
+        return 0
+    fi
+    validate_release_candidate_path "$release_candidate" || return 1
+    candidate_name="$(/usr/bin/basename "$release_candidate")"
+    (
+        cd "$stage_repo_root/dist" || exit 1
+        [[ "$(/usr/bin/stat -f '%d:%i' .)" == "$release_dist_identity" ]] || {
+            echo "release dist identity changed before candidate cleanup" >&2
+            exit 1
+        }
+        release_cleanup_anchored_directory \
+            "$candidate_name" \
+            "$release_candidate_identity" \
+            "$release_dist_identity"
+    ) || return 1
+    release_candidate=""
+    release_candidate_identity=""
+}
+
+prepare_release_candidate() {
+    local dist_root="$stage_repo_root/dist"
+
+    canonical_release_root="$release_root"
+    [[ -d "$dist_root" && ! -L "$dist_root" ]] || {
+        echo "release dist parent must be a physical directory" >&2
+        return 1
+    }
+    release_dist_identity="$(
+        /usr/bin/swift "$release_path_guard" token-directory "$dist_root"
+    )" || return 1
+    if [[ -e "$canonical_release_root" || -L "$canonical_release_root" ]]; then
+        [[ -d "$canonical_release_root" && ! -L "$canonical_release_root" ]] || {
+            echo "existing direct release must be a physical directory" >&2
+            return 1
+        }
+        release_target_identity="$(
+            /usr/bin/swift "$release_path_guard" \
+                token-directory "$canonical_release_root"
+        )" || return 1
+    fi
+    release_candidate="$(
+        /usr/bin/mktemp -d "$dist_root/.direct-release.candidate.XXXXXX"
+    )" || return 1
+    validate_release_candidate_path "$release_candidate" || return 1
+    release_candidate_identity="$(
+        /usr/bin/swift "$release_path_guard" \
+            token-directory "$release_candidate"
+    )" || return 1
+    release_root="$release_candidate"
+    evidence_dir="$release_root/evidence"
+    staged_app="$release_root/staged/LocalOCR Studio.app"
+    native_tools_dir="$release_root/native-tools"
+}
+
+publish_release_candidate() {
+    local candidate_name
+    local publication_result
+
+    validate_release_candidate_path "$release_candidate" || return 1
+    candidate_name="$(/usr/bin/basename "$release_candidate")"
+    publication_result="$(
+        release_publish_directory_atomically \
+            "$release_candidate" \
+            "$canonical_release_root" \
+            "$release_dist_identity" \
+            "$release_candidate_identity" \
+            "$release_target_identity"
+    )" || {
+        echo "could not atomically publish validated direct release" >&2
+        return 1
+    }
+    case "$publication_result" in
+        moved)
+            [[ "$release_target_identity" == "missing" ]] || return 1
+            ;;
+        exchanged)
+            [[ "$release_target_identity" != "missing" ]] || return 1
+            (
+                cd "$stage_repo_root/dist" || exit 1
+                release_cleanup_anchored_directory \
+                    "$candidate_name" \
+                    "$release_target_identity" \
+                    "$release_dist_identity"
+            ) || return 1
+            ;;
+        *)
+            echo "unexpected direct-release publication result" >&2
+            return 1
+            ;;
+    esac
+    release_candidate=""
+    release_candidate_identity=""
+    release_root="$canonical_release_root"
+    evidence_dir="$release_root/evidence"
+    staged_app="$release_root/staged/LocalOCR Studio.app"
+    native_tools_dir="$release_root/native-tools"
+}
+
 resolve_main_executable() {
     local app_path="${1:-}"
     local executable_name="${2:-}"
@@ -184,110 +305,32 @@ require_expected_plist_value() {
 }
 
 binary_minimum_macos() {
-    /usr/bin/otool -l "$1" |
-        /usr/bin/awk '
-            $1 == "cmd" && $2 == "LC_BUILD_VERSION" {
-                in_build_version = 1
-                next
-            }
-            in_build_version && $1 == "minos" && !printed {
-                print $2
-                printed = 1
-                in_build_version = 0
-            }
-        '
+    release_binary_minimum_macos "$1"
 }
 
 validate_canonical_system_install_name() {
-    local install_name="$1"
-    local relative_path
-    local component
-    local -a components
-
-    case "$install_name" in
-        /System/Library/?*)
-            relative_path="${install_name#/System/Library/}"
-            ;;
-        /usr/lib/?*)
-            relative_path="${install_name#/usr/lib/}"
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-    [[ "$install_name" != *//* && "$install_name" != */ ]] || return 1
-    IFS=/ read -r -a components <<< "$relative_path"
-    for component in "${components[@]}"; do
-        [[ -n "$component" && "$component" != "." && "$component" != ".." ]] || {
-            return 1
-        }
-    done
+    release_validate_canonical_system_install_name "$1"
 }
 
 validate_install_name() {
-    local install_name="${1:-}"
-
-    if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
-        return 0
-    fi
-    validate_canonical_system_install_name "$install_name" || {
-        echo "unapproved dynamic-library install name: ${install_name:-<empty>}" >&2
-        return 1
-    }
+    release_validate_local_only_install_name "${1:-}" "${2:-false}"
 }
 
 validate_rpath() {
-    [[ "${1:-}" == "/usr/lib/swift" ]] || {
-        echo "unapproved LC_RPATH: ${1:-<empty>}" >&2
-        return 1
-    }
+    release_validate_rpath_value "${1:-}" false
 }
 
 validate_release_binary() {
     local binary="$1"
-    local file_description
-    local architectures
-    local minimum_macos
-
     [[ -f "$binary" && ! -L "$binary" ]] || {
         echo "release binary is missing or symlinked: $binary" >&2
         return 1
     }
-    file_description="$(/usr/bin/file -b "$binary")"
-    [[ "$file_description" == *"Mach-O 64-bit executable arm64"* ]] || {
-        echo "release binary is not an arm64 Mach-O executable: $binary" >&2
-        return 1
-    }
-    architectures="$(/usr/bin/lipo -archs "$binary")"
-    validate_arm64_architecture "$architectures"
-    minimum_macos="$(binary_minimum_macos "$binary")"
-    validate_minimum_macos "$minimum_macos"
+    release_validate_binary_architecture_and_target "$binary"
 }
 
 validate_binary_dependencies() {
-    local binary="$1"
-    local dependency_output
-    local dependency_line
-    local install_name
-
-    dependency_output="$(/usr/bin/otool -L "$binary")"
-    while IFS= read -r dependency_line; do
-        [[ -n "$dependency_line" ]] || continue
-        install_name="$(
-            printf '%s\n' "$dependency_line" |
-                /usr/bin/awk '{ print $1 }'
-        )"
-        validate_install_name "$install_name"
-        if [[ "$install_name" == "@rpath/libswiftCompatibilitySpan.dylib" ]]; then
-            [[ "$dependency_line" == *", weak)" ]] || {
-                echo "libswiftCompatibilitySpan.dylib must be weak-linked" >&2
-                return 1
-            }
-        fi
-    done < <(
-        printf '%s\n' "$dependency_output" |
-            /usr/bin/awk 'NR > 1 { sub(/^[[:space:]]+/, ""); print }'
-    )
+    release_validate_binary_dependencies "$1" "${2:-false}"
 }
 
 binary_rpaths() {
@@ -317,25 +360,7 @@ binary_rpaths() {
 }
 
 validate_binary_rpaths() {
-    local binary="$1"
-    local allow_removable_framework_rpath="${2:-false}"
-    local rpath_output
-    local rpath
-
-    rpath_output="$(binary_rpaths "$binary")" || {
-        echo "could not parse every LC_RPATH in: $binary" >&2
-        return 1
-    }
-    while IFS= read -r rpath; do
-        [[ -n "$rpath" ]] || continue
-        if [[
-            "$allow_removable_framework_rpath" == true &&
-            "$rpath" == "@executable_path/../Frameworks"
-        ]]; then
-            continue
-        fi
-        validate_rpath "$rpath"
-    done <<< "$rpath_output"
+    release_validate_binary_rpaths "$1" "${2:-false}"
 }
 
 remove_removable_framework_rpath() {
@@ -369,16 +394,8 @@ reject_private_user_paths() {
             ! -path "$app_path/Contents/Helpers/*" \
             -print0 |
             while IFS= read -r -d '' candidate; do
-                if /usr/bin/grep -a -F -q -- "/Users/" "$candidate"; then
-                    echo "app resource contains a private /Users/ path: $candidate" >&2
-                    exit 1
-                else
-                    grep_status=$?
-                    [[ "$grep_status" -eq 1 ]] || {
-                        echo "could not inspect app resources for private paths: $candidate" >&2
-                        exit 1
-                    }
-                fi
+                release_reject_private_or_build_path \
+                    "$candidate" "$stage_repo_root" || exit 1
             done
         scan_statuses="${PIPESTATUS[*]}"
     } || :
@@ -425,7 +442,10 @@ validate_exact_staged_helpers() {
     }
     unexpected_helper="$(
         /usr/bin/find "$helpers_dir" -mindepth 1 -maxdepth 1 \
-            ! -name localocr ! -name localocr-mcp -print -quit
+            ! -name localocr \
+            ! -name localocr-mcp \
+            ! -name localocr-model-bridge \
+            -print -quit
     )" || {
         echo "could not inspect staged helpers" >&2
         return 1
@@ -434,12 +454,21 @@ validate_exact_staged_helpers() {
         echo "unexpected staged helper: $unexpected_helper" >&2
         return 1
     }
-    for helper in localocr localocr-mcp; do
+    for helper in localocr localocr-mcp localocr-model-bridge; do
         validate_release_binary "$helpers_dir/$helper"
-        validate_binary_dependencies "$helpers_dir/$helper"
+        if [[ "$helper" == localocr-model-bridge ]]; then
+            validate_binary_dependencies "$helpers_dir/$helper" true
+        else
+            validate_binary_dependencies "$helpers_dir/$helper"
+        fi
         validate_binary_rpaths "$helpers_dir/$helper"
-        release_validate_binary_policy "$helpers_dir/$helper" false true
+        release_validate_binary_policy \
+            "$helpers_dir/$helper" false true \
+            "$([[ "$helper" == localocr-model-bridge ]] && printf true || printf false)"
     done
+    "$stage_script_dir/validate-model-bridge-policy.py" \
+        --source-root "$stage_repo_root" \
+        --binary "$helpers_dir/localocr-model-bridge"
 }
 
 validate_nested_code_allowlist() {
@@ -464,7 +493,7 @@ validate_nested_code_allowlist() {
                 case "$relative_candidate" in
                     "Contents/MacOS/$expected_main_executable_name")
                         ;;
-                    Contents/Helpers/localocr|Contents/Helpers/localocr-mcp)
+                    Contents/Helpers/localocr|Contents/Helpers/localocr-mcp|Contents/Helpers/localocr-model-bridge)
                         [[ "$include_helpers" == true ]] || {
                             echo "unexpected nested code: $relative_candidate" >&2
                             exit 1
@@ -517,17 +546,21 @@ record_staged_pre_signing_hashes() {
     local staged_main_executable="$staged_app/Contents/MacOS/$expected_main_executable_name"
     local localocr_binary="$staged_app/Contents/Helpers/localocr"
     local localocr_mcp_binary="$staged_app/Contents/Helpers/localocr-mcp"
+    local localocr_model_bridge_binary="$staged_app/Contents/Helpers/localocr-model-bridge"
     local staged_main_hash
     local localocr_hash
     local localocr_mcp_hash
+    local localocr_model_bridge_hash
 
     staged_main_hash="$(/usr/bin/shasum -a 256 "$staged_main_executable" | /usr/bin/awk '{ print $1 }')"
     localocr_hash="$(/usr/bin/shasum -a 256 "$localocr_binary" | /usr/bin/awk '{ print $1 }')"
     localocr_mcp_hash="$(/usr/bin/shasum -a 256 "$localocr_mcp_binary" | /usr/bin/awk '{ print $1 }')"
+    localocr_model_bridge_hash="$(/usr/bin/shasum -a 256 "$localocr_model_bridge_binary" | /usr/bin/awk '{ print $1 }')"
     {
         printf '%s  %s\n' "$staged_main_hash" "staged/LocalOCR Studio.app/Contents/MacOS/$expected_main_executable_name"
         printf '%s  %s\n' "$localocr_hash" "staged/LocalOCR Studio.app/Contents/Helpers/localocr"
         printf '%s  %s\n' "$localocr_mcp_hash" "staged/LocalOCR Studio.app/Contents/Helpers/localocr-mcp"
+        printf '%s  %s\n' "$localocr_model_bridge_hash" "staged/LocalOCR Studio.app/Contents/Helpers/localocr-model-bridge"
     } > "$evidence_dir/pre-signing-sha256.txt"
 }
 
@@ -557,17 +590,20 @@ stage_direct_release() {
     )"
     validate_release_binary "$unsigned_main_executable"
     validate_binary_dependencies "$unsigned_main_executable"
+    release_validate_no_network_symbols "$unsigned_main_executable"
     validate_binary_rpaths "$unsigned_main_executable" true
     reject_unsigned_app_helpers "$physical_unsigned_app"
     validate_nested_code_allowlist "$physical_unsigned_app"
     reject_private_user_paths "$physical_unsigned_app"
 
-    clean_release_root
+    release_validate_mcp_source_policy "$stage_repo_root"
+    prepare_release_candidate
+    trap 'cleanup_release_candidate || true' EXIT
     /bin/mkdir -p "$evidence_dir"
 
-    configure_release_developer_dir
+    configure_release_developer_dir "$release_root"
     "$stage_script_dir/build-native-tools.sh" --artifact-dir "$native_tools_dir"
-    for helper in localocr localocr-mcp; do
+    for helper in localocr localocr-mcp localocr-model-bridge; do
         [[ -f "$native_tools_dir/$helper" ]] || {
             echo "native helper not found after build: $helper" >&2
             return 1
@@ -579,20 +615,23 @@ stage_direct_release() {
     /bin/mkdir -p "$staged_app/Contents/Helpers"
     /usr/bin/ditto "$native_tools_dir/localocr" "$staged_app/Contents/Helpers/localocr"
     /usr/bin/ditto "$native_tools_dir/localocr-mcp" "$staged_app/Contents/Helpers/localocr-mcp"
+    /usr/bin/ditto "$native_tools_dir/localocr-model-bridge" "$staged_app/Contents/Helpers/localocr-model-bridge"
     /bin/chmod 0755 \
         "$staged_app/Contents/Helpers/localocr" \
-        "$staged_app/Contents/Helpers/localocr-mcp"
+        "$staged_app/Contents/Helpers/localocr-mcp" \
+        "$staged_app/Contents/Helpers/localocr-model-bridge"
     remove_removable_framework_rpath \
         "$staged_app/Contents/MacOS/$expected_main_executable_name"
     sanitize_validated_release_binary \
         "$staged_app/Contents/MacOS/$expected_main_executable_name" \
         "$release_root/staged/LocalOCR Studio.app/Contents/MacOS/$expected_main_executable_name" \
         false
-    for helper in localocr localocr-mcp; do
+    for helper in localocr localocr-mcp localocr-model-bridge; do
         sanitize_validated_release_binary \
             "$staged_app/Contents/Helpers/$helper" \
             "$release_root/staged/LocalOCR Studio.app/Contents/Helpers/$helper" \
-            false
+            false false \
+            "$([[ "$helper" == localocr-model-bridge ]] && printf true || printf false)"
     done
     reject_tree_symlinks "$staged_app"
     clear_staged_app_xattrs "$staged_app"
@@ -626,9 +665,15 @@ stage_direct_release() {
         false \
         true
     validate_exact_staged_helpers "$staged_app"
+    "$stage_script_dir/validate-model-bridge-policy.py" \
+        --source-root "$stage_repo_root" \
+        --binary "$staged_app/Contents/Helpers/localocr-model-bridge" \
+        > "$evidence_dir/model-bridge-policy.json"
     validate_nested_code_allowlist "$staged_app" true
     reject_private_user_paths "$staged_app"
     record_staged_pre_signing_hashes
+    publish_release_candidate
+    trap - EXIT
 }
 
 case "${1:-}" in
@@ -639,6 +684,10 @@ case "${1:-}" in
     --test-minimum-macos)
         [[ "$#" -eq 2 ]] || exit 2
         validate_minimum_macos "$2"
+        ;;
+    --test-install-name)
+        [[ "$#" -eq 2 ]] || exit 2
+        validate_install_name "$2"
         ;;
     --test-cleanup-safety)
         [[ "$#" -eq 3 ]] || exit 2

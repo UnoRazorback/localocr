@@ -1,6 +1,6 @@
 import Foundation
 import LocalOCRService
-import MCP
+import MCPStdio
 
 public enum MCPToolRequest: Sendable, Equatable {
     case pageCount(PageCountRequest)
@@ -9,6 +9,27 @@ public enum MCPToolRequest: Sendable, Equatable {
     case ocrPDFBatch(BatchOCRRequest)
     case ocrImage(ImageOCRRequest)
     case makeSearchablePDF(SearchablePDFRequest)
+    case summarizeDocument(DocumentIntelligenceRequest)
+    case organizeDocument(DocumentIntelligenceRequest)
+    case extractDocumentFields(DocumentFieldExtractionRequest)
+}
+
+public struct DocumentIntelligenceRequest: Sendable, Equatable {
+    public let fileURL: URL
+
+    public init(fileURL: URL) {
+        self.fileURL = fileURL
+    }
+}
+
+public struct DocumentFieldExtractionRequest: Sendable, Equatable {
+    public let fileURL: URL
+    public let fields: [String]
+
+    public init(fileURL: URL, fields: [String]) {
+        self.fileURL = fileURL
+        self.fields = fields
+    }
 }
 
 public enum MCPArgumentError: Error, Sendable, Equatable {
@@ -20,6 +41,7 @@ public enum MCPArgumentError: Error, Sendable, Equatable {
     case invalidDPI
     case invalidBoolean(String)
     case emptyBatch
+    case invalidFields
 
     public var message: String {
         switch self {
@@ -31,6 +53,7 @@ public enum MCPArgumentError: Error, Sendable, Equatable {
         case .invalidDPI: "dpi must be an integer from 72 through 600"
         case let .invalidBoolean(name): "\(name) must be a boolean"
         case .emptyBatch: "file_paths must contain at least one path"
+        case .invalidFields: "fields must contain 1 through 32 unique non-empty strings of at most 128 characters"
         }
     }
 }
@@ -79,6 +102,22 @@ public struct MCPArgumentDecoder: Sendable {
                 outputURL: try optionalPath(named: "output_path", in: arguments),
                 dpi: try dpi(in: arguments),
                 forceOCR: try bool(named: "force_ocr", default: false, in: arguments)
+            ))
+        case "summarize_document":
+            try validate(arguments, allowed: ["file_path"])
+            return .summarizeDocument(DocumentIntelligenceRequest(
+                fileURL: try path(named: "file_path", in: arguments)
+            ))
+        case "organize_document":
+            try validate(arguments, allowed: ["file_path"])
+            return .organizeDocument(DocumentIntelligenceRequest(
+                fileURL: try path(named: "file_path", in: arguments)
+            ))
+        case "extract_document_fields":
+            try validate(arguments, allowed: ["file_path", "fields"])
+            return .extractDocumentFields(DocumentFieldExtractionRequest(
+                fileURL: try path(named: "file_path", in: arguments),
+                fields: try fields(in: arguments)
             ))
         default:
             throw MCPArgumentError.unknownTool(toolName)
@@ -133,5 +172,22 @@ public struct MCPArgumentDecoder: Sendable {
         guard let value = arguments[name] else { return defaultValue }
         guard case let .bool(bool) = value else { throw MCPArgumentError.invalidBoolean(name) }
         return bool
+    }
+
+    private func fields(in arguments: [String: Value]) throws -> [String] {
+        guard let value = arguments["fields"] else { throw MCPArgumentError.missingArgument("fields") }
+        guard case let .array(values) = value, (1 ... 32).contains(values.count) else {
+            throw MCPArgumentError.invalidFields
+        }
+
+        var seen: Set<String> = []
+        return try values.map { value in
+            guard case let .string(name) = value else { throw MCPArgumentError.invalidFields }
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, trimmed.count <= 128, seen.insert(trimmed).inserted else {
+                throw MCPArgumentError.invalidFields
+            }
+            return trimmed
+        }
     }
 }

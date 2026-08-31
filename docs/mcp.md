@@ -1,17 +1,117 @@
-# LocalOCR MCP server
+# LocalOCR MCP FAQ
 
-`localocr-mcp` is a local stdio MCP server for macOS 14 or later. It processes
-the document paths supplied by the MCP client with Apple Vision on the Mac and
-makes no network requests. It does not run an HTTP listener, upload documents,
-or change client configuration by itself.
+Start with the LocalOCR Studio desktop app unless you specifically need an
+agent to automate LocalOCR. The desktop app requires no MCP setup. This page is
+the canonical advanced-use guide for connecting the `localocr-mcp` helper to an
+MCP client.
 
-## Start and configure it
+Beta 2.1 is version `0.3.1`, build `4`, with nine tools and an external-data
+acknowledgment. Its planned tag is `v0.3.1-beta.1`. This guide describes the
+candidate behavior but does not claim signing, notarization, installation, or
+release acceptance before those evidence gates pass.
 
-For the installed Studio beta, configure this absolute helper path:
+## What does local stdio MCP mean?
+
+The MCP client starts `localocr-mcp` as a local child process and exchanges
+MCP messages over the helper's standard input and standard output. LocalOCR
+does not open an HTTP port or expose a network MCP service. The helper exits
+when the client closes that stdio connection.
+
+LocalOCR uses Apple Vision, PDFKit, and optional Apple Foundation Models on the
+Mac without an Internet service. An explicitly selected Ollama or LM Studio
+provider uses a separate app-owned bridge restricted to verified loopback on
+this Mac. Connecting an agent creates a separate
+privacy boundary: the client decides which tool arguments and results enter its
+conversation or provider. Local stdio describes the transport between the
+client and helper; it is not a promise about the client's account, model, logs,
+retention, or network behavior.
+
+### Protocol compatibility and limits
+
+`localocr-mcp` vendors an audited, stdio-only subset of the MCP protocol rather
+than embedding HTTP, OAuth, EventSource, URLSession, or other network
+transports. It supports normal generic, Codex, and Claude Code initialization
+handshakes, then exposes the same nine LocalOCR tools over newline-delimited
+JSON-RPC. The helper accepts at most 1 MiB of UTF-8 JSON per line (the newline
+is excluded). Malformed JSON receives a JSON-RPC parse error. An over-limit
+line is drained only to its newline boundary, then the transport fails closed
+with a parse error: it dispatches neither that line nor a following line, and
+the client must start a new helper session. Unknown methods receive
+method-not-found; notifications do not receive replies. Protocol records are
+the helper's only stdout output. Closing stdin ends the local session cleanly.
+
+This transport boundary is not an external-provider boundary. A connected
+client may still pass supplied paths, recognized text, tool arguments, or
+results to its own service under that provider's privacy and retention terms.
+LocalOCR does not change, audit, or inherit those terms.
+
+## External-provider disclosure and consent
+
+Every one of the nine document tools is blocked until the current LocalOCR MCP
+acknowledgment has been accepted. Argument validation can occur first, but a
+blocked tool does not open the requested document. This gate applies to the six
+OCR/PDF tools as well as the three Local Intelligence tools because any tool
+argument or result may be handled by the connected client.
+
+LocalOCR and Apple Foundation Models process documents locally on this Mac,
+and LocalOCR does not upload them. When you connect LocalOCR to an agent
+through MCP, that MCP client or its AI provider may send filenames, paths,
+document text, summaries, extracted fields, and tool results to an outside
+service. Transmission, retention, model training, and other handling are
+controlled by the agent and provider, not LocalOCR. Review their privacy and
+data policies, and only continue if you are authorized to share the data.
+
+Acceptance requires both statements:
+
+- **I understand that my MCP client or agent may transmit LocalOCR inputs and results to an outside provider.**
+- **I confirm that I am authorized to share this data and choose to enable LocalOCR MCP document tools.**
+
+In LocalOCR Studio, open **Help > Connect to Your Agent**, check both statements
+for that presentation, then choose **Accept & Enable MCP Tools**. The same
+window shows receipt status and can revoke consent. An app installed in the
+normal Applications folder includes a separate adjacent CLI helper at
+`/Applications/LocalOCR Studio.app/Contents/Helpers/localocr`. Use that CLI
+path—not the `localocr-mcp` server path—to manage consent:
+
+```bash
+"/Applications/LocalOCR Studio.app/Contents/Helpers/localocr" mcp-consent status
+"/Applications/LocalOCR Studio.app/Contents/Helpers/localocr" mcp-consent accept
+"/Applications/LocalOCR Studio.app/Contents/Helpers/localocr" mcp-consent revoke
+```
+
+Bare `localocr mcp-consent ...` is equivalent only when that CLI executable is
+intentionally on the shell's `PATH`. Source-build commands use a different path
+and are documented separately below.
+
+`accept` requires an interactive terminal and two `y` or `yes` answers; there
+is no noninteractive acceptance flag. `revoke` takes effect on the next tool
+call, including in an already-running MCP session. The content-free local
+receipt contains no document path, OCR text, or provider identity. A missing,
+invalid, revoked, or outdated receipt fails closed.
+
+## Advanced setup
+
+LocalOCR can detect supported Codex and Claude Code installations. After MCP
+consent is current, it shows the exact client, helper path, and scope and
+requires a separate confirmation before running that client's own `mcp add` or
+`mcp remove` command. It never force-quits the client. Generic clients remain
+copy-only because their configuration contract is unknown.
+
+### Installed LocalOCR Studio app
+
+Use the actual absolute location of the app. For the normal Applications-folder
+installation, the bundled helper path is:
 
 ```text
 /Applications/LocalOCR Studio.app/Contents/Helpers/localocr-mcp
 ```
+
+The same bundle contains three different executables:
+
+- `Contents/Helpers/localocr-mcp` is the stdio MCP server configured in the client.
+- `Contents/Helpers/localocr` is the CLI used for consent status, acceptance, and revocation.
+- `Contents/Helpers/localocr-model-bridge` is an app-owned bridge for bounded,
+  verified loopback Ollama and LM Studio operations. It is not an MCP server.
 
 ### Codex
 
@@ -22,21 +122,26 @@ codex mcp list
 ```
 
 Use `/mcp` in Codex to inspect the connected server. The Codex CLI, IDE
-extension, and desktop app share MCP configuration on the same Codex host. See
-the current [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp).
+extension, and desktop app share MCP configuration on the same Codex host. The
+Codex has no project or user scope option for the installed `mcp add` or
+`mcp remove` commands. Disconnect separately with
+`codex mcp remove localocr`. See the
+current [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp).
 
 ### Claude Code
 
 ```bash
-claude mcp add --transport stdio localocr -- \
+claude mcp add --transport stdio --scope local localocr -- \
   "/Applications/LocalOCR Studio.app/Contents/Helpers/localocr-mcp"
 claude mcp list
 ```
 
 Use `/mcp` in Claude Code to inspect status. Claude Code defaults to
-local/project scope; add `--scope user` only when you intentionally want
-LocalOCR available across projects. See the current [Claude Code MCP
-documentation](https://code.claude.com/docs/en/mcp).
+local scope for the current project; the command makes that scope explicit.
+Add `--scope user` only when you intentionally want LocalOCR across projects.
+Disconnect from the matching scope with
+`claude mcp remove --scope local localocr`. See the current
+[Claude Code MCP documentation](https://code.claude.com/docs/en/mcp).
 
 ### Other MCP clients
 
@@ -50,27 +155,44 @@ entry; LocalOCR does not edit client configuration:
 }
 ```
 
-See the [advanced MCP setup in the Beta 1 Tester Guide](../BETA_TESTING.md#advanced-mcp-setup)
-for the optional installed-app workflow and safe example prompts.
-
 ### Source builds for developers
 
-To build local development artifacts, run:
+Keep source-build paths separate from an installed app. From the repository
+root, build a release executable and configure its absolute path:
 
 ```bash
-scripts/build-native-tools.sh
-scripts/smoke-native-tools.sh
+swift build -c release --product localocr
+swift build -c release --product localocr-mcp
+codex mcp add localocr-source -- "/path/to/localocr/.build/release/localocr-mcp"
+# Or, for Claude Code's current-project scope:
+claude mcp add --transport stdio --scope local localocr-source -- \
+  "/path/to/localocr/.build/release/localocr-mcp"
 ```
 
-The extension manifest invokes `localocr-mcp` by name. Put the built native
-executable on the client's `PATH` before enabling that extension; the
-extension does not bundle an executable or a runtime.
+Manage consent with the CLI from that same source build:
+
+```bash
+"/path/to/localocr/.build/release/localocr" mcp-consent status
+"/path/to/localocr/.build/release/localocr" mcp-consent accept
+"/path/to/localocr/.build/release/localocr" mcp-consent revoke
+```
+
+The repository's `scripts/build-native-tools.sh` alternative writes
+`dist/native-tools/localocr`, `dist/native-tools/localocr-mcp`, and
+`dist/native-tools/localocr-model-bridge`. Use the first for consent commands,
+give the client an absolute path to the second, and do not configure the third
+as an MCP server.
+The extension manifest invokes
+`localocr-mcp` by name instead; put a built native executable on that client's
+`PATH` before enabling the extension. The extension does not bundle an
+executable or runtime.
 
 The server starts when the client invokes it, communicates through standard
 input/output for that session, and exits when the client closes the stdio
-connection. It needs the operating system permissions required to read the
-local document paths supplied to its tools and to write a requested searchable
-PDF destination. Relative document paths are resolved from the server's
+connection. The client process and helper need macOS filesystem permissions to
+read the local document paths supplied to tools and to write a requested
+searchable-PDF destination. Full Disk Access is not automatically required;
+grant only the narrow access needed for the folders you choose. Relative paths are resolved from the server's
 working directory; absolute paths avoid that ambiguity.
 
 ## Tools
@@ -164,6 +286,100 @@ Returns `output_path` and `failed_pages`. The source is left untouched. The
 output path must not already exist and must not resolve to the source file;
 when `failed_pages` is non-empty, the new output is partial.
 
+### `summarize_document`
+
+| Parameter | Meaning |
+| --- | --- |
+| `file_path` (required string) | Local PDF or ImageIO-decodable image path. |
+
+Recognizes the document locally, then returns a grounded `text` summary and
+`citations`. Each citation identifies a one-based source `page` and an exact
+`quote` from the recognized text.
+
+### `organize_document`
+
+| Parameter | Meaning |
+| --- | --- |
+| `file_path` (required string) | Local PDF or ImageIO-decodable image path. |
+
+Returns a suggested `title`, `category`, up to five `tags`, and grounded page
+`citations`. It suggests metadata; it does not rename, move, or alter the
+source document.
+
+### `extract_document_fields`
+
+| Parameter | Meaning |
+| --- | --- |
+| `file_path` (required string) | Local PDF or ImageIO-decodable image path. |
+| `fields` (required array of strings) | From 1 through 32 unique, non-empty requested names, each at most 128 characters after trimming. |
+
+Returns only the requested names. Each field contains `name`, nullable
+`value`, nullable one-based `source_page`, and nullable exact `evidence`.
+Missing or unsupported values remain `null`; the model is not asked to fill in
+facts without source support.
+
+## Local Intelligence availability and privacy
+
+The six OCR/PDF tools remain available on supported macOS 14-or-later Apple
+silicon systems even when Local Intelligence is unavailable. The three tools
+`summarize_document`, `organize_document`, and `extract_document_fields`
+additionally require an available, explicitly selected local provider.
+
+Apple Foundation Models requires all of the following:
+
+- macOS 26 or later;
+- an eligible Mac for Apple Intelligence;
+- Apple Intelligence enabled in System Settings;
+- the on-device model ready after setup or download; and
+- a currently supported Apple Intelligence language.
+
+The helper reports distinct unavailable states when the OS is too old, the Mac
+is not eligible, Apple Intelligence is not enabled, the model is not ready, or
+the current language is not supported. These states do not disable ordinary
+OCR and PDF tools.
+
+On compatible Macs, LocalOCR can also detect Ollama and LM Studio models through
+exact IPv4 or IPv6 loopback routes. Detection is not selection. A model must
+pass locality, identity, and grounded-task qualification, and the user must
+select it and accept the displayed third-party harness acknowledgment. Remote,
+relayed, wildcard, and locality-ambiguous endpoints are refused. Generic
+OpenAI-compatible endpoints are not accepted in Beta 2.1.
+
+Local Intelligence sends only required recognized text and page markers to the
+selected provider. It does not pass the source PDF or image bytes to the model.
+Apple Foundation Models does not use Private Cloud Compute and has no cloud fallback.
+For Ollama or LM Studio, text goes only to the acknowledged harness over
+loopback on this Mac; that harness may keep its own logs or history. LocalOCR
+never silently switches providers.
+
+Every Local Intelligence result includes a `local_model` object identifying the
+selected provider, model identity available from that harness, and local
+processing route. Apple results identify `SystemLanguageModel.default`; Apple
+does not expose the installed system model's specific name or version through
+the public Foundation Models API. Ollama and LM Studio results identify the
+exact qualified model and harness metadata used for that operation.
+
+That local LocalOCR boundary ends at the MCP client. The client may send paths,
+arguments, recognized text, and results to its configured service, so do not
+assume that data remains on your Mac. Codex, Claude Code, and other clients own
+their configuration and account terms; their privacy, retention, training, and
+provider behavior may change. Check the current authoritative client
+documentation and your account settings before using sensitive material.
+
+## Safe first connection
+
+Use a fictional, non-sensitive fixture in a folder the client can read, and
+request a narrow result. For example:
+
+- “Inspect `/path/to/test-invoice.pdf` and report only its page count and whether it already has searchable text.”
+- “OCR `/path/to/test-scan.png` and return only the recognized text.”
+- “Summarize `/path/to/test-letter.pdf` in three factual bullets using Local Intelligence.”
+
+Keep the original document. OCR and model outputs can contain recognition or
+interpretation errors, and beta output contracts may change. The read-only
+tools do not modify the source. `make_searchable_pdf` writes a separate new
+file and refuses to overwrite an existing destination or the source.
+
 ## Local behavior and privacy
 
 The server exists only for the client-managed stdio session and accesses local
@@ -175,3 +391,53 @@ cache directory. Apart from those local cache writes, its only output write is
 a new searchable PDF at a local destination requested by `make_searchable_pdf`.
 That destination must not already exist and must not resolve to the source
 file. The server itself makes no network requests.
+
+## Troubleshooting
+
+### Helper path
+
+If the client reports that the command does not exist, confirm the app's real
+location and use its absolute
+`<installed-app-path>/Contents/Helpers/localocr-mcp` path. Do not use the
+installed-app pattern for a source build; point to that checkout's absolute
+`.build/release/localocr-mcp` or `dist/native-tools/localocr-mcp` instead.
+
+### Client connection
+
+Run `codex mcp list` or `claude mcp list`, then use the client's `/mcp` view if
+available. Confirm that the entry uses stdio and has no HTTP URL. Restart the
+client after a manual configuration change if its current documentation says
+that is required.
+
+### Filesystem permissions
+
+If a tool cannot read a path or write a destination, verify the path and the
+permissions granted to the MCP client that launches the helper. Prefer a small
+test folder such as `/Users/Shared/LocalOCR Test Files` over broad permissions.
+The helper cannot bypass macOS privacy controls or sandbox restrictions.
+
+### Consent required
+
+If a tool returns `external_data_acknowledgment_required`, inspect with
+`localocr mcp-consent status`, then accept interactively in the CLI or use
+**Help > Connect to Your Agent** in Studio. If policy text changes later, the
+old receipt becomes outdated and fresh acceptance is required. To disable all
+document-tool access, run `localocr mcp-consent revoke` or revoke it in Help.
+
+### Local Intelligence unavailable
+
+Confirm the selected provider in **Manage Local Models**. For Apple, confirm
+macOS 26 or later, an eligible Mac, Apple Intelligence enabled, model setup
+complete, and a supported language. For Ollama or LM Studio, start the existing
+local harness, run detection again, review qualification, and reselect the exact
+model if its identity changed. When no provider is available, use the six
+OCR/PDF tools; LocalOCR has no cloud fallback.
+
+## Compatibility and release boundary
+
+The package and app keep a macOS 14 deployment target; Foundation Models code
+is availability-guarded for macOS 26 or later. Development compilation and
+automated verification use stable Xcode 26.6 (`17F113`), Swift 6.3.3, and the
+macOS 26.5 SDK. That is development evidence, not a live provider or release
+acceptance claim. Signature, notarization, download, and target-Mac acceptance
+remain separate gates documented in the [Beta Tester Guide](../BETA_TESTING.md).

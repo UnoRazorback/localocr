@@ -12,6 +12,8 @@ struct StudioResultView: View {
     let result: StudioDocumentResult
     let isCreatingSearchablePDF: Bool
     let searchableProgress: StudioProgress?
+    @Bindable var intelligenceModel: StudioIntelligenceViewModel
+    @Bindable var localModelManager: StudioLocalModelManagerViewModel
     let onProcessAnother: () -> Void
     let onCopy: () -> Void
     let onSaveText: () -> Void
@@ -53,19 +55,26 @@ struct StudioResultView: View {
             }
 
             ScrollView {
-                Text(result.text.isEmpty ? "No text was recognized in this document." : result.text)
-                    .font(.system(size: 15))
-                    .lineSpacing(4)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .padding(26)
-                    .accessibilityIdentifier("studio.result-text")
-            }
-            .background(Color(nsColor: .textBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.75))
+                VStack(spacing: 18) {
+                    Text(result.text.isEmpty ? "No text was recognized in this document." : result.text)
+                        .font(.system(size: 15))
+                        .lineSpacing(4)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding(26)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.75))
+                        }
+                        .accessibilityIdentifier("studio.result-text")
+
+                    StudioLocalIntelligenceView(
+                        model: intelligenceModel,
+                        managerModel: localModelManager
+                    )
+                }
             }
             .shadow(color: .black.opacity(0.045), radius: 12, y: 4)
 

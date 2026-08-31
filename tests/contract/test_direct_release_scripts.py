@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import plistlib
 import re
@@ -21,7 +22,7 @@ ROOT = Path(__file__).parents[2]
 SCRIPTS = ROOT / "scripts"
 EXPECTED_IDENTITY = "Developer ID Application: John Scott Ray (DZ8B5454ZN)"
 EXPECTED_TEAM = "DZ8B5454ZN"
-EXPECTED_HELPERS = ("localocr", "localocr-mcp")
+EXPECTED_HELPERS = ("localocr", "localocr-mcp", "localocr-model-bridge")
 EXPECTED_NOTARY_PROFILE_REFERENCES = {
     "$LOCALOCR_NOTARY_PROFILE",
     "${LOCALOCR_NOTARY_PROFILE}",
@@ -117,6 +118,157 @@ def _script(name: str) -> str:
     path = RELEASE_SCRIPTS[name]
     assert path.is_file(), f"missing direct-release script: {path}"
     return path.read_text()
+
+
+def test_release_scripts_enforce_exact_three_helper_inventory_and_signing_order() -> None:
+    build = (SCRIPTS / "build-native-tools.sh").read_text()
+    stage = _script("stage")
+    sign = _script("sign")
+    verify = _script("verify")
+    download = _script("download")
+
+    for helper in EXPECTED_HELPERS:
+        assert f'--product {helper}' in build
+        assert f'Contents/Helpers/{helper}' in stage
+        assert f'Contents/Helpers/{helper}' in sign
+        assert f'Contents/Helpers/{helper}' in verify
+        assert f'Contents/Helpers/$helper' in download or f'Contents/Helpers/{helper}' in download
+
+    signing_body = sign[sign.index("record_signing_order()") :]
+    helper_positions = [
+        signing_body.index(f'Contents/Helpers/{helper}') for helper in EXPECTED_HELPERS
+    ]
+    app_position = signing_body.index('execute_codesign_command "$app_path"')
+    assert helper_positions == sorted(helper_positions)
+    assert all(position < app_position for position in helper_positions)
+
+    assert "localocr_model_bridge_hash" in stage
+    assert "Contents/Helpers/localocr-model-bridge" in stage
+
+
+def test_model_bridge_policy_validator_accepts_only_bounded_loopback_source() -> None:
+    validator = SCRIPTS / "validate-model-bridge-policy.py"
+    result = subprocess.run(
+        [str(validator), "--source-root", str(ROOT)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    evidence = json.loads(result.stdout)
+    assert evidence["status"] == "pass"
+    assert evidence["allowed_hosts"] == ["127.0.0.1", "::1"]
+    assert evidence["redirects"] == "rejected"
+    assert evidence["proxy_environment"] == "disabled"
+    assert evidence["maximum_response_bytes"] == 1_048_576
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement"),
+    (
+        ("http://127.0.0.1:11434/api/version", "http://example.com/api/version"),
+        ("http://127.0.0.1:11434/api/version", "http://0.0.0.0:11434/api/version"),
+        ("configuration.connectionProxyDictionary = [:]", "// proxy inheritance restored"),
+        ("completionHandler(nil)", "completionHandler(request)"),
+        (
+            "public static let maximumResponseBytes = ModelBridgeLimits.maximumMessageBytes",
+            "public static let maximumResponseBytes = Int.max",
+        ),
+    ),
+)
+def test_model_bridge_policy_validator_rejects_unsafe_source_mutations(
+    tmp_path: Path,
+    needle: str,
+    replacement: str,
+) -> None:
+    source_root = tmp_path / "candidate"
+    shutil.copytree(ROOT / "Sources", source_root / "Sources")
+    loopback = source_root / "Sources" / "LocalOCRModelBridgeKit" / "LoopbackHTTPClient.swift"
+    source = loopback.read_text()
+    assert needle in source
+    loopback.write_text(source.replace(needle, replacement, 1))
+
+    result = subprocess.run(
+        [str(SCRIPTS / "validate-model-bridge-policy.py"), "--source-root", str(source_root)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    evidence = json.loads(result.stdout)
+    assert evidence["status"] == "fail"
+
+
+def _copy_release_policy_repo(tmp_path: Path) -> Path:
+    copy = tmp_path / "policy-repo"
+    shutil.copytree(
+        ROOT,
+        copy,
+        ignore=shutil.ignore_patterns(".build", ".git", ".venv", "dist"),
+    )
+    return copy
+
+
+def _copy_native_build_policy_scripts(destination: Path) -> None:
+    for source in (
+        SCRIPTS / "build-native-tools.sh",
+        SCRIPTS / "release-toolchain.sh",
+        RELEASE_PATH_GUARD,
+        SCRIPTS / "validate-mcp-stdio-policy.py",
+        SCRIPTS / "validate-model-bridge-policy.py",
+    ):
+        shutil.copy2(source, destination)
+    shutil.copy2(ROOT / "Package.swift", destination.parent)
+    shutil.copy2(ROOT / "Package.resolved", destination.parent)
+    shutil.copytree(ROOT / "Sources", destination.parent / "Sources")
+    test_root = destination.parent / "tests"
+    test_root.mkdir()
+    for source in (ROOT / "tests").iterdir():
+        if source.is_dir() and source.name != "contract":
+            shutil.copytree(source, test_root / source.name)
+
+
+def _install_stable_swift_fixture(repo: Path, swift_fixture: Path) -> Path:
+    developer_dir = repo / ".test-stable-xcode" / "Contents" / "Developer"
+    stable_swift = (
+        developer_dir
+        / "Toolchains"
+        / "XcodeDefault.xctoolchain"
+        / "usr"
+        / "bin"
+        / "swift"
+    )
+    stable_swift.parent.mkdir(parents=True)
+    shutil.copy2(swift_fixture, stable_swift)
+    stable_swift.chmod(0o755)
+    xcrun_fixture = developer_dir / "usr" / "bin" / "xcrun"
+    xcrun_fixture.parent.mkdir(parents=True)
+    xcrun_fixture.write_text(
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        'tool="${1:-}"\n'
+        "shift\n"
+        "unset DEVELOPER_DIR\n"
+        'exec /usr/bin/xcrun "$tool" "$@"\n'
+    )
+    xcrun_fixture.chmod(0o755)
+    xcodebuild_fixture = developer_dir / "usr" / "bin" / "xcodebuild"
+    xcodebuild_fixture.write_text(
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        "unset DEVELOPER_DIR\n"
+        'exec /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild "$@"\n'
+    )
+    xcodebuild_fixture.chmod(0o755)
+    toolchain = repo / "scripts" / "release-toolchain.sh"
+    source = toolchain.read_text()
+    original = 'release_developer_dir="/Applications/Xcode.app/Contents/Developer"'
+    replacement = f'release_developer_dir={shlex.quote(str(developer_dir))}'
+    assert original in source
+    toolchain.write_text(source.replace(original, replacement, 1))
+    return stable_swift
 
 
 def _run_script_test(
@@ -642,8 +794,10 @@ def test_direct_release_scripts_enforce_immutable_policy() -> None:
     assert "stapler staple" in notarize_script
     assert "stapler validate" in verify_script
     assert "spctl --assess --type execute" in verify_script
-    assert "otool -L" in verify_script
-    assert "otool -l" in verify_script
+    assert "release_validate_no_network_symbols" in verify_script
+    assert "release_validate_binary_dependencies" in verify_script
+    assert "/usr/bin/otool -L" in toolchain_script
+    assert "/usr/bin/otool -l" in toolchain_script
 
     for helper in EXPECTED_HELPERS:
         assert f"Contents/Helpers/{helper}" in sign_script
@@ -707,6 +861,10 @@ def test_signing_dry_run_records_nested_first_invocation_order(tmp_path: Path) -
     assert invocations == [
         [*expected_prefix, str(staged_app / "Contents" / "Helpers" / "localocr")],
         [*expected_prefix, str(staged_app / "Contents" / "Helpers" / "localocr-mcp")],
+        [
+            *expected_prefix,
+            str(staged_app / "Contents" / "Helpers" / "localocr-model-bridge"),
+        ],
         [*expected_prefix, str(staged_app)],
     ]
 
@@ -733,6 +891,7 @@ def _nested_code_fixture(tmp_path: Path) -> Path:
         macos_dir / "LocalOCR",
         helpers_dir / "localocr",
         helpers_dir / "localocr-mcp",
+        helpers_dir / "localocr-model-bridge",
     ):
         shutil.copyfile("/usr/bin/true", destination)
         destination.chmod(0o755)
@@ -1175,16 +1334,17 @@ def real_unsigned_studio_app():
     try:
         yield UNSIGNED_STUDIO_APP
     finally:
-        restore_debug_mcp = subprocess.run(
-            ["swift", "build", "--product", "localocr-mcp"],
-            cwd=ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        assert restore_debug_mcp.returncode == 0, (
-            restore_debug_mcp.stdout + restore_debug_mcp.stderr
-        )
+        for product in ("localocr", "localocr-mcp", "localocr-model-bridge"):
+            restore_debug_product = subprocess.run(
+                ["swift", "build", "--product", product],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            assert restore_debug_product.returncode == 0, (
+                restore_debug_product.stdout + restore_debug_product.stderr
+            )
 
 
 def _copy_real_unsigned_studio_app(
@@ -1206,8 +1366,8 @@ def _real_app_stage_environment(unsigned_app: Path) -> dict[str, str]:
     env.update(
         {
             "LOCALOCR_UNSIGNED_APP": str(unsigned_app),
-            "LOCALOCR_RELEASE_VERSION": "0.3.0",
-            "LOCALOCR_RELEASE_BUILD": "3",
+            "LOCALOCR_RELEASE_VERSION": "0.3.1",
+            "LOCALOCR_RELEASE_BUILD": "4",
             "LOCALOCR_EXPECTED_BUNDLE_ID": "com.rayconsulting.localocr",
         }
     )
@@ -1277,6 +1437,53 @@ def _compile_macos_fixture(
             architecture,
             f"-mmacosx-version-min={minimum_macos}",
             "-Wl,-headerpad_max_install_names",
+            str(source),
+            "-o",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _compile_ios_fixture(output: Path) -> None:
+    source = output.parent / "ios-fixture-main.c"
+    source.write_text("int main(void) { return 0; }\n")
+    result = subprocess.run(
+        [
+            "/usr/bin/xcrun",
+            "--sdk",
+            "iphoneos",
+            "clang",
+            "-arch",
+            "arm64",
+            "-miphoneos-version-min=14.0",
+            str(source),
+            "-o",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _compile_macos_embedded_marker_fixture(output: Path, marker: str) -> None:
+    source = output.parent / "marker-fixture.c"
+    source.write_text(
+        "__attribute__((used)) static const char marker[] = "
+        f"{json.dumps(marker)}; int main(void) {{ return marker[0] == 0; }}\n"
+    )
+    result = subprocess.run(
+        [
+            "/usr/bin/xcrun",
+            "clang",
+            "-arch",
+            "arm64",
+            "-mmacosx-version-min=14.0",
             str(source),
             "-o",
             str(output),
@@ -1424,6 +1631,31 @@ def _write_cleanup_pausing_path_guard(destination: Path) -> None:
     destination.write_text(source.replace(injection_point, pause + injection_point))
 
 
+def _write_publish_pausing_path_guard(destination: Path) -> None:
+    source = RELEASE_PATH_GUARD.read_text()
+    injection_point = "    switch expectedTarget {\n"
+    assert source.count(injection_point) == 1
+    pause = r'''    if let fifoPath = ProcessInfo.processInfo.environment[
+        "LOCALOCR_TEST_PUBLISH_READY_FIFO"
+    ] {
+        let descriptor = open(fifoPath, O_WRONLY | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw GuardError.system("open publish test rendezvous", errno)
+        }
+        let payload = "\(getpid())\n"
+        let result = payload.withCString { pointer in
+            Darwin.write(descriptor, pointer, strlen(pointer))
+        }
+        close(descriptor)
+        guard result == payload.utf8.count else {
+            throw GuardError.system("write publish test rendezvous", errno)
+        }
+        raise(SIGSTOP)
+    }
+'''
+    destination.write_text(source.replace(injection_point, pause + injection_point))
+
+
 def _wait_for_cleanup_validation(ready_descriptor: int) -> int:
     readable, _, _ = select.select([ready_descriptor], [], [], 30)
     assert readable, "cleanup guard never reached its post-validation rendezvous"
@@ -1537,6 +1769,54 @@ def _binary_dependencies(binary: Path) -> tuple[str, ...]:
     )
 
 
+def _compile_forbidden_url_session_symbol_fixture(output: Path) -> None:
+    subprocess.run(
+        [
+            "/usr/bin/clang",
+            "-arch",
+            "arm64",
+            "-mmacosx-version-min=14.0",
+            "-x",
+            "c",
+            "-",
+            "-Wl,-undefined,dynamic_lookup",
+            "-o",
+            str(output),
+        ],
+        input=(
+            "extern void *NSURLSession;\n"
+            "int main(void) { return NSURLSession != 0; }\n"
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _compile_forbidden_nw_symbol_fixture(output: Path) -> None:
+    subprocess.run(
+        [
+            "/usr/bin/clang",
+            "-arch",
+            "arm64",
+            "-mmacosx-version-min=14.0",
+            "-x",
+            "c",
+            "-",
+            "-Wl,-undefined,dynamic_lookup",
+            "-o",
+            str(output),
+        ],
+        input=(
+            "extern void *nw_connection_create;\n"
+            "int main(void) { return nw_connection_create != 0; }\n"
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 def _snapshot_app_files(app: Path) -> dict[Path, tuple[int, str]]:
     return {
         path.relative_to(app): (
@@ -1605,7 +1885,7 @@ esac
         ("release_build", "CFBundleVersion mismatch"),
         ("executable_name", "CFBundleExecutable mismatch"),
         ("x86_64_main", "arm64 Mach-O executable"),
-        ("macos_13_main", "macOS 14 or later"),
+        ("macos_13_main", "macOS 14.0 exactly"),
         ("private_dependency", "unapproved dynamic-library install name"),
         ("private_rpath", "unapproved LC_RPATH"),
         ("unexpected_helper", "unexpected helper"),
@@ -1742,6 +2022,9 @@ def real_staged_studio_app(
 ) -> Path:
     source_xattr_target = real_unsigned_studio_app / "Contents" / "Info.plist"
     source_files_before = _snapshot_app_files(real_unsigned_studio_app)
+    # PkgInfo is optional legacy bundle metadata. FileProvider can elide it in
+    # this iCloud-backed worktree while leaving the signed-content inputs intact.
+    source_files_before.pop(Path("Contents/PkgInfo"), None)
     subprocess.run(
         [
             "/usr/bin/xattr",
@@ -1755,7 +2038,9 @@ def real_staged_studio_app(
     try:
         result = _run_real_app_stage(real_unsigned_studio_app)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert _snapshot_app_files(real_unsigned_studio_app) == source_files_before
+        source_files_after = _snapshot_app_files(real_unsigned_studio_app)
+        source_files_after.pop(Path("Contents/PkgInfo"), None)
+        assert source_files_after == source_files_before
         retained_xattr = subprocess.run(
             [
                 "/usr/bin/xattr",
@@ -1827,18 +2112,16 @@ def test_real_unsigned_studio_app_stages_under_exact_release_policy(
     staged_plist = _read_bundle_plist(real_staged_studio_app)
     assert staged_plist["CFBundleExecutable"] == "LocalOCR Studio"
     assert staged_plist["CFBundleIdentifier"] == "com.rayconsulting.localocr"
-    assert staged_plist["CFBundleShortVersionString"] == "0.3.0"
-    assert staged_plist["CFBundleVersion"] == "3"
+    assert staged_plist["CFBundleShortVersionString"] == "0.3.1"
+    assert staged_plist["CFBundleVersion"] == "4"
 
     helpers = real_staged_studio_app / "Contents" / "Helpers"
-    assert sorted(path.name for path in helpers.iterdir()) == [
-        "localocr",
-        "localocr-mcp",
-    ]
+    assert sorted(path.name for path in helpers.iterdir()) == sorted(EXPECTED_HELPERS)
     expected_code = {
         Path("Contents/MacOS/LocalOCR Studio"),
         Path("Contents/Helpers/localocr"),
         Path("Contents/Helpers/localocr-mcp"),
+        Path("Contents/Helpers/localocr-model-bridge"),
     }
     actual_code = {
         path.relative_to(real_staged_studio_app)
@@ -1916,6 +2199,12 @@ def test_pre_signing_evidence_hashes_exact_staged_binaries(
         "staged/LocalOCR Studio.app/Contents/Helpers/localocr-mcp": (
             real_staged_studio_app / "Contents" / "Helpers" / "localocr-mcp"
         ),
+        "staged/LocalOCR Studio.app/Contents/Helpers/localocr-model-bridge": (
+            real_staged_studio_app
+            / "Contents"
+            / "Helpers"
+            / "localocr-model-bridge"
+        ),
     }
 
     assert evidence.keys() == expected_paths.keys()
@@ -1938,8 +2227,8 @@ def test_stage_strips_only_the_copied_main_executable(tmp_path: Path) -> None:
             {
                 "CFBundleExecutable": "LocalOCR Studio",
                 "CFBundleIdentifier": "com.rayconsulting.localocr",
-                "CFBundleShortVersionString": "0.3.0",
-                "CFBundleVersion": "3",
+                "CFBundleShortVersionString": "0.3.1",
+                "CFBundleVersion": "4",
             },
             plist_file,
         )
@@ -1976,8 +2265,8 @@ def test_stage_rejects_unapproved_dependencies_and_rpaths_in_each_staged_helper(
         architecture="arm64",
         minimum_macos="14.0",
     )
-    shutil.copy2(fixture_helper, helpers / "localocr")
-    shutil.copy2(fixture_helper, helpers / "localocr-mcp")
+    for expected_helper in EXPECTED_HELPERS:
+        shutil.copy2(fixture_helper, helpers / expected_helper)
     helper = candidate / "Contents" / "Helpers" / helper_name
     if mutation == "private_dependency":
         command = [
@@ -2635,10 +2924,8 @@ def test_build_native_tools_publishes_both_helpers_to_selected_directory(
     isolated_scripts.mkdir(parents=True)
     direct_release_root.mkdir(parents=True)
     stub_bin.mkdir()
+    _copy_native_build_policy_scripts(isolated_scripts)
     build_script = isolated_scripts / "build-native-tools.sh"
-    shutil.copy2(SCRIPTS / "build-native-tools.sh", build_script)
-    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
-    shutil.copy2(RELEASE_PATH_GUARD, isolated_scripts)
     source_fixture = tmp_path / "source-fixture" / "localocr"
     _compile_macos_debug_path_fixture(source_fixture)
     source_fixture_bytes = source_fixture.read_bytes()
@@ -2664,6 +2951,7 @@ exit 64
     )
     swift_stub.chmod(0o755)
 
+    _install_stable_swift_fixture(isolated_repo, swift_stub)
     default_output = isolated_repo / "dist" / "native-tools"
     explicit_output = direct_release_root / "native-tools"
     expected_output = explicit_output if use_explicit_artifact_dir else default_output
@@ -2727,9 +3015,7 @@ def test_build_native_tools_preserves_matching_dsyms_by_uuid_outside_artifacts(
     isolated_scripts.mkdir(parents=True)
     direct_release_root.mkdir(parents=True)
     stub_bin.mkdir()
-    shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
-    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
-    shutil.copy2(RELEASE_PATH_GUARD, isolated_scripts)
+    _copy_native_build_policy_scripts(isolated_scripts)
     source_fixture = tmp_path / "source-fixture" / "localocr"
     source_dsym = tmp_path / "source-fixture" / "localocr.dSYM"
     _compile_macos_debug_path_fixture(source_fixture)
@@ -2758,6 +3044,7 @@ exit 64
 """
     )
     swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(isolated_repo, swift_stub)
     output = direct_release_root / "native-tools"
     env = os.environ.copy()
     env.update(
@@ -2798,9 +3085,7 @@ def test_build_native_tools_rejects_a_mismatched_dsym(tmp_path: Path) -> None:
     isolated_scripts.mkdir(parents=True)
     (isolated_repo / "dist").mkdir()
     stub_bin.mkdir()
-    shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
-    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
-    shutil.copy2(RELEASE_PATH_GUARD, isolated_scripts)
+    _copy_native_build_policy_scripts(isolated_scripts)
     source_fixture = tmp_path / "source-fixture" / "localocr"
     other_fixture = tmp_path / "other-fixture" / "localocr"
     mismatched_dsym = tmp_path / "other-fixture" / "localocr.dSYM"
@@ -2828,6 +3113,7 @@ exit 64
 """
     )
     swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(isolated_repo, swift_stub)
     env = os.environ.copy()
     env.update(
         {
@@ -2867,9 +3153,7 @@ def test_build_native_tools_rejects_a_symlinked_release_symbols_root(
         outside_symbols,
         target_is_directory=True,
     )
-    shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
-    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
-    shutil.copy2(RELEASE_PATH_GUARD, isolated_scripts)
+    _copy_native_build_policy_scripts(isolated_scripts)
     source_fixture = tmp_path / "source-fixture" / "localocr"
     source_dsym = tmp_path / "source-fixture" / "localocr.dSYM"
     _compile_macos_debug_path_fixture(source_fixture)
@@ -2891,6 +3175,7 @@ exit 64
 """
     )
     swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(isolated_repo, swift_stub)
     env = os.environ.copy()
     env.update(
         {
@@ -2928,9 +3213,7 @@ def test_build_native_tools_rejects_a_symlinked_default_dist_before_cleanup(
     sentinel = outside_artifacts / "must-survive.txt"
     sentinel.write_text("outside release data")
     (isolated_repo / "dist").symlink_to(outside_dist, target_is_directory=True)
-    shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
-    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
-    shutil.copy2(RELEASE_PATH_GUARD, isolated_scripts)
+    _copy_native_build_policy_scripts(isolated_scripts)
     source_fixture = tmp_path / "source-fixture" / "localocr"
     _compile_macos_debug_path_fixture(source_fixture)
 
@@ -2951,6 +3234,7 @@ exit 64
 """
     )
     swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(isolated_repo, swift_stub)
     env = os.environ.copy()
     env["PATH"] = f"{stub_bin}:/usr/bin:/bin"
     env["LOCALOCR_TEST_SOURCE_BINARY"] = str(source_fixture)
@@ -2985,9 +3269,7 @@ def test_build_native_tools_fails_closed_when_dist_is_swapped_during_the_build(
     outside_marker = outside_artifacts / "must-survive.txt"
     original_marker.write_text("preserve original release output")
     outside_marker.write_text("preserve outside release data")
-    shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
-    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
-    shutil.copy2(RELEASE_PATH_GUARD, isolated_scripts)
+    _copy_native_build_policy_scripts(isolated_scripts)
     source_fixture = tmp_path / "source-fixture" / "localocr"
     _compile_macos_debug_path_fixture(source_fixture)
 
@@ -3012,6 +3294,7 @@ exit 64
 """
     )
     swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(isolated_repo, swift_stub)
     env = os.environ.copy()
     env.update(
         {
@@ -3059,13 +3342,15 @@ def test_build_native_tools_rejects_a_post_validation_artifact_leaf_swap(
     replacement_marker.write_bytes(b"preserve replacement artifact output")
     outside_marker.write_bytes(b"preserve outside data")
     (replacement / "outside-link").symlink_to(outside, target_is_directory=True)
-    shutil.copy2(SCRIPTS / "build-native-tools.sh", isolated_scripts)
-    shutil.copy2(SCRIPTS / "release-toolchain.sh", isolated_scripts)
-    _write_cleanup_pausing_path_guard(isolated_scripts / "release-path-guard.swift")
+    _copy_native_build_policy_scripts(isolated_scripts)
+    _write_publish_pausing_path_guard(isolated_scripts / "release-path-guard.swift")
     source_fixture = tmp_path / "source" / "localocr"
     source_fixture.parent.mkdir()
-    source_fixture.write_bytes(b"native helper fixture")
-    source_fixture.chmod(0o755)
+    _compile_macos_fixture(
+        source_fixture,
+        architecture="arm64",
+        minimum_macos="14.0",
+    )
     swift_stub = stub_bin / "swift"
     swift_stub.write_text(
         """#!/usr/bin/env bash
@@ -3081,7 +3366,8 @@ exit 64
 """
     )
     swift_stub.chmod(0o755)
-    ready_fifo = tmp_path / "native-cleanup-ready.fifo"
+    _install_stable_swift_fixture(isolated_repo, swift_stub)
+    ready_fifo = tmp_path / "native-publish-ready.fifo"
     os.mkfifo(ready_fifo)
     ready_descriptor = os.open(ready_fifo, os.O_RDWR | os.O_NONBLOCK)
     env = os.environ.copy()
@@ -3089,7 +3375,7 @@ exit 64
         {
             "PATH": f"{stub_bin}:/usr/bin:/bin",
             "LOCALOCR_TEST_SOURCE_BINARY": str(source_fixture),
-            "LOCALOCR_TEST_CLEANUP_READY_FIFO": str(ready_fifo),
+            "LOCALOCR_TEST_PUBLISH_READY_FIFO": str(ready_fifo),
         }
     )
     process = subprocess.Popen(
@@ -3126,15 +3412,632 @@ exit 64
 
 
 @pytest.mark.parametrize("script", ("stage", "verify"))
-def test_release_scripts_require_arm64_and_macos_14_or_later(script: str) -> None:
+def test_release_candidate_requires_arm64_and_exact_macos_14_target(script: str) -> None:
     _assert_script_test_accepts(script, "--test-architecture", "arm64")
     for architecture in ("x86_64", "arm64 x86_64"):
         _assert_script_test_rejects(script, "--test-architecture", architecture)
 
-    for minimum_version in ("14.0", "14.6", "15.0"):
-        _assert_script_test_accepts(script, "--test-minimum-macos", minimum_version)
-    for minimum_version in ("13.6", "10.15", ""):
+    _assert_script_test_accepts(script, "--test-minimum-macos", "14.0")
+    for minimum_version in ("14.6", "15.0", "13.6", "10.15", ""):
         _assert_script_test_rejects(script, "--test-minimum-macos", minimum_version)
+
+
+@pytest.mark.parametrize("script", ("stage", "verify"))
+@pytest.mark.parametrize(
+    "install_name",
+    (
+        "/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork",
+        "/System/Library/Frameworks/CFNetwork.framework/Versions/B/CFNetwork",
+        "/System/Library/Frameworks/CFNetwork.framework/Versions/Preview/CFNetwork",
+        "/System/Library/Frameworks/CFNetwork.framework/CFNetwork",
+        "/System/Library/Frameworks/Network.framework/Versions/A/Network",
+        "/System/Library/Frameworks/Network.framework/Versions/Current/Network",
+        "/System/Library/Frameworks/Network.framework/Versions/42/Network",
+        "/System/Library/Frameworks/Network.framework/Network",
+    ),
+)
+def test_release_candidate_rejects_network_frameworks(
+    script: str,
+    install_name: str,
+) -> None:
+    result = _run_script_test(script, "--test-install-name", install_name)
+    assert result.returncode != 0, result.stdout
+    assert "network framework dependency is forbidden" in result.stderr
+
+
+@pytest.mark.parametrize("script", ("stage", "verify"))
+@pytest.mark.parametrize(
+    "install_name",
+    (
+        "/System/Library/Frameworks/Wrapper.framework/Versions/A/"
+        "CFNetwork.framework/Versions/Preview/Other",
+        "/System/Library/Frameworks/Network.framework/Versions/42/Support/Helper",
+    ),
+)
+def test_release_candidate_rejects_network_framework_components_anywhere(
+    script: str,
+    install_name: str,
+) -> None:
+    result = _run_script_test(script, "--test-install-name", install_name)
+    assert result.returncode != 0, result.stdout
+    assert "network framework dependency is forbidden" in result.stderr
+
+
+def test_shared_binary_policy_rejects_url_session_symbols(tmp_path: Path) -> None:
+    binary = tmp_path / "url-session-probe"
+    _compile_forbidden_url_session_symbol_fixture(binary)
+    assert "NSURLSession" in subprocess.run(
+        ["/usr/bin/nm", "-u", str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; release_validate_binary_policy "$2" false true',
+            "shared-network-symbol-policy",
+            str(RELEASE_SCRIPTS["toolchain"]),
+            str(binary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "network symbol is forbidden" in result.stderr
+
+
+def test_shared_binary_policy_rejects_nw_symbols(tmp_path: Path) -> None:
+    binary = tmp_path / "nw-symbol-probe"
+    _compile_forbidden_nw_symbol_fixture(binary)
+    symbols = subprocess.run(
+        ["/usr/bin/nm", "-u", str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "_nw_connection_create" in symbols
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; release_validate_binary_policy "$2" false true',
+            "shared-nw-symbol-policy",
+            str(RELEASE_SCRIPTS["toolchain"]),
+            str(binary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "network symbol is forbidden" in result.stderr
+
+
+@pytest.mark.parametrize("policy", ("release", "download"))
+@pytest.mark.parametrize("mutation", ("dependency", "rpath"))
+def test_binary_policy_parsers_reject_complete_whitespace_and_traversal_paths(
+    tmp_path: Path,
+    policy: str,
+    mutation: str,
+) -> None:
+    binary = tmp_path / f"{policy}-{mutation}-path-probe"
+    _compile_macos_fixture(
+        binary,
+        architecture="arm64",
+        minimum_macos="14.0",
+    )
+    if mutation == "dependency":
+        malicious_path = "/usr/lib/libSystem B.dylib/../evil.dylib"
+        command = [
+            "/usr/bin/install_name_tool",
+            "-change",
+            "/usr/lib/libSystem.B.dylib",
+            malicious_path,
+            str(binary),
+        ]
+        gate = "download_verify_binary_dependencies"
+    else:
+        malicious_path = "/usr/lib/swift /../evil"
+        command = [
+            "/usr/bin/install_name_tool",
+            "-add_rpath",
+            malicious_path,
+            str(binary),
+        ]
+        gate = "download_verify_binary_rpaths"
+    mutation_result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert mutation_result.returncode == 0, mutation_result.stderr
+
+    if policy == "release":
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                'source "$1"; release_validate_binary_policy "$2" false true',
+                "complete-release-path-policy",
+                str(RELEASE_SCRIPTS["toolchain"]),
+                str(binary),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    else:
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                'source "$1"; download_otool=/usr/bin/otool; "$2" "$3"',
+                "complete-download-path-policy",
+                str(RELEASE_SCRIPTS["download"]),
+                gate,
+                str(binary),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    assert result.returncode != 0, (
+        policy,
+        mutation,
+        malicious_path,
+        result.stdout,
+        result.stderr,
+    )
+
+
+def test_shared_binary_policy_rejects_non_macos_build_platform(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "ios-platform-probe"
+    _compile_ios_fixture(binary)
+    load_commands = subprocess.run(
+        ["/usr/bin/otool", "-l", str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert re.search(r"(?m)^\s*platform 2$", load_commands)
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; release_validate_binary_policy "$2" false true',
+            "shared-platform-policy",
+            str(RELEASE_SCRIPTS["toolchain"]),
+            str(binary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "LC_BUILD_VERSION platform must be macOS" in result.stderr
+
+
+def test_shared_build_version_parser_rejects_multiple_records() -> None:
+    duplicate_records = """
+Load command 1
+      cmd LC_BUILD_VERSION
+ platform 1
+    minos 14.0
+      sdk 26.0
+Load command 2
+      cmd LC_BUILD_VERSION
+ platform 1
+    minos 14.0
+      sdk 26.0
+"""
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; release_parse_build_version_text "$2"',
+            "shared-build-version-policy",
+            str(RELEASE_SCRIPTS["toolchain"]),
+            duplicate_records,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "exactly one LC_BUILD_VERSION" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "marker",
+    (
+        "/tmp/localocr-build/object.o",
+        "/private/var/project/DerivedData/Build/Product",
+        "/private/var/project/.build/release/localocr",
+        "/private/var/worktrees/localocr/checkout/Sources/File.swift",
+    ),
+)
+def test_shared_binary_policy_rejects_private_and_build_path_markers(
+    tmp_path: Path,
+    marker: str,
+) -> None:
+    binary = tmp_path / "path-marker-probe"
+    _compile_macos_embedded_marker_fixture(binary, marker)
+    assert marker in subprocess.run(
+        ["/usr/bin/strings", "-a", str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; release_validate_binary_policy "$2" false true',
+            "shared-private-path-policy",
+            str(RELEASE_SCRIPTS["toolchain"]),
+            str(binary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "private or build path marker" in result.stderr
+
+
+def test_shared_binary_policy_allows_legitimate_system_paths(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "system-path-probe"
+    _compile_macos_embedded_marker_fixture(
+        binary,
+        "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+    )
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; release_validate_binary_policy "$2" false true',
+            "shared-system-path-policy",
+            str(RELEASE_SCRIPTS["toolchain"]),
+            str(binary),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_stage_source_preflight_preserves_known_good_direct_release(
+    tmp_path: Path,
+    real_unsigned_studio_app: Path,
+) -> None:
+    copy = _copy_release_policy_repo(tmp_path)
+    known_good = copy / "dist" / "direct-release" / "known-good.txt"
+    known_good.parent.mkdir(parents=True)
+    known_good.write_text("preserve known-good direct release")
+    source_path = copy / "Sources" / "MCPStdio" / "MCPStdio.swift"
+    source_path.write_text(source_path.read_text() + "\npublic let drift = true\n")
+    environment = _real_app_stage_environment(real_unsigned_studio_app)
+
+    result = subprocess.run(
+        [str(copy / "scripts" / "stage-direct-release.sh")],
+        cwd=copy,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "MCP stdio source policy rejected" in result.stderr
+    assert known_good.read_text() == "preserve known-good direct release"
+
+
+def test_stage_candidate_policy_failure_preserves_known_good_direct_release(
+    tmp_path: Path,
+    real_unsigned_studio_app: Path,
+) -> None:
+    copy = _copy_release_policy_repo(tmp_path)
+    known_good = copy / "dist" / "direct-release" / "known-good.txt"
+    known_good.parent.mkdir(parents=True)
+    known_good.write_text("preserve validated direct release")
+    source_fixture = tmp_path / "source" / "localocr"
+    source_fixture.parent.mkdir()
+    _compile_macos_embedded_marker_fixture(
+        source_fixture,
+        "/tmp/forbidden-stage-native-build/object.o",
+    )
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    swift_stub = stub_bin / "swift"
+    swift_stub.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "package" && "$2" == "clean" ]]; then exit 0; fi
+if [[ "$1" == "build" ]]; then
+    product="${!#}"
+    mkdir -p .build/release
+    cp "${LOCALOCR_TEST_SOURCE_BINARY:?}" ".build/release/$product"
+    exit 0
+fi
+exit 64
+"""
+    )
+    swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(copy, swift_stub)
+    environment = _real_app_stage_environment(real_unsigned_studio_app)
+    environment.update(
+        {
+            "PATH": f"{stub_bin}:/usr/bin:/bin",
+            "LOCALOCR_TEST_SOURCE_BINARY": str(source_fixture),
+        }
+    )
+
+    result = subprocess.run(
+        [str(copy / "scripts" / "stage-direct-release.sh")],
+        cwd=copy,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "private or build path marker" in result.stderr
+    assert known_good.read_text() == "preserve validated direct release"
+    assert not list((copy / "dist").glob(".direct-release.candidate.*"))
+
+
+def test_native_candidate_policy_failure_preserves_known_good_artifacts(
+    tmp_path: Path,
+) -> None:
+    isolated_repo = tmp_path / "repo"
+    isolated_scripts = isolated_repo / "scripts"
+    artifacts = isolated_repo / "dist" / "native-tools"
+    stub_bin = tmp_path / "bin"
+    isolated_scripts.mkdir(parents=True)
+    artifacts.mkdir(parents=True)
+    stub_bin.mkdir()
+    known_good = artifacts / "known-good.txt"
+    known_good.write_text("preserve known-good native artifacts")
+    _copy_native_build_policy_scripts(isolated_scripts)
+    source_fixture = tmp_path / "source" / "localocr"
+    source_fixture.parent.mkdir()
+    _compile_macos_embedded_marker_fixture(
+        source_fixture,
+        "/tmp/forbidden-native-build-root/object.o",
+    )
+    swift_stub = stub_bin / "swift"
+    swift_stub.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "package" && "$2" == "clean" ]]; then exit 0; fi
+if [[ "$1" == "build" ]]; then
+    product="${!#}"
+    mkdir -p .build/release
+    cp "${LOCALOCR_TEST_SOURCE_BINARY:?}" ".build/release/$product"
+    exit 0
+fi
+exit 64
+"""
+    )
+    swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(isolated_repo, swift_stub)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{stub_bin}:/usr/bin:/bin",
+            "LOCALOCR_TEST_SOURCE_BINARY": str(source_fixture),
+        }
+    )
+
+    result = subprocess.run(
+        [str(isolated_scripts / "build-native-tools.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "private or build path marker" in result.stderr
+    assert known_good.read_text() == "preserve known-good native artifacts"
+
+
+def test_candidate_build_scripts_apply_local_intelligence_binary_policy() -> None:
+    native = (SCRIPTS / "build-native-tools.sh").read_text()
+    studio = BUILD_UNSIGNED_STUDIO_APP.read_text()
+
+    assert "validate_local_intelligence_candidate_binary" in native
+    assert native.count("validate_local_intelligence_candidate_binary") >= 3
+    assert "validate_local_intelligence_candidate_binary" in studio
+    source_network_validation = (
+        'validate_no_network_framework_dependency "$native_release_dir/$product"'
+    )
+    assert source_network_validation in native
+    source_preflight = 'release_validate_mcp_source_policy "$repo_root"'
+    candidate_creation = "\ncreate_artifact_candidate\n"
+    assert source_preflight in native
+    assert candidate_creation in native
+    assert native.index(source_preflight) < native.index(candidate_creation)
+    assert native.index(source_network_validation) < native.index(
+        candidate_creation
+    )
+    assert native.rindex("validate_local_intelligence_candidate_binary") < native.rindex(
+        "publish_artifact_candidate"
+    )
+    for script in (native, studio):
+        assert "release_validate_binary_policy" in script
+        assert "validate_no_network_framework_dependency" in script
+        assert "-framework Network" not in script
+        assert "-framework CFNetwork" not in script
+
+
+def test_native_build_rejects_source_policy_drift_before_swift_build(
+    tmp_path: Path,
+) -> None:
+    copy = _copy_release_policy_repo(tmp_path)
+    vendored_source = copy / "Sources" / "MCPStdio" / "MCPStdio.swift"
+    vendored_source.write_text(vendored_source.read_text() + "\npublic let drift = true\n")
+    stub_directory = tmp_path / "stub-bin"
+    stub_directory.mkdir()
+    build_marker = tmp_path / "swift-build-was-called"
+    swift_stub = stub_directory / "swift"
+    swift_stub.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        ': > "${LOCALOCR_TEST_BUILD_MARKER:?}"\n'
+        "exit 91\n"
+    )
+    swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(copy, swift_stub)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{stub_directory}:/usr/bin:/bin",
+            "LOCALOCR_TEST_BUILD_MARKER": str(build_marker),
+        }
+    )
+
+    result = subprocess.run(
+        [str(copy / "scripts" / "build-native-tools.sh")],
+        cwd=copy,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "MCP stdio source policy rejected" in result.stderr
+    assert not build_marker.exists(), "Swift build began before source policy passed"
+
+
+def test_native_build_uses_stable_xcode_swift_when_path_is_shadowed(
+    tmp_path: Path,
+) -> None:
+    stub_directory = tmp_path / "shadow-bin"
+    stub_directory.mkdir()
+    shim_marker = tmp_path / "path-swift-was-invoked"
+    swift_shim = stub_directory / "swift"
+    swift_shim.write_text(
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        ': > "${LOCALOCR_TEST_PATH_SWIFT_MARKER:?}"\n'
+        "exit 97\n"
+    )
+    swift_shim.chmod(0o755)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{stub_directory}:/usr/bin:/bin",
+            "LOCALOCR_TEST_PATH_SWIFT_MARKER": str(shim_marker),
+        }
+    )
+
+    result = subprocess.run(
+        [
+            str(SCRIPTS / "build-native-tools.sh"),
+            "--artifact-dir",
+            str(ROOT / "dist" / "direct-release" / "native-tools"),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=300,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not shim_marker.exists(), "native build selected swift from PATH"
+
+
+def test_native_build_rejects_post_build_pin_drift_before_atomic_publication(
+    tmp_path: Path,
+) -> None:
+    copy = _copy_release_policy_repo(tmp_path)
+    artifacts = copy / "dist" / "native-tools"
+    artifacts.mkdir(parents=True)
+    known_good = artifacts / "known-good.txt"
+    known_good.write_text("preserve resolved native artifacts")
+    source_fixture = tmp_path / "source" / "localocr"
+    source_fixture.parent.mkdir()
+    _compile_macos_fixture(
+        source_fixture,
+        architecture="arm64",
+        minimum_macos="14.0",
+    )
+    stub_directory = tmp_path / "stub-bin"
+    stub_directory.mkdir()
+    swift_stub = stub_directory / "swift"
+    swift_stub.write_text(
+        """#!/bin/bash
+set -euo pipefail
+if [[ "$1" == "package" && "$2" == "clean" ]]; then exit 0; fi
+if [[ "$1" == "build" ]]; then
+    case " $* " in
+        *" --disable-automatic-resolution "*) ;;
+        *) echo "build did not require immutable package resolution" >&2; exit 92 ;;
+    esac
+    product="${!#}"
+    mkdir -p .build/release
+    cp "${LOCALOCR_TEST_SOURCE_BINARY:?}" ".build/release/$product"
+    if [[ "$product" == "localocr-mcp" ]]; then
+        /usr/bin/sed -i '' \
+            's/6a52f3251125d74daf04fcbd5e6f08a75d074382/0000000000000000000000000000000000000000/' \
+            "${LOCALOCR_TEST_RESOLVED_PATH:?}"
+    fi
+    exit 0
+fi
+echo "unexpected stable Swift invocation: $*" >&2
+exit 64
+"""
+    )
+    swift_stub.chmod(0o755)
+    _install_stable_swift_fixture(copy, swift_stub)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{stub_directory}:/usr/bin:/bin",
+            "LOCALOCR_TEST_SOURCE_BINARY": str(source_fixture),
+            "LOCALOCR_TEST_RESOLVED_PATH": str(copy / "Package.resolved"),
+        }
+    )
+
+    result = subprocess.run(
+        [str(copy / "scripts" / "build-native-tools.sh")],
+        cwd=copy,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "resolved package pin state changed" in result.stderr
+    assert known_good.read_text() == "preserve resolved native artifacts"
+    assert not list((copy / "dist").glob(".native-tools.candidate.*"))
 
 
 def test_verifier_reads_complete_build_version_output_under_pipefail() -> None:
@@ -3650,6 +4553,9 @@ EOF
         fi
         printf '%s: %s\n' "$1" "$2" >> "$3"
         ;;
+    model-bridge-validator)
+        printf '{"status":"pass"}\n'
+        ;;
     *)
         exit 64
         ;;
@@ -3678,6 +4584,7 @@ esac
         "evidence-mv",
         "cleanup-rm",
         "evidence-writer",
+        "model-bridge-validator",
     ):
         (tool_dir / tool).symlink_to(dispatcher)
 
@@ -3768,6 +4675,9 @@ printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabi
 """
     )
     mcp.chmod(0o755)
+    bridge = helpers / "localocr-model-bridge"
+    bridge.write_text("#!/bin/bash\nexit 0\n")
+    bridge.chmod(0o755)
 
     archive = tmp_path / "downloaded candidate.zip"
     subprocess.run(
@@ -3847,6 +4757,7 @@ download_evidence_awk="$tool_dir/evidence-awk"
 download_evidence_mv="$tool_dir/evidence-mv"
 download_cleanup_rm="$tool_dir/cleanup-rm"
 download_evidence_writer="$tool_dir/evidence-writer"
+download_model_bridge_validator="$tool_dir/model-bridge-validator"
 download_temp_parent="$LOCALOCR_TEST_TEMP_PARENT"
 download_main "$@"
 """
@@ -3922,14 +4833,19 @@ def test_downloaded_release_verifies_checksum_before_fresh_extraction_and_runs_a
         if line.startswith("ditto -x -k ")
     )
     assert checksum_index < extraction_index
-    assert sum(line.startswith("file -b ") for line in trace) == 3
-    assert sum(line.startswith("lipo -archs ") for line in trace) == 3
-    assert sum(line.startswith("otool -L ") for line in trace) == 3
-    assert sum(line.startswith("otool -l ") for line in trace) == 6
-    assert sum(line.startswith("strings -a ") for line in trace) == 3
+    assert sum(line.startswith("file -b ") for line in trace) == 4
+    assert sum(line.startswith("lipo -archs ") for line in trace) == 4
+    assert sum(line.startswith("otool -L ") for line in trace) == 4
+    assert sum(line.startswith("otool -l ") for line in trace) == 8
+    assert sum(line.startswith("strings -a ") for line in trace) == 4
     assert any("stapler validate" in line for line in trace)
     assert any(line.startswith("spctl --assess --type execute") for line in trace)
-    for code_object in ("localocr", "localocr-mcp", "LocalOCR\\ Studio.app"):
+    for code_object in (
+        "localocr",
+        "localocr-mcp",
+        "localocr-model-bridge",
+        "LocalOCR\\ Studio.app",
+    ):
         assert any(
             line.startswith("codesign -dv --verbose=4 ")
             and line.endswith(code_object)

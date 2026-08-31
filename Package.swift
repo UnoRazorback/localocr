@@ -6,10 +6,14 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "LocalOCRCore", targets: ["LocalOCRCore"]),
+        .library(name: "LocalOCRModelCore", targets: ["LocalOCRModelCore"]),
+        .library(name: "LocalOCRModelBridgeProtocol", targets: ["LocalOCRModelBridgeProtocol"]),
         .library(name: "LocalOCRService", targets: ["LocalOCRService"]),
+        .library(name: "LocalOCRIntelligence", targets: ["LocalOCRIntelligence"]),
         .library(name: "LocalOCRStudioKit", targets: ["LocalOCRStudioKit"]),
         .executable(name: "localocr", targets: ["LocalOCRCLIExecutable"]),
-        .executable(name: "localocr-mcp", targets: ["LocalOCRMCPExecutable"])
+        .executable(name: "localocr-mcp", targets: ["LocalOCRMCPExecutable"]),
+        .executable(name: "localocr-model-bridge", targets: ["LocalOCRModelBridgeExecutable"])
     ],
     dependencies: [
         .package(
@@ -17,11 +21,24 @@ let package = Package(
             exact: "1.8.2"
         ),
         .package(
-            url: "https://github.com/modelcontextprotocol/swift-sdk",
-            exact: "0.12.1"
+            url: "https://github.com/apple/swift-system.git",
+            from: "1.0.0"
+        ),
+        .package(
+            url: "https://github.com/apple/swift-log.git",
+            from: "1.5.0"
         )
     ],
     targets: [
+        .target(
+            name: "LocalOCRModelCore",
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
+        .target(
+            name: "LocalOCRModelBridgeProtocol",
+            dependencies: ["LocalOCRModelCore"],
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
         .target(
             name: "LocalOCRCore",
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
@@ -32,23 +49,44 @@ let package = Package(
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
         .target(
+            name: "LocalOCRIntelligence",
+            dependencies: ["LocalOCRModelCore", "LocalOCRModelBridgeProtocol", "LocalOCRService"],
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
+        .target(
+            name: "LocalOCRModelBridgeKit",
+            dependencies: ["LocalOCRModelBridgeProtocol"],
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
+        .target(
             name: "LocalOCRStudioKit",
-            dependencies: ["LocalOCRService", "LocalOCRCore"],
+            dependencies: ["LocalOCRIntelligence", "LocalOCRModelCore", "LocalOCRService", "LocalOCRCore"],
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
         .target(
             name: "LocalOCRCommandKit",
             dependencies: [
+                "LocalOCRIntelligence",
                 "LocalOCRService",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ],
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
         .target(
+            name: "MCPStdio",
+            dependencies: [
+                .product(name: "SystemPackage", package: "swift-system"),
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            exclude: ["Upstream"],
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
+        .target(
             name: "LocalOCRMCP",
             dependencies: [
+                "LocalOCRIntelligence",
                 "LocalOCRService",
-                .product(name: "MCP", package: "swift-sdk")
+                "MCPStdio"
             ],
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
@@ -60,6 +98,29 @@ let package = Package(
         .executableTarget(
             name: "LocalOCRMCPExecutable",
             dependencies: ["LocalOCRMCP"],
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
+        .executableTarget(
+            name: "LocalOCRModelBridgeExecutable",
+            dependencies: ["LocalOCRModelBridgeKit"],
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
+        .testTarget(
+            name: "LocalOCRModelCoreTests",
+            dependencies: ["LocalOCRModelCore"],
+            path: "tests/LocalOCRModelCoreTests",
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
+        .testTarget(
+            name: "LocalOCRModelBridgeProtocolTests",
+            dependencies: ["LocalOCRModelBridgeProtocol", "LocalOCRModelCore"],
+            path: "tests/LocalOCRModelBridgeProtocolTests",
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
+        .testTarget(
+            name: "LocalOCRModelBridgeKitTests",
+            dependencies: ["LocalOCRModelBridgeKit", "LocalOCRModelBridgeProtocol", "LocalOCRModelCore"],
+            path: "tests/LocalOCRModelBridgeKitTests",
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
         .testTarget(
@@ -78,7 +139,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LocalOCRStudioKitTests",
-            dependencies: ["LocalOCRStudioKit", "LocalOCRService", "LocalOCRCore"],
+            dependencies: ["LocalOCRStudioKit", "LocalOCRIntelligence", "LocalOCRModelCore", "LocalOCRService", "LocalOCRCore"],
             path: "tests/LocalOCRStudioKitTests",
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
@@ -94,9 +155,27 @@ let package = Package(
                 "LocalOCRMCP",
                 "LocalOCRService",
                 "LocalOCRCore",
-                .product(name: "MCP", package: "swift-sdk")
+                "MCPStdio"
             ],
             path: "tests/LocalOCRMCPTests",
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
+        .testTarget(
+            name: "MCPStdioTests",
+            dependencies: ["MCPStdio"],
+            path: "tests/MCPStdioTests",
+            swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
+        ),
+        .testTarget(
+            name: "LocalOCRIntelligenceTests",
+            dependencies: [
+                "LocalOCRIntelligence",
+                "LocalOCRModelCore",
+                "LocalOCRModelBridgeProtocol",
+                "LocalOCRService",
+                "LocalOCRCore"
+            ],
+            path: "tests/LocalOCRIntelligenceTests",
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         )
     ]

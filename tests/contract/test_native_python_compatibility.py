@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import anyio
+from contextlib import contextmanager
 import json
 import os
 import re
 import shutil
+import stat
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +22,7 @@ import pytest
 
 ROOT = Path(__file__).parents[2]
 NATIVE = ROOT / ".build" / "debug" / "localocr-mcp"
+NATIVE_MODEL_BRIDGE = ROOT / ".build" / "debug" / "localocr-model-bridge"
 EXPECTED = Path(__file__).with_name("expected")
 FIXTURE_NAMES = ("mixed.pdf", "image-only.pdf")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -25,6 +30,126 @@ SCALAR_RESULTS = {"get_pdf_page_count", "ocr_image"}
 LINE_GEOMETRY_FIELDS = {"x", "y", "width", "height"}
 GEOMETRY_TOLERANCE = 0.005
 SNAPSHOT_NAMES = ("inspect_pdf", "ocr_pdf", "ocr_pdf_lines", "ocr_pdf_batch", "make_searchable_pdf")
+NATIVE_TOOL_NAMES = {
+    "extract_document_fields",
+    "get_pdf_page_count",
+    "inspect_pdf",
+    "make_searchable_pdf",
+    "ocr_image",
+    "ocr_pdf",
+    "ocr_pdf_batch",
+    "organize_document",
+    "summarize_document",
+}
+RECEIPT_KEYS = {
+    "accepted_at",
+    "document_tool_access_accepted",
+    "external_provider_risk_accepted",
+    "policy_version",
+    "schema_version",
+}
+
+
+def test_native_model_bridge_uses_the_same_bounded_wire_protocol() -> None:
+    assert NATIVE_MODEL_BRIDGE.is_file()
+    request = {
+        "version": 1,
+        "id": 901,
+        "action": "status",
+        "provider": "ollama",
+        "model": None,
+        "expectedIdentity": None,
+        "operation": None,
+        "prompt": None,
+        "fields": [],
+        "timeoutMilliseconds": 1000,
+    }
+    result = subprocess.run(
+        [str(NATIVE_MODEL_BRIDGE)],
+        input=json.dumps(request) + "\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    response = json.loads(result.stdout)
+    assert result.stderr == ""
+    assert response["version"] == 1
+    assert response["id"] == 901
+    assert response["error"]["code"] == "invalid_request"
+
+
+@contextmanager
+def _isolated_test_home(parent: Path):
+    parent = parent.resolve(strict=True)
+    _assert_symlink_free_path(parent)
+    root = Path(tempfile.mkdtemp(prefix="localocr-compatibility-home-", dir=parent))
+    os.chmod(root, 0o700)
+    identity = root.stat().st_dev, root.stat().st_ino
+    _assert_private_directory(root)
+    try:
+        yield root
+    finally:
+        current = root.lstat()
+        assert stat.S_ISDIR(current.st_mode) and not root.is_symlink()
+        assert (current.st_dev, current.st_ino) == identity
+        assert root.parent.resolve(strict=True) == parent
+        shutil.rmtree(root)
+
+
+def _assert_symlink_free_path(path: Path) -> None:
+    current = Path(path.anchor)
+    for component in path.parts[1:]:
+        current = current / component
+        assert not current.is_symlink()
+
+
+def _assert_private_directory(path: Path) -> None:
+    metadata = path.lstat()
+    assert stat.S_ISDIR(metadata.st_mode) and not path.is_symlink()
+    assert stat.S_IMODE(metadata.st_mode) == 0o700
+    assert metadata.st_uid == os.geteuid()
+
+
+def _make_native_environment(home: Path) -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["CFFIXED_USER_HOME"] = str(home)
+    environment["HOME"] = str(home)
+    environment["LOCALOCR_CACHE_DIR"] = str(home / "cache")
+    return environment
+
+
+def _install_test_receipt(home: Path) -> None:
+    current = home
+    for component in ("Library", "Application Support", "com.rayconsulting.localocr"):
+        current = current / component
+        current.mkdir(mode=0o700)
+        os.chmod(current, 0o700)
+        _assert_private_directory(current)
+
+    receipt = current / "mcp-consent.json"
+    payload = {
+        "schema_version": 1,
+        "policy_version": 1,
+        "accepted_at": "2026-08-27T00:00:00Z",
+        "external_provider_risk_accepted": True,
+        "document_tool_access_accepted": True,
+    }
+    assert set(payload) == RECEIPT_KEYS
+    descriptor = os.open(
+        receipt,
+        os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+        0o600,
+    )
+    try:
+        os.write(descriptor, json.dumps(payload, separators=(",", ":")).encode())
+        os.fchmod(descriptor, 0o600)
+    finally:
+        os.close(descriptor)
+    metadata = receipt.lstat()
+    assert stat.S_ISREG(metadata.st_mode) and not receipt.is_symlink()
+    assert stat.S_IMODE(metadata.st_mode) == 0o600
+    assert metadata.st_uid == os.geteuid()
+    assert set(json.loads(receipt.read_text())) == RECEIPT_KEYS
 
 
 def _copy_fixtures(destination: Path) -> dict[str, Path]:
@@ -179,8 +304,12 @@ def _assert_matching_tool_schemas(python: dict[str, Any], native: dict[str, Any]
         )
 
 
-async def _assert_outputs_reopen_with_native_pdfkit(output_paths: list[str]) -> None:
-    async with stdio_client(StdioServerParameters(command=str(NATIVE), args=[])) as (read, write):
+async def _assert_outputs_reopen_with_native_pdfkit(
+    output_paths: list[str], native_environment: dict[str, str]
+) -> None:
+    async with stdio_client(
+        StdioServerParameters(command=str(NATIVE), args=[], env=native_environment)
+    ) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             for output_path in output_paths:
@@ -204,27 +333,38 @@ async def _exercise_compatibility(tmp_path: Path) -> None:
         StdioServerParameters(command=sys.executable, args=["-m", "ocr_service.server"], env=python_environment),
         python_fixtures,
     )
-    native = await _call_server(StdioServerParameters(command=str(NATIVE), args=[]), native_fixtures)
+    with _isolated_test_home(ROOT / ".build") as home:
+        _install_test_receipt(home)
+        native_environment = _make_native_environment(home)
+        native = await _call_server(
+            StdioServerParameters(command=str(NATIVE), args=[], env=native_environment),
+            native_fixtures,
+        )
 
-    normalized_python = _normalize(python, python_fixtures["mixed.pdf"].parent)
-    normalized_native = _normalize(native, native_fixtures["mixed.pdf"].parent)
+        normalized_python = _normalize(python, python_fixtures["mixed.pdf"].parent)
+        normalized_native = _normalize(native, native_fixtures["mixed.pdf"].parent)
 
-    _assert_matching_tool_schemas(normalized_python["tools"], normalized_native["tools"])
-    await _assert_outputs_reopen_with_native_pdfkit([
-        python["results"]["make_searchable_pdf"]["text"]["output_path"],
-        native["results"]["make_searchable_pdf"]["text"]["output_path"],
-    ])
-    for name, python_result in normalized_python["results"].items():
-        native_result = normalized_native["results"][name]
-        _assert_matching_payloads(python_result["text"], native_result["text"], (name, "text"))
-        if name in SCALAR_RESULTS:
-            assert python_result["structured_content"] == {"result": python_result["text"]}
-            assert native_result["structured_content"] is None
-        else:
-            assert python_result["structured_content"] is None
-            assert native_result["structured_content"] == native_result["text"]
-    for name in SNAPSHOT_NAMES:
-        assert normalized_python["results"][name]["text"] == _load_snapshot(name)
+        assert set(normalized_native["tools"]) == NATIVE_TOOL_NAMES
+        legacy_native_tools = {
+            name: normalized_native["tools"][name]
+            for name in normalized_python["tools"]
+        }
+        _assert_matching_tool_schemas(normalized_python["tools"], legacy_native_tools)
+        await _assert_outputs_reopen_with_native_pdfkit([
+            python["results"]["make_searchable_pdf"]["text"]["output_path"],
+            native["results"]["make_searchable_pdf"]["text"]["output_path"],
+        ], native_environment)
+        for name, python_result in normalized_python["results"].items():
+            native_result = normalized_native["results"][name]
+            _assert_matching_payloads(python_result["text"], native_result["text"], (name, "text"))
+            if name in SCALAR_RESULTS:
+                assert python_result["structured_content"] == {"result": python_result["text"]}
+                assert native_result["structured_content"] is None
+            else:
+                assert python_result["structured_content"] is None
+                assert native_result["structured_content"] == native_result["text"]
+        for name in SNAPSHOT_NAMES:
+            assert normalized_python["results"][name]["text"] == _load_snapshot(name)
 
 
 def test_native_mcp_matches_python_reference_for_all_six_tools(tmp_path):

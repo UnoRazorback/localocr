@@ -1,5 +1,7 @@
+import Foundation
+import Logging
 import LocalOCRService
-import MCP
+import MCPStdio
 
 public protocol MCPToolDispatching: Sendable {
     func callTool(name: String, arguments: [String: Value]?) async -> CallTool.Result
@@ -32,9 +34,248 @@ public struct MCPServerRunner: Sendable {
         return server
     }
 
-    public func run() async throws {
+    func run(
+        transport: any Transport,
+        beforeStart: @escaping @Sendable () async -> Void = {},
+        cancellationCleanupDidRun: @escaping @Sendable () async -> Void = {},
+        stopServer: @escaping @Sendable (Server) async -> Void = { server in
+            await server.stop()
+        }
+    ) async throws {
         let server = await makeServer()
-        try await server.start(transport: StdioTransport())
-        await server.waitUntilCompleted()
+        let cancellationLatchedTransport = await CancellationLatchedTransport(
+            transport,
+            logger: transport.logger
+        )
+        let lifecycle = MCPServerLifecycleCoordinator(
+            server: server,
+            stopServer: stopServer
+        )
+
+        try await withTaskCancellationHandler {
+            do {
+                await beforeStart()
+
+                do {
+                    try await server.start(transport: cancellationLatchedTransport)
+                } catch {
+                    await cancellationLatchedTransport.disconnect()
+                    await lifecycle.startDidFinish()
+                    throw error
+                }
+                await lifecycle.startDidFinish()
+
+                await server.waitUntilCompleted()
+                await lifecycle.stopOnce()
+                try Task.checkCancellation()
+                try await lifecycle.checkCancellation()
+            } catch {
+                await lifecycle.stopOnce()
+                throw error
+            }
+        } onCancel: {
+            Task {
+                await cancellationLatchedTransport.requestCancellation()
+                await lifecycle.requestCancellation()
+                await cancellationCleanupDidRun()
+            }
+        }
+    }
+
+    public func runStdio() async throws {
+        try await run(transport: StdioTransport())
+    }
+}
+
+private actor MCPServerLifecycleCoordinator {
+    private let server: Server
+    private let stopServer: @Sendable (Server) async -> Void
+    private var cancellationRequested = false
+    private var startFinished = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var stopTask: Task<Void, Never>?
+
+    init(
+        server: Server,
+        stopServer: @escaping @Sendable (Server) async -> Void
+    ) {
+        self.server = server
+        self.stopServer = stopServer
+    }
+
+    func requestCancellation() {
+        cancellationRequested = true
+        _ = beginStopOnce()
+    }
+
+    func startDidFinish() {
+        guard !startFinished else { return }
+        startFinished = true
+        let waiters = startWaiters
+        startWaiters = []
+        waiters.forEach { $0.resume() }
+    }
+
+    func stopOnce() async {
+        await beginStopOnce().value
+    }
+
+    func checkCancellation() throws {
+        if cancellationRequested {
+            throw CancellationError()
+        }
+    }
+
+    private func beginStopOnce() -> Task<Void, Never> {
+        if let stopTask {
+            return stopTask
+        }
+
+        let server = server
+        let stopServer = stopServer
+        let task = Task {
+            await self.waitUntilStartFinishes()
+            await stopServer(server)
+        }
+        stopTask = task
+        return task
+    }
+
+    private func waitUntilStartFinishes() async {
+        guard !startFinished else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+}
+
+private actor CancellationLatchedTransport: Transport {
+    private enum ConnectState {
+        case notStarted
+        case connecting
+        case settled
+    }
+
+    nonisolated let logger: Logger
+
+    private let transport: any Transport
+    private var cancellationRequested = false
+    private var connectState = ConnectState.notStarted
+    private var connectSettlementWaiters: [CheckedContinuation<Void, Never>] = []
+    private var disconnectTask: Task<Void, Never>?
+
+    init(_ transport: any Transport, logger: Logger) {
+        self.transport = transport
+        self.logger = logger
+    }
+
+    func connect() async throws {
+        if cancellationRequested || Task.isCancelled {
+            cancellationRequested = true
+            throw CancellationError()
+        }
+
+        connectState = .connecting
+        do {
+            try await transport.connect()
+        } catch {
+            connectDidSettle()
+            throw error
+        }
+        connectDidSettle()
+
+        if cancellationRequested || Task.isCancelled {
+            cancellationRequested = true
+            await beginDisconnectOnce().value
+            throw CancellationError()
+        }
+    }
+
+    func requestCancellation() {
+        cancellationRequested = true
+        if case .settled = connectState {
+            _ = beginDisconnectOnce()
+        }
+    }
+
+    func disconnect() async {
+        await waitUntilConnectSettles()
+        await beginDisconnectOnce().value
+    }
+
+    func send(_ data: Data) async throws {
+        try await transport.send(data)
+    }
+
+    func receive() -> AsyncThrowingStream<Data, any Error> {
+        let transport = transport
+        return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(8)) { continuation in
+            let forwardingTask = Task {
+                do {
+                    let stream = await transport.receive()
+                    for try await data in stream {
+                        switch continuation.yield(data) {
+                        case .enqueued:
+                            break
+                        case .dropped:
+                            await self.disconnect()
+                            continuation.finish(
+                                throwing: MCPError.internalError(
+                                    "MCP input capacity exceeded"
+                                )
+                            )
+                            return
+                        case .terminated:
+                            return
+                        @unknown default:
+                            await self.disconnect()
+                            continuation.finish(
+                                throwing: MCPError.internalError(
+                                    "MCP input forwarding failed"
+                                )
+                            )
+                            return
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    if Task.isCancelled {
+                        continuation.finish()
+                    } else {
+                        continuation.finish(throwing: error)
+                    }
+                }
+            }
+            continuation.onTermination = { _ in
+                forwardingTask.cancel()
+            }
+        }
+    }
+
+    private func beginDisconnectOnce() -> Task<Void, Never> {
+        if let disconnectTask {
+            return disconnectTask
+        }
+
+        let transport = transport
+        let task = Task {
+            await transport.disconnect()
+        }
+        disconnectTask = task
+        return task
+    }
+
+    private func connectDidSettle() {
+        connectState = .settled
+        let waiters = connectSettlementWaiters
+        connectSettlementWaiters = []
+        waiters.forEach { $0.resume() }
+    }
+
+    private func waitUntilConnectSettles() async {
+        guard case .connecting = connectState else { return }
+        await withCheckedContinuation { continuation in
+            connectSettlementWaiters.append(continuation)
+        }
     }
 }

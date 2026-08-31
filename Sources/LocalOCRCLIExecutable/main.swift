@@ -1,7 +1,12 @@
 import Darwin
 import Foundation
 import LocalOCRCommandKit
+import LocalOCRIntelligence
 import LocalOCRService
+
+let intelligenceEnvironment = LocalIntelligenceEnvironment.live(
+    bridgeLocator: RelativeModelBridgeExecutableLocator()
+)
 
 let application = CLIApplication(
     service: LocalOCRService(),
@@ -12,7 +17,10 @@ let application = CLIApplication(
         stderr: { text in
             FileHandle.standardError.write(Data(text.utf8))
         }
-    )
+    ),
+    consentStore: ExternalDataConsentStore(),
+    consentIO: StandardConsentCommandIO(),
+    intelligenceManager: intelligenceEnvironment.manager
 )
 
 let arguments = Array(CommandLine.arguments.dropFirst())

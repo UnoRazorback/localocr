@@ -2,8 +2,8 @@
   "manifest_version": "0.3",
   "name": "ocr-service",
   "display_name": "OCR Service (Apple Vision)",
-  "version": "0.3.0",
-  "description": "OCR scanned/image-only PDFs and images locally via Apple's Vision framework — no cloud upload. Provides page counting, per-page OCR with page-range support, batch processing, a pre-OCR text-layer inspector, and searchable-PDF generation. The localocr-mcp executable must be available on PATH; this extension does not bundle it.",
+  "version": "0.3.1",
+  "description": "Process PDFs and images locally with Apple Vision, then optionally use verified on-device Local Intelligence. Provides nine purpose-limited tools over local stdio after explicit external-provider acknowledgment. The localocr-mcp executable must be available on PATH; this extension does not bundle it.",
   "author": {
     "name": "Scott Ray"
   },
@@ -24,7 +24,10 @@
     { "name": "ocr_pdf", "description": "OCR a scanned/image-only PDF and return recognized text per page." },
     { "name": "ocr_pdf_batch", "description": "OCR several PDFs in one call." },
     { "name": "ocr_image", "description": "OCR a single image file (PNG/JPG/HEIC/etc.) directly via Vision." },
-    { "name": "make_searchable_pdf", "description": "Write a new PDF with recognized text embedded as an invisible, searchable text layer." }
+    { "name": "make_searchable_pdf", "description": "Write a new PDF with recognized text embedded as an invisible, searchable text layer." },
+    { "name": "summarize_document", "description": "Create a grounded, temporary summary with page evidence using the selected local model." },
+    { "name": "organize_document", "description": "Suggest a grounded title, category, and tags without changing the source document." },
+    { "name": "extract_document_fields", "description": "Extract only requested fields with page evidence using the selected local model." }
   ],
   "keywords": ["ocr", "pdf", "vision", "construction", "scanned-documents"],
   "compatibility": {

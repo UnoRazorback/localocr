@@ -14,6 +14,38 @@ artifact_parent_identity=""
 artifact_output_identity=""
 native_release_dir=""
 native_release_identity=""
+artifact_candidate=""
+artifact_candidate_identity=""
+
+validate_no_network_framework_dependency() {
+    release_validate_binary_dependencies "$1" || return 1
+    release_validate_no_network_symbols "$1"
+}
+
+validate_local_intelligence_candidate_binary() {
+    local binary="$1"
+    local minimum_macos
+
+    release_validate_binary_policy "$binary" false true || return 1
+    validate_no_network_framework_dependency "$binary" || return 1
+    minimum_macos="$(release_binary_minimum_macos "$binary")" || return 1
+    [[ "$minimum_macos" == "14.0" ]] || {
+        echo "Local Intelligence candidate binaries must target macOS 14.0 exactly: $binary targets $minimum_macos" >&2
+        return 1
+    }
+}
+
+validate_model_bridge_candidate_binary() {
+    local binary="$1"
+    local minimum_macos
+
+    release_validate_binary_policy "$binary" false true true || return 1
+    minimum_macos="$(release_binary_minimum_macos "$binary")" || return 1
+    [[ "$minimum_macos" == "14.0" ]] || {
+        echo "Local Intelligence model bridge must target macOS 14.0 exactly: $binary targets $minimum_macos" >&2
+        return 1
+    }
+}
 
 validate_direct_release_artifact_dir() {
     local candidate="${1:-}"
@@ -21,31 +53,43 @@ validate_direct_release_artifact_dir() {
     local physical_dist
     local physical_direct_release
 
-    [[ "$candidate" == "$direct_release_artifact_dir" ]] || {
-        echo "explicit artifact directory must be dist/direct-release/native-tools" >&2
-        return 1
-    }
+    case "$candidate" in
+        "$direct_release_artifact_dir") ;;
+        "$repo_root/dist"/.direct-release.candidate.*/native-tools)
+            case "$(/usr/bin/basename "$(/usr/bin/dirname "$candidate")")" in
+                .direct-release.candidate.*) ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *)
+            echo "explicit artifact directory must be a validated direct-release native-tools path" >&2
+            return 1
+            ;;
+    esac
     [[ ! -L "$repo_root/dist" && ! -L "$repo_root/dist/direct-release" ]] || {
         echo "explicit artifact directory contains a symlinked release component" >&2
         return 1
     }
-    if [[ "$allow_missing_parent" == "true" && ! -e "$repo_root/dist/direct-release" ]]; then
+    if [[ "$allow_missing_parent" == "true" && ! -e "$(/usr/bin/dirname "$candidate")" ]]; then
         return 0
     fi
-    [[ -d "$repo_root/dist/direct-release" ]] || {
-        echo "dist/direct-release must exist before building release artifacts" >&2
+    [[ -d "$(/usr/bin/dirname "$candidate")" ]] || {
+        echo "validated release candidate must exist before building release artifacts" >&2
         return 1
     }
     physical_dist="$(cd "$repo_root/dist" && pwd -P)"
-    physical_direct_release="$(cd "$repo_root/dist/direct-release" && pwd -P)"
+    physical_direct_release="$(cd "$(/usr/bin/dirname "$candidate")" && pwd -P)"
     [[ "$physical_dist" == "$repo_root/dist" ]] || {
         echo "dist resolves outside the physical repository" >&2
         return 1
     }
-    [[ "$physical_direct_release" == "$physical_dist/direct-release" ]] || {
-        echo "direct-release resolves outside the physical repository" >&2
-        return 1
-    }
+    case "$physical_direct_release" in
+        "$physical_dist/direct-release"|"$physical_dist"/.direct-release.candidate.*) ;;
+        *)
+            echo "direct-release candidate resolves outside the physical repository" >&2
+            return 1
+            ;;
+    esac
     [[ ! -L "$candidate" ]] || {
         echo "explicit artifact directory must not be a symlink" >&2
         return 1
@@ -80,7 +124,8 @@ case "${1:-}" in
 esac
 
 case "$artifact_dir" in
-    "$default_artifact_dir"|"$direct_release_artifact_dir") ;;
+    "$default_artifact_dir"|"$direct_release_artifact_dir"|\
+    "$repo_root/dist"/.direct-release.candidate.*/native-tools) ;;
     *)
         echo "refusing to remove an unexpected artifact directory: $artifact_dir" >&2
         exit 1
@@ -122,6 +167,9 @@ validate_artifact_output_path() {
     fi
 }
 
+release_validate_mcp_source_policy "$repo_root"
+"$script_dir/validate-model-bridge-policy.py" --source-root "$repo_root" >/dev/null
+select_release_swift_toolchain
 validate_artifact_output_path
 artifact_parent="$(/usr/bin/dirname "$artifact_dir")"
 artifact_parent_identity="$(
@@ -163,63 +211,133 @@ validate_artifact_output_identity() {
     }
 }
 
-replace_artifact_output_with_empty_directory() {
-    local artifact_name
+validate_artifact_candidate_path() {
+    local candidate="${1:-}"
+
+    case "$candidate" in
+        "$artifact_parent"/.native-tools.candidate.*) ;;
+        *) return 1 ;;
+    esac
+    [[ "$(/usr/bin/dirname "$candidate")" == "$artifact_parent" ]] || return 1
+    [[ -d "$candidate" && ! -L "$candidate" ]] || return 1
+    [[ "$(cd "$candidate" && pwd -P)" == "$candidate" ]]
+}
+
+cleanup_artifact_candidate() {
+    local candidate_name
     local current_parent_identity
 
-    artifact_name="$(/usr/bin/basename "$artifact_dir")"
+    [[ -n "$artifact_candidate" ]] || return 0
+    if [[ ! -e "$artifact_candidate" && ! -L "$artifact_candidate" ]]; then
+        artifact_candidate=""
+        artifact_candidate_identity=""
+        return 0
+    fi
+    validate_artifact_candidate_path "$artifact_candidate" || return 1
+    candidate_name="$(/usr/bin/basename "$artifact_candidate")"
     (
         cd "$artifact_parent" || exit 1
         current_parent_identity="$(/usr/bin/stat -f '%d:%i' .)" || exit 1
         [[ "$current_parent_identity" == "$artifact_parent_identity" ]] || {
-            echo "artifact output parent identity changed before cleanup" >&2
+            echo "artifact output parent identity changed before candidate cleanup" >&2
             exit 1
         }
-        if [[ -e "$artifact_name" || -L "$artifact_name" ]]; then
-            [[ "$artifact_output_identity" != "missing" ]] || {
-                echo "artifact output appeared before cleanup" >&2
-                exit 1
-            }
-            [[ -d "$artifact_name" && ! -L "$artifact_name" ]] || {
-                echo "artifact output became invalid before cleanup" >&2
-                exit 1
-            }
-            release_cleanup_anchored_directory \
-                "$artifact_name" \
-                "$artifact_output_identity" \
-                "$artifact_parent_identity" || {
-                echo "artifact output identity changed before cleanup" >&2
-                exit 1
-            }
-        else
-            [[ "$artifact_output_identity" == "missing" ]] || {
-                echo "artifact output disappeared before cleanup" >&2
-                exit 1
-            }
-        fi
-        /bin/mkdir "$artifact_name"
-    )
+        release_cleanup_anchored_directory \
+            "$candidate_name" \
+            "$artifact_candidate_identity" \
+            "$artifact_parent_identity"
+    ) || return 1
+    artifact_candidate=""
+    artifact_candidate_identity=""
 }
 
-copy_native_products_to_artifact_output() {
-    local current_output_identity
+create_artifact_candidate() {
+    validate_artifact_output_identity || return 1
+    artifact_candidate="$(
+        /usr/bin/mktemp -d "$artifact_parent/.native-tools.candidate.XXXXXX"
+    )" || return 1
+    validate_artifact_candidate_path "$artifact_candidate" || return 1
+    artifact_candidate_identity="$(
+        /usr/bin/swift "$release_path_guard" \
+            token-directory "$artifact_candidate"
+    )" || return 1
+}
+
+copy_native_products_to_artifact_candidate() {
+    local current_candidate_identity
 
     (
-        cd "$artifact_dir" || exit 1
-        current_output_identity="$(/usr/bin/stat -f '%d:%i' .)" || exit 1
-        [[ "$current_output_identity" == "$artifact_output_identity" ]] || {
-            echo "artifact output identity changed before copy" >&2
+        cd "$artifact_candidate" || exit 1
+        current_candidate_identity="$(/usr/bin/stat -f '%d:%i' .)" || exit 1
+        [[ "$current_candidate_identity" == "$artifact_candidate_identity" ]] || {
+            echo "artifact candidate identity changed before copy" >&2
             exit 1
         }
         /bin/cp "$native_release_dir/localocr" ./localocr
         /bin/cp "$native_release_dir/localocr-mcp" ./localocr-mcp
+        /bin/cp "$native_release_dir/localocr-model-bridge" ./localocr-model-bridge
     )
 }
 
+publish_artifact_candidate() {
+    local candidate_name
+    local publication_result
+
+    validate_artifact_output_identity || return 1
+    validate_artifact_candidate_path "$artifact_candidate" || return 1
+    candidate_name="$(/usr/bin/basename "$artifact_candidate")"
+    publication_result="$(
+        release_publish_directory_atomically \
+            "$artifact_candidate" \
+            "$artifact_dir" \
+            "$artifact_parent_identity" \
+            "$artifact_candidate_identity" \
+            "$artifact_output_identity"
+    )" || {
+        echo "could not atomically publish validated native artifacts" >&2
+        return 1
+    }
+    case "$publication_result" in
+        moved)
+            [[ "$artifact_output_identity" == "missing" ]] || return 1
+            ;;
+        exchanged)
+            [[ "$artifact_output_identity" != "missing" ]] || return 1
+            (
+                cd "$artifact_parent" || exit 1
+                release_cleanup_anchored_directory \
+                    "$candidate_name" \
+                    "$artifact_output_identity" \
+                    "$artifact_parent_identity"
+            ) || return 1
+            ;;
+        *)
+            echo "unexpected native artifact publication result" >&2
+            return 1
+            ;;
+    esac
+    artifact_output_identity="$artifact_candidate_identity"
+    artifact_candidate=""
+    artifact_candidate_identity=""
+    validate_artifact_output_identity
+}
+
 cd "$repo_root"
-swift package clean
-swift build -c release --product localocr
-swift build -c release --product localocr-mcp
+"$release_xcode_swift_path" package clean
+"$release_xcode_swift_path" build \
+    --disable-automatic-resolution \
+    -c release \
+    --product localocr
+"$release_xcode_swift_path" build \
+    --disable-automatic-resolution \
+    -c release \
+    --product localocr-mcp
+"$release_xcode_swift_path" build \
+    --disable-automatic-resolution \
+    -c release \
+    --product localocr-model-bridge
+release_validate_mcp_source_policy "$repo_root"
+"$script_dir/validate-model-bridge-policy.py" --source-root "$repo_root" >/dev/null
 
 [[ -d "$repo_root/.build" && ! -L "$repo_root/.build" ]] || {
     echo "SwiftPM build root is missing or symlinked" >&2
@@ -260,7 +378,14 @@ validate_native_release_identity() {
     }
 }
 
-for product in localocr localocr-mcp; do
+for product in localocr localocr-mcp localocr-model-bridge; do
+    release_validate_binary_architecture_and_target \
+        "$native_release_dir/$product"
+    if [[ "$product" == localocr-model-bridge ]]; then
+        release_validate_binary_dependencies "$native_release_dir/$product" true
+    else
+        validate_no_network_framework_dependency "$native_release_dir/$product"
+    fi
     product_dsym="$native_release_dir/$product.dSYM"
     if [[ -e "$product_dsym" || -L "$product_dsym" ]]; then
         release_validate_dsym_matches_binary \
@@ -271,36 +396,47 @@ done
 
 validate_artifact_output_identity
 validate_native_release_identity
-replace_artifact_output_with_empty_directory
-validate_artifact_output_path
-artifact_output_identity="$(
-    /usr/bin/swift "$release_path_guard" token-directory "$artifact_dir"
-)"
-validate_artifact_output_identity
-validate_native_release_identity
-copy_native_products_to_artifact_output
-validate_artifact_output_identity
+create_artifact_candidate
+trap 'cleanup_artifact_candidate || true' EXIT
+copy_native_products_to_artifact_candidate
+validate_artifact_candidate_path "$artifact_candidate"
 validate_native_release_identity
 
 sanitize_copied_artifact() {
     local binary="$1"
 
     case "$binary" in
-        "$artifact_dir/localocr"|"$artifact_dir/localocr-mcp") ;;
+        "$artifact_candidate/localocr"|"$artifact_candidate/localocr-mcp"|\
+        "$artifact_candidate/localocr-model-bridge") ;;
         *)
             echo "refusing to edit an unexpected artifact: $binary" >&2
             exit 1
             ;;
     esac
-    validate_artifact_output_identity
+    validate_artifact_candidate_path "$artifact_candidate"
     sanitize_validated_release_binary "$binary" "$binary" false true
 }
 
-sanitize_copied_artifact "$artifact_dir/localocr"
-sanitize_copied_artifact "$artifact_dir/localocr-mcp"
+sanitize_copied_artifact "$artifact_candidate/localocr"
+sanitize_copied_artifact "$artifact_candidate/localocr-mcp"
+sanitize_validated_release_binary \
+    "$artifact_candidate/localocr-model-bridge" \
+    "$artifact_candidate/localocr-model-bridge" \
+    false true true
+validate_local_intelligence_candidate_binary "$artifact_candidate/localocr"
+validate_local_intelligence_candidate_binary "$artifact_candidate/localocr-mcp"
+validate_model_bridge_candidate_binary "$artifact_candidate/localocr-model-bridge"
+"$script_dir/validate-model-bridge-policy.py" \
+    --source-root "$repo_root" \
+    --binary "$artifact_candidate/localocr-model-bridge" >/dev/null
+validate_artifact_candidate_path "$artifact_candidate"
+validate_artifact_output_identity
+validate_native_release_identity
+publish_artifact_candidate
+trap - EXIT
 validate_artifact_output_identity
 
-for product in localocr localocr-mcp; do
+for product in localocr localocr-mcp localocr-model-bridge; do
     product_dsym="$native_release_dir/$product.dSYM"
     if [[ -e "$product_dsym" || -L "$product_dsym" ]]; then
         release_preserve_matching_dsym \

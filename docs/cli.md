@@ -15,8 +15,8 @@ Build it from source with `swift build`, run it during development with
 localocr <command> [options]
 ```
 
-Available commands are `page-count`, `inspect`, `ocr`, `batch`, `image`, and
-`searchable`. `localocr --help` (or `-h`) lists commands,
+Available commands are `page-count`, `inspect`, `ocr`, `batch`, `image`,
+`searchable`, `mcp-consent`, and `intelligence`. `localocr --help` (or `-h`) lists commands,
 `localocr <command> --help` (or `-h`) shows command usage, and
 `localocr --version` (or `-V`) prints the version.
 
@@ -132,6 +132,56 @@ The destination must be a different path from the source, its parent directory
 must exist, and LocalOCR will not overwrite an existing destination. A result
 can name an output while listing `failed_pages`; treat that output as partial.
 
+### `mcp-consent <status|accept|revoke>`
+
+Manage the external-data acknowledgment required before any `localocr-mcp`
+document tool opens a chosen file. This receipt is for agent access through
+MCP; ordinary CLI OCR and Local Intelligence inside Studio do not require it.
+
+```bash
+localocr mcp-consent status
+localocr mcp-consent accept
+localocr mcp-consent revoke
+```
+
+`status` prints `current` and exits `0` when the receipt is current, or prints
+`required` and exits `2` when acceptance is missing, invalid, revoked, or
+outdated. `accept` displays the external-provider disclosure and both approved
+acknowledgments. It requires an interactive terminal and records acceptance
+only after two `y` or `yes` answers; no flag can bypass those confirmations.
+`revoke` is noninteractive, removes authorization for subsequent MCP document
+calls, prints `revoked`, and exits `0` on success.
+
+The local consent receipt is content-free: it does not record document paths,
+recognized text, or a provider identity. Read the [canonical MCP FAQ](mcp.md)
+before enabling agent access; a local stdio connection does not guarantee that
+the client or its AI provider keeps arguments and results on this Mac.
+
+### `intelligence <models|test|select|status|reset>`
+
+Inspect and manage Local Intelligence providers without changing OCR behavior:
+
+```bash
+localocr intelligence models --json
+localocr intelligence test ollama gemma4:8b --json
+localocr intelligence select ollama gemma4:8b
+localocr intelligence status --json
+localocr intelligence reset --json
+```
+
+`models` reports Apple Foundation Models availability and detected Ollama or
+LM Studio candidates. `test` runs the bounded local qualification suite for one
+exact provider/model identity. `select` makes a qualified identity active;
+third-party loopback providers require the interactive acknowledgment and
+cannot be selected by a noninteractive flag. `status` reports the current
+selection and qualification/acknowledgment provenance. `reset` returns to the
+Apple system model when available and clears any external-provider selection.
+
+Detection never means consent or selection. Remote, relayed, wildcard, generic
+OpenAI-compatible, and locality-ambiguous endpoints are refused. LocalOCR never
+silently switches providers. These commands do not perform OCR and never send
+document text merely to list or test provider metadata.
+
 ## Output streams and exit codes
 
 Successful requested data is written to standard output. Normal OCR progress
@@ -143,7 +193,7 @@ but progress still uses standard error.
 | --- | --- |
 | `0` | Completed without a partial failure. |
 | `1` | Operational failure, such as a missing, unreadable, unsupported, or invalid file/destination. The diagnostic is on standard error. |
-| `2` | Invalid command-line syntax or option value. |
+| `2` | Invalid command-line syntax or option value; MCP consent is required; either acknowledgment is refused; acknowledgment input reaches EOF; or `mcp-consent accept` is run without an interactive TTY (from a non-interactive terminal). |
 | `3` | Partial result: one or more PDF pages or batch files failed, while other output may be available. |
 | `4` | The operation was cancelled. A batch can still have a JSON response describing items completed before cancellation. |
 

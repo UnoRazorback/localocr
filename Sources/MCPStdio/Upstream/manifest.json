@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "repository": "https://github.com/modelcontextprotocol/swift-sdk",
+    "release": "0.12.1",
+    "commit": "a0ae212ebf6eab5f754c3129608bc5557637e605",
+    "retrieved_on": "2026-08-27",
+    "selection_rule": "Only reviewed JSON-RPC, lifecycle, tool, ping, and cancellation source from Sources/MCP may be added; all retained adaptations are data-only and exclude client and network surfaces.",
+    "exclusions": [
+      "client",
+      "HTTP",
+      "OAuth",
+      "EventSource",
+      "URLSession",
+      "socket",
+      "Network",
+      "CFNetwork"
+    ],
+    "hash_command": "shasum -a 256 <file>",
+    "provisional_dependencies": [
+      "swift-system",
+      "swift-log"
+    ]
+  },
+  "files": [
+    {
+      "path": "MCPStdio.swift",
+      "local_only": true,
+      "local_sha256": "33449fc8868c338aeb562b53f2311e9606bc4843043ecf6907a4070958e9027b"
+    },
+    {
+      "path": "Base/ID.swift",
+      "origin": "Sources/MCP/Base/ID.swift",
+      "upstream_sha256": "519d7804eabbf14299b8f067374bf714aa03303b711d2c4423e0078e8e4ee4da",
+      "local_sha256": "1a4a7dc872592790f9c507fd77b1b233e7b854610b8506e3fcaf4f3a77ef8b40"
+    },
+    {
+      "path": "Base/Value.swift",
+      "origin": "Sources/MCP/Base/Value.swift",
+      "upstream_sha256": "6a8399cb11db842faac9f549143058e24d15763705be65701ffba714111aabeb",
+      "local_sha256": "75829e888bbf1d723b28d3dd1b1f5a16d73a27ae7cb48fa75479cd781704ce5a"
+    },
+    {
+      "path": "Base/Error.swift",
+      "origin": "Sources/MCP/Base/Error.swift",
+      "upstream_sha256": "8e8e09ad9a44c50aa27109e4109630bb166d431bfa19ec833b8339b4f45dc1e5",
+      "local_sha256": "81ccb29e2740c53857cd9889e1c733c88a319422874809a62f668463a5d307b5"
+    },
+    {
+      "path": "Base/Messages.swift",
+      "origin": "Sources/MCP/Base/Messages.swift",
+      "upstream_sha256": "7162e0b3e6bc851bcc266ce8358e77c0026d3d91a4d6f2de07ff18f86f1b4f90",
+      "local_sha256": "49c1df8d4187238dd9f20a5f16ab470263146ba39fd65be4847820134af7dee6"
+    },
+    {
+      "path": "Base/Lifecycle.swift",
+      "origin": "Sources/MCP/Base/Lifecycle.swift",
+      "upstream_sha256": "e360527fa92f79b8fa5793d793aac60051825aa3b25932d83e6077b00bcbfeb3",
+      "local_sha256": "4a23d6c5dfaacdfa0016ee1888e11cc713636bb52e7a0b8a279c9b48b44a2bf1"
+    },
+    {
+      "path": "Base/Versioning.swift",
+      "origin": "Sources/MCP/Base/Versioning.swift",
+      "upstream_sha256": "90e48d38b27f138c3e33a4e3ea47c48f5e00b007c01a6c5dbc9287d4099912c5",
+      "local_sha256": "2321290c2405343f0c1548bb83c17932915a021691e9e727d7a1e5e7ba801363"
+    },
+    {
+      "path": "Base/Ping.swift",
+      "origin": "Sources/MCP/Base/Utilities/Ping.swift",
+      "upstream_sha256": "8256e931cd320ba1fc7d3a4b1958f330e80d253ae2e0521b44f8368618418711",
+      "local_sha256": "6e4e6e463da747e326489faeea159f8449569ec55167014c7f78a13e2fcff498"
+    },
+    {
+      "path": "Base/Cancellation.swift",
+      "origin": "Sources/MCP/Base/Utilities/Cancellation.swift",
+      "upstream_sha256": "31c75336c5351f15a88e8f29a580f8b55859d7899f41814aa9f92519a0e7682e",
+      "local_sha256": "16b3e5d3ad58a14cf7c21f8150787f744b48fbbd39bbee0f2616809a4014d7ba"
+    },
+    {
+      "path": "Base/Transport.swift",
+      "origin": "Sources/MCP/Base/Transport.swift",
+      "upstream_sha256": "25d1e9389e78d88412cf88cc0dc303b36a5f7b69d5e0b357b46d5c4cc0259647",
+      "local_sha256": "d783216e494063e2273291bc15756188ce6607ba6f218b5b8adae5841951bab2"
+    },
+    {
+      "path": "Base/StdioTransport.swift",
+      "origin": "Sources/MCP/Base/Transports/StdioTransport.swift",
+      "upstream_sha256": "56b5d57eb8168f97a149bd68d3502a359cf2c42ecd7661b10241957f5e4b2995",
+      "local_sha256": "30667cbfbdc7e4ebd1d45fe1bee4b34bafa171d335e479f113cf57c2b808095b"
+    },
+    {
+      "path": "Server/Tools.swift",
+      "origin": "Sources/MCP/Server/Tools.swift",
+      "upstream_sha256": "79c4fc03714468c4a41c05544371ea7ffbf4517dc647db1b679abf8b71df7f0f",
+      "local_sha256": "3f3ffb5f5a575dcda13d1918755e84d68e6b177935e2925b727d0c4cf4bc6872"
+    },
+    {
+      "path": "Server/Server.swift",
+      "origin": "Sources/MCP/Server/Server.swift",
+      "upstream_sha256": "61cd2439525e73a417cbc36711b7e0340a2442f14acbb1631915ee3d792962f3",
+      "local_sha256": "8645db96398be8ddbf4cb960f87b2f504622b65d003c8c21641028f9bf9693c5"
+    },
+    {
+      "path": "Server/RequestRegistry.swift",
+      "local_only": true,
+      "local_sha256": "8233f56a170b4aec91eabb14645537c55a3ed6beb363c7c79622db018ae2f26e"
+    }
+  ],
+  "adaptations": [
+    {
+      "path": "Base/ID.swift",
+      "reason": "Keeps JSON-RPC scalar encoding while representing a null request ID explicitly and naming the integer case int for LocalOCR's typed contract."
+    },
+    {
+      "path": "Base/Value.swift",
+      "reason": "Retains the JSON Value wire cases, Codable behavior, literal construction, accessors, and upstream-compatible data URL parsing and text/plain default encoding needed by LocalOCR schemas and results."
+    },
+    {
+      "path": "Base/Error.swift",
+      "reason": "Retains JSON-RPC standard and server errors, including Value-shaped error data and peer-message detail fallback, while removing URL elicitation, transport errors, and the System dependency."
+    },
+    {
+      "path": "Base/Messages.swift",
+      "reason": "Retains public JSON-RPC request, response, and notification encoding while removing type-erased dispatch boxes that belong to the later server lifecycle implementation."
+    },
+    {
+      "path": "Base/Lifecycle.swift",
+      "reason": "Uses data-only nested lifecycle capability and implementation records instead of importing upstream Client and Server actors or their HTTP context."
+    },
+    {
+      "path": "Base/Versioning.swift",
+      "reason": "Limits the supported protocol set to the LocalOCR stdio compatibility versions and exposes deterministic negotiation without unrelated SDK version expansion."
+    },
+    {
+      "path": "Base/Ping.swift",
+      "reason": "Relocates the unchanged ping method into the audited Base directory used by the local module."
+    },
+    {
+      "path": "Base/Cancellation.swift",
+      "reason": "Relocates the cancellation notification into the audited Base directory and retains only its request ID and reason wire fields."
+    },
+    {
+      "path": "Base/Transport.swift",
+      "reason": "Retains the upstream actor-isolated Data transport surface while naming only the local newline-delimited byte contract."
+    },
+    {
+      "path": "Base/StdioTransport.swift",
+      "reason": "Hardens the upstream POSIX stdio transport with a one MiB input frame bound, CRLF normalization, bounded overflow draining followed by fail-closed transport termination with a content-free parse error and no dispatch of the oversized or following payload, an eight-frame fail-closed receive queue, receive-consumer termination handling, FIFO complete writes with cancellation-aware waiter removal, broken-pipe suppression, exact-once stream completion, idempotent disconnect, and content-free logging."
+    },
+    {
+      "path": "Server/Tools.swift",
+      "reason": "Retains LocalOCR's tool definitions, optional-annotation decoding, schemas, text content, list, and call messages while removing icons, resources, media, and resource-link content types, and routes generic structured results explicitly through the Value overload to avoid recursive initializer selection."
+    },
+    {
+      "path": "Server/Server.swift",
+      "reason": "Adapts the upstream server to a strict inbound-only stdio lifecycle with structured JSON-RPC params, an atomic initializing claim, ping, tools/list, tools/call, cancellation, correlated concurrent responses, separate fixed eight-request reservation and live-handler limits, deterministic standard and overload errors, generation-scoped terminal-send ownership, and content-free diagnostics; removes client requests, batches, HTTP context, resources, prompts, sampling, elicitation, roots, subscriptions, logging control, and every network-related surface."
+    },
+    {
+      "path": "Server/RequestRegistry.swift",
+      "reason": "Adds a bounded local actor registry with monotonic reservation leases that atomically distinguishes duplicate and overloaded requests, retains IDs through explicit executing and terminal-sending states, bounds cancellation-insensitive live handlers separately, prevents stale handler completion from mutating a reused ID, makes cancellation idempotent, and cancels outstanding tasks during connection teardown."
+    }
+  ]
+}

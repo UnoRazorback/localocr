@@ -184,6 +184,7 @@ verify_expected_nested_code() {
     require_expected_macho_file "$main_executable"
     require_expected_macho_file "$app_path/Contents/Helpers/localocr"
     require_expected_macho_file "$app_path/Contents/Helpers/localocr-mcp"
+    require_expected_macho_file "$app_path/Contents/Helpers/localocr-model-bridge"
 
     unexpected_symlink="$(
         /usr/bin/find "$app_path/Contents" -type l -print -quit
@@ -208,7 +209,7 @@ verify_expected_nested_code() {
         [[ "$file_description" == *"Mach-O"* ]] || continue
         relative_candidate="${candidate#"$app_path"/}"
         case "$relative_candidate" in
-            "$allowed_main"|Contents/Helpers/localocr|Contents/Helpers/localocr-mcp)
+            "$allowed_main"|Contents/Helpers/localocr|Contents/Helpers/localocr-mcp|Contents/Helpers/localocr-model-bridge)
                 ;;
             *)
                 echo "unexpected nested code: $relative_candidate" >&2
@@ -267,6 +268,7 @@ record_signing_order() {
     codesign_command_executor="trace"
     execute_codesign_command "$app_path/Contents/Helpers/localocr"
     execute_codesign_command "$app_path/Contents/Helpers/localocr-mcp"
+    execute_codesign_command "$app_path/Contents/Helpers/localocr-model-bridge"
     execute_codesign_command "$app_path"
 }
 
@@ -284,9 +286,14 @@ preflight_direct_release_signing() {
     validate_signing_identity
     verify_expected_nested_code "$STAGED_APP"
     main_executable="$(resolve_staged_main_executable "$STAGED_APP")"
-    for helper in localocr localocr-mcp; do
-        verify_binary_policy "$STAGED_APP/Contents/Helpers/$helper"
+    for helper in localocr localocr-mcp localocr-model-bridge; do
+        verify_binary_policy \
+            "$STAGED_APP/Contents/Helpers/$helper" \
+            "$([[ "$helper" == localocr-model-bridge ]] && printf true || printf false)"
     done
+    "$sign_script_dir/validate-model-bridge-policy.py" \
+        --source-root "$verify_repo_root" \
+        --binary "$STAGED_APP/Contents/Helpers/localocr-model-bridge" >/dev/null
     verify_binary_policy "$main_executable"
     sanitize_staged_app_metadata "$STAGED_APP"
     validate_release_bundle_metadata "$STAGED_APP"
@@ -299,6 +306,7 @@ sign_direct_release() {
     for code_object in \
         "$STAGED_APP/Contents/Helpers/localocr" \
         "$STAGED_APP/Contents/Helpers/localocr-mcp" \
+        "$STAGED_APP/Contents/Helpers/localocr-model-bridge" \
         "$STAGED_APP"
     do
         validate_release_bundle_metadata "$STAGED_APP"

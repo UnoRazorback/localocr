@@ -29,9 +29,9 @@
 		3DC1F28B20AE533FF8CAA0C3 /* LocalOCR StudioUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "LocalOCR StudioUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		440F32466F2B88C6C5495D73 /* LocalOCRStudioUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalOCRStudioUITests.swift; sourceTree = "<group>"; };
 		81AD275C815A6814A01B4629 /* LocalOCRStudioApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalOCRStudioApp.swift; sourceTree = "<group>"; };
+		B1C6F7AA31EB1759AEAFC8F1 /* local-intelligence-mcp-faq */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "local-intelligence-mcp-faq"; path = .; sourceTree = SOURCE_ROOT; };
 		CD99EEC3E460E29A91D78996 /* LocalOCRStudioUITestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalOCRStudioUITestSupport.swift; sourceTree = "<group>"; };
 		DEB2E21326492ED48D82364F /* LocalOCR Studio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "LocalOCR Studio.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		E3C5E5ECE9D20414A98E0880 /* desktop-batch-beta2 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "desktop-batch-beta2"; path = .; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -49,7 +49,7 @@
 		35F810F381F458335EC5D1CB /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				E3C5E5ECE9D20414A98E0880 /* desktop-batch-beta2 */,
+				B1C6F7AA31EB1759AEAFC8F1 /* local-intelligence-mcp-faq */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -215,7 +215,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "LocalOCR Studio";
@@ -226,7 +226,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.3.0;
+				MARKETING_VERSION = 0.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.rayconsulting.localocr;
 				PRODUCT_NAME = "LocalOCR Studio";
 				SDKROOT = macosx;
@@ -296,7 +296,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "LocalOCR Studio";
@@ -307,7 +307,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.3.0;
+				MARKETING_VERSION = 0.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.rayconsulting.localocr;
 				PRODUCT_NAME = "LocalOCR Studio";
 				SDKROOT = macosx;
