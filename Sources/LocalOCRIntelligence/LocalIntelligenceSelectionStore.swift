@@ -57,16 +57,7 @@ public actor LocalIntelligenceSelectionStore: LocalIntelligenceSelectionStoring 
     }
 
     private nonisolated static var receiptSchema: SecureJSONReceiptSchema {
-        let identity = SecureJSONReceiptSchema.object(
-            required: [
-                "provider": .value,
-                "model": .value
-            ],
-            optional: [
-                "fingerprint": .value,
-                "harnessVersion": .value
-            ]
-        )
+        let identity = SecureJSONReceiptSchema.localModelIdentity
         let qualification = SecureJSONReceiptSchema.object(required: [
             "policy_version": .value,
             "fixture_version": .value,
@@ -184,7 +175,8 @@ public actor LocalIntelligenceSelectionStore: LocalIntelligenceSelectionStoring 
     private nonisolated static func hasBoundedIdentityFields(
         _ identity: LocalModelIdentity
     ) -> Bool {
-        identity.model.utf8.count <= 1_024 &&
+        identity.hasValidProviderAttestation &&
+            identity.model.utf8.count <= 1_024 &&
             (identity.fingerprint?.utf8.count ?? 0) <= 1_024 &&
             (identity.harnessVersion?.utf8.count ?? 0) <= 256
     }

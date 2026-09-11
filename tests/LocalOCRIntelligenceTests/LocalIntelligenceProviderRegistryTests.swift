@@ -6,6 +6,7 @@ import Testing
 
 @Suite struct LocalIntelligenceProviderRegistryTests {
     @Test func modelsDiscoveryIsContentFreeAndReturnsApplePlusBridgeCandidates() async {
+        let llamaIdentity = LocalModelIdentity(provider: .llamaCpp, model: "fixture", fingerprint: "sha256:fixture", harnessVersion: "fixture")
         let transport = Task6Transport { request in
             #expect(request.action == .discover)
             #expect(request.prompt == nil)
@@ -13,7 +14,7 @@ import Testing
             #expect(request.fields.isEmpty)
             let candidates = request.provider == .ollama
                 ? [task6Candidate()]
-                : [task6Candidate(identity: task6LMStudioIdentity)]
+                : [task6Candidate(identity: request.provider == .llamaCpp ? llamaIdentity : task6LMStudioIdentity)]
             return task6DiscoveryResponse(request: request, candidates: candidates)
         }
         let registry = LocalIntelligenceProviderRegistry(
@@ -29,10 +30,10 @@ import Testing
         #expect(models.map(\.identity) == [
             .appleSystemDefault,
             task6OllamaIdentity,
-            task6LMStudioIdentity
+            task6LMStudioIdentity, llamaIdentity
         ])
         #expect(models.first?.available == true)
-        #expect(await transport.requests.count == 2)
+        #expect(await transport.requests.count == 3)
         #expect(await transport.requests.allSatisfy { $0.action == .discover && $0.prompt == nil })
     }
 

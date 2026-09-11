@@ -9,7 +9,7 @@ public struct LocalOCRCommandSurface: AsyncParsableCommand {
         version: LocalOCRRuntime.version,
         subcommands: [
             PageCount.self, Inspect.self, OCR.self, Batch.self, Image.self, Searchable.self,
-            MCPConsent.self, Intelligence.self
+            MCPConsent.self, Intelligence.self, Summarize.self, Organize.self, ExtractFields.self
         ]
     )
 
@@ -76,6 +76,27 @@ public struct LocalOCRCommandSurface: AsyncParsableCommand {
         @Option(name: .long) public var dpi: Int = 250
         @Flag(name: .customLong("force-ocr")) public var forceOCR = false
         @Flag(name: .customLong("no-cache")) public var noCache = false
+        @Flag(name: .long) public var json = false
+        public init() {}
+        public mutating func run() async throws {}
+    }
+
+    public struct Summarize: AsyncParsableCommand {
+        @Argument public var file: String
+        @Flag(name: .long) public var json = false
+        public init() {}
+        public mutating func run() async throws {}
+    }
+    public struct Organize: AsyncParsableCommand {
+        @Argument public var file: String
+        @Flag(name: .long) public var json = false
+        public init() {}
+        public mutating func run() async throws {}
+    }
+    public struct ExtractFields: AsyncParsableCommand {
+        public static let configuration = CommandConfiguration(commandName: "extract-fields")
+        @Argument public var file: String
+        @Option(name: .long) public var field: [String] = []
         @Flag(name: .long) public var json = false
         public init() {}
         public mutating func run() async throws {}

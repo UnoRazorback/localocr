@@ -495,6 +495,7 @@ struct LMStudioCommandRunner: Sendable {
     let cleanupBudget: Duration
     let pipeDrainBudget: Duration
     let maximumOutputBytes: Int
+    private let captureStandardError: Bool
     private let suspendedCodeInspector: any LMStudioSuspendedCodeInspecting
     private let descendantTrackerFactory:
         @Sendable (pid_t) throws -> any LMStudioDescendantTracking
@@ -505,6 +506,7 @@ struct LMStudioCommandRunner: Sendable {
         cleanupBudget: Duration,
         pipeDrainBudget: Duration,
         maximumOutputBytes: Int,
+        captureStandardError: Bool = false,
         suspendedCodeInspector: any LMStudioSuspendedCodeInspecting =
             DarwinLMStudioSuspendedCodeInspector(),
         descendantTrackerFactory:
@@ -517,6 +519,7 @@ struct LMStudioCommandRunner: Sendable {
         self.cleanupBudget = cleanupBudget
         self.pipeDrainBudget = pipeDrainBudget
         self.maximumOutputBytes = maximumOutputBytes
+        self.captureStandardError = captureStandardError
         self.suspendedCodeInspector = suspendedCodeInspector
         self.descendantTrackerFactory = descendantTrackerFactory
     }
@@ -720,7 +723,7 @@ struct LMStudioCommandRunner: Sendable {
                 guard status == 0 else {
                     throw LMStudioCLIProbeError.commandFailed
                 }
-                return stdout.data
+                return captureStandardError ? stdout.data + stderr.data : stdout.data
             }
             if let drainDeadline, clock.now >= drainDeadline {
                 try await abort(

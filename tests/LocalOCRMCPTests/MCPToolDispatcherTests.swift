@@ -345,11 +345,11 @@ import Testing
             arguments: ["file_path": "form.pdf", "fields": [" date ", "total"]]
         )
 
-        #expect(text(in: summary) == "{\"citations\":[{\"page\":1,\"quote\":\"Invoice total\"}],\"local_model\":{\"model\":\"SystemLanguageModel.default\",\"processing\":\"on_device\",\"provider\":\"Apple Foundation Models\"},\"text\":\"A short summary.\"}")
+        #expect(text(in: summary) == "{\"citations\":[{\"page\":1,\"quote\":\"Invoice total\"}],\"local_model\":{\"fingerprint\":null,\"harness_version\":null,\"model\":\"SystemLanguageModel.default\",\"processing\":\"on_device\",\"provider_display_name\":\"Apple Foundation Models\",\"provider_id\":\"apple_foundation_models\",\"qualified_at\":null},\"text\":\"A short summary.\"}")
         #expect(summary.structuredContent?.objectValue?["text"] == .string("A short summary."))
-        #expect(text(in: organization) == "{\"category\":\"Finance\",\"citations\":[{\"page\":1,\"quote\":\"Invoice total\"}],\"local_model\":{\"model\":\"SystemLanguageModel.default\",\"processing\":\"on_device\",\"provider\":\"Apple Foundation Models\"},\"tags\":[\"invoice\",\"paid\"],\"title\":\"Paid invoice\"}")
+        #expect(text(in: organization) == "{\"category\":\"Finance\",\"citations\":[{\"page\":1,\"quote\":\"Invoice total\"}],\"local_model\":{\"fingerprint\":null,\"harness_version\":null,\"model\":\"SystemLanguageModel.default\",\"processing\":\"on_device\",\"provider_display_name\":\"Apple Foundation Models\",\"provider_id\":\"apple_foundation_models\",\"qualified_at\":null},\"tags\":[\"invoice\",\"paid\"],\"title\":\"Paid invoice\"}")
         #expect(organization.structuredContent?.objectValue?["category"] == .string("Finance"))
-        #expect(text(in: extraction) == "{\"fields\":[{\"evidence\":null,\"name\":\"date\",\"source_page\":null,\"value\":null},{\"evidence\":\"Total: $19.00\",\"name\":\"total\",\"source_page\":1,\"value\":\"$19.00\"}],\"local_model\":{\"model\":\"SystemLanguageModel.default\",\"processing\":\"on_device\",\"provider\":\"Apple Foundation Models\"}}")
+        #expect(text(in: extraction) == "{\"fields\":[{\"evidence\":null,\"name\":\"date\",\"source_page\":null,\"value\":null},{\"evidence\":\"Total: $19.00\",\"name\":\"total\",\"source_page\":1,\"value\":\"$19.00\"}],\"local_model\":{\"fingerprint\":null,\"harness_version\":null,\"model\":\"SystemLanguageModel.default\",\"processing\":\"on_device\",\"provider_display_name\":\"Apple Foundation Models\",\"provider_id\":\"apple_foundation_models\",\"qualified_at\":null}}")
         let extractedFields = extraction.structuredContent?.objectValue?["fields"]?.arrayValue
         #expect(extractedFields?.count == 2)
         #expect(extractedFields?.first?.objectValue?["value"] == .null)
@@ -370,7 +370,11 @@ import Testing
     @Test func intelligenceResponsesIdentifyTheOnDeviceAppleSystemModel() async throws {
         let dispatcher = makeDispatcher(currentDirectory: currentDirectory)
         let expectedModel: Value = .object([
-            "provider": .string("Apple Foundation Models"),
+            "provider_id": .string("apple_foundation_models"),
+            "provider_display_name": .string("Apple Foundation Models"),
+            "fingerprint": .null,
+            "harness_version": .null,
+            "qualified_at": .null,
             "model": .string("SystemLanguageModel.default"),
             "processing": .string("on_device"),
         ])
@@ -390,7 +394,24 @@ import Testing
 
         for result in [summary, organization, extraction] {
             #expect(result.structuredContent?.objectValue?["local_model"] == expectedModel)
-            #expect(text(in: result)?.contains(#""local_model":{"model":"SystemLanguageModel.default","processing":"on_device","provider":"Apple Foundation Models"}"#) == true)
+            #expect(text(in: result)?.contains(#""local_model":{"fingerprint":null,"harness_version":null,"model":"SystemLanguageModel.default","processing":"on_device","provider_display_name":"Apple Foundation Models","provider_id":"apple_foundation_models","qualified_at":null}"#) == true)
+        }
+    }
+
+    @Test func externalResultProvenanceMatchesEveryDeclaredSchemaKey() async throws {
+        let provenance = LocalModelProvenance(provider: .ollama, providerDisplayName: "Ollama", model: "fixture", processing: .onDeviceLoopback, fingerprint: "sha256:fixture", qualifiedAt: Date(timeIntervalSince1970: 0), harnessVersion: "1.0")
+        let dispatcher = makeDispatcher(intelligence: FakeIntelligenceProvider(model: provenance), currentDirectory: currentDirectory)
+        for name in ["summarize_document", "organize_document", "extract_document_fields"] {
+            let args: [String: Value] = name == "extract_document_fields" ? ["file_path": "file.pdf", "fields": ["date", "total"]] : ["file_path": "file.pdf"]
+            let result = await dispatcher.callTool(name: name, arguments: args)
+            let model = try #require(result.structuredContent?.objectValue?["local_model"]?.objectValue)
+            let tool = try #require(MCPToolCatalog.tools.first { $0.name == name })
+            let schema = try #require(tool.outputSchema?.objectValue?["properties"]?.objectValue?["local_model"]?.objectValue)
+            #expect(Set(model.keys) == Set(schema["properties"]!.objectValue!.keys))
+            #expect(model["provider_id"] == .string("ollama"))
+            #expect(model["harness_version"] == .string("1.0"))
+            #expect(model["qualified_at"] == .string("1970-01-01T00:00:00Z"))
+            #expect(model["processing"] == .string("on_device_loopback"))
         }
     }
 
@@ -688,8 +709,10 @@ private actor FakeIntelligenceProvider: DocumentIntelligenceProviding {
     private var calls: [Operation] = []
     private var failure: (any Error & Sendable)?
     private let summaryText: String
+    private let model: LocalModelProvenance
 
-    init(summaryText: String = "A short summary.") {
+    init(summaryText: String = "A short summary.", model: LocalModelProvenance = .appleSystemDefault) {
+        self.model = model
         self.summaryText = summaryText
     }
 
@@ -712,7 +735,7 @@ private actor FakeIntelligenceProvider: DocumentIntelligenceProviding {
                 text: summaryText,
                 citations: [.init(page: 1, quote: "Invoice total")]
             ),
-            model: .appleSystemDefault
+            model: model
         )
     }
 
@@ -728,7 +751,7 @@ private actor FakeIntelligenceProvider: DocumentIntelligenceProviding {
                 tags: ["invoice", "paid"],
                 citations: [.init(page: 1, quote: "Invoice total")]
             ),
-            model: .appleSystemDefault
+            model: model
         )
     }
 
@@ -743,7 +766,7 @@ private actor FakeIntelligenceProvider: DocumentIntelligenceProviding {
                 .init(name: names[0], value: nil, sourcePage: nil, evidence: nil),
                 .init(name: names[1], value: "$19.00", sourcePage: 1, evidence: "Total: $19.00"),
             ],
-            model: .appleSystemDefault
+            model: model
         )
     }
 

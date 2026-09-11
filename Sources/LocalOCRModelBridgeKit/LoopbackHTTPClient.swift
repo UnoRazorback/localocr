@@ -7,6 +7,7 @@ public enum ApprovedLoopbackEndpoint: Sendable, Equatable {
     case ollamaChat
     case lmStudioModels
     case lmStudioChat
+    case llamaCppHealth, llamaCppProps, llamaCppModels, llamaCppChat
 
     public var ipv4URL: URL {
         let path = switch self {
@@ -15,6 +16,10 @@ public enum ApprovedLoopbackEndpoint: Sendable, Equatable {
         case .ollamaChat: "http://127.0.0.1:11434/api/chat"
         case .lmStudioModels: "http://127.0.0.1:1234/api/v1/models"
         case .lmStudioChat: "http://127.0.0.1:1234/api/v1/chat"
+        case .llamaCppHealth: "http://127.0.0.1:8080/health"
+        case .llamaCppProps: "http://127.0.0.1:8080/props"
+        case .llamaCppModels: "http://127.0.0.1:8080/v1/models"
+        case .llamaCppChat: "http://127.0.0.1:8080/v1/chat/completions"
         }
         return URL(string: path)!
     }
@@ -26,14 +31,18 @@ public enum ApprovedLoopbackEndpoint: Sendable, Equatable {
         case .ollamaChat: "http://[::1]:11434/api/chat"
         case .lmStudioModels: "http://[::1]:1234/api/v1/models"
         case .lmStudioChat: "http://[::1]:1234/api/v1/chat"
+        case .llamaCppHealth: "http://[::1]:8080/health"
+        case .llamaCppProps: "http://[::1]:8080/props"
+        case .llamaCppModels: "http://[::1]:8080/v1/models"
+        case .llamaCppChat: "http://[::1]:8080/v1/chat/completions"
         }
         return URL(string: path)!
     }
 
     fileprivate var method: String {
         switch self {
-        case .ollamaVersion, .ollamaTags, .lmStudioModels: "GET"
-        case .ollamaChat, .lmStudioChat: "POST"
+        case .ollamaVersion, .ollamaTags, .lmStudioModels, .llamaCppHealth, .llamaCppProps, .llamaCppModels: "GET"
+        case .ollamaChat, .lmStudioChat, .llamaCppChat: "POST"
         }
     }
 }

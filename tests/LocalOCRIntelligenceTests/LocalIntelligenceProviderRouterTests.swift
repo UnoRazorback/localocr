@@ -288,7 +288,8 @@ import Testing
             model: task6OllamaIdentity.model,
             processing: .onDeviceLoopback,
             fingerprint: task6OllamaIdentity.fingerprint,
-            qualifiedAt: task6Now
+            qualifiedAt: task6Now,
+            harnessVersion: task6OllamaIdentity.harnessVersion
         ))
         #expect(result.value.citations == [
             .init(page: 1, quote: "Invoice Q-104. Date: 2026-08-29. Total: $144.17.")

@@ -30,13 +30,16 @@ public struct UnimplementedModelBridgeHandler: ModelBridgeHandling {
 public struct ModelBridgeProviderHandler: ModelBridgeHandling {
     private let ollama: OllamaBridgeAdapter
     private let lmStudio: LMStudioBridgeAdapter?
+    private let llamaCpp: LlamaCppBridgeAdapter?
 
     public init(
         ollama: OllamaBridgeAdapter,
-        lmStudio: LMStudioBridgeAdapter? = nil
+        lmStudio: LMStudioBridgeAdapter? = nil,
+        llamaCpp: LlamaCppBridgeAdapter? = nil
     ) {
         self.ollama = ollama
         self.lmStudio = lmStudio
+        self.llamaCpp = llamaCpp
     }
 
     public func handle(_ request: ModelBridgeRequest) async -> ModelBridgeResponse {
@@ -52,6 +55,11 @@ public struct ModelBridgeProviderHandler: ModelBridgeHandling {
                 )
             }
             return await handleLMStudio(request, adapter: lmStudio)
+        case .llamaCpp:
+            guard let llamaCpp else {
+                return Self.errorResponse(id: request.id, code: .providerNotImplemented, message: "Provider adapter is not implemented.")
+            }
+            return await handleLlamaCpp(request, adapter: llamaCpp)
         case .appleFoundationModels:
             return Self.errorResponse(
                 id: request.id,
@@ -153,6 +161,56 @@ public struct ModelBridgeProviderHandler: ModelBridgeHandling {
                     id: request.id,
                     code: Self.discoveryErrorCode(error),
                     message: "LM Studio status is unavailable."
+                )
+            }
+        }
+    }
+
+    private func handleLlamaCpp(
+        _ request: ModelBridgeRequest,
+        adapter: LlamaCppBridgeAdapter
+    ) async -> ModelBridgeResponse {
+        switch request.action {
+        case .discover:
+            do {
+                return ModelBridgeResponse(
+                    id: request.id,
+                    candidates: try await adapter.discover(
+                        timeoutMilliseconds: request.timeoutMilliseconds
+                    )
+                )
+            } catch {
+                return Self.errorResponse(
+                    id: request.id,
+                    code: LlamaCppBridgeAdapter.errorCode(error),
+                    message: "llama.cpp discovery is unavailable."
+                )
+            }
+        case .generate:
+            return await adapter.generate(request)
+        case .status:
+            guard let selectedModel = request.model else {
+                return Self.errorResponse(
+                    id: request.id,
+                    code: .invalidRequest,
+                    message: "llama.cpp status requires an exact model identifier."
+                )
+            }
+            do {
+                let candidates = try await adapter.discover(
+                    timeoutMilliseconds: request.timeoutMilliseconds
+                )
+                return Self.statusResponse(
+                    id: request.id,
+                    model: selectedModel,
+                    candidates: candidates,
+                    providerName: "llama.cpp"
+                )
+            } catch {
+                return Self.errorResponse(
+                    id: request.id,
+                    code: LlamaCppBridgeAdapter.errorCode(error),
+                    message: "llama.cpp status is unavailable."
                 )
             }
         }
@@ -263,11 +321,13 @@ public struct ModelBridgeProviderHandler: ModelBridgeHandling {
 public enum ModelBridgeProductionComposition {
     public static func handler(
         http: any LoopbackHTTPPerforming = LoopbackHTTPClient(),
-        lmStudioCLI: any LMStudioCLIProbing = LMStudioCLIProbe()
+        lmStudioCLI: any LMStudioCLIProbing = LMStudioCLIProbe(),
+        llamaCppProbe: any LlamaCppProcessProbing = LlamaCppProcessProbe()
     ) -> ModelBridgeProviderHandler {
         ModelBridgeProviderHandler(
             ollama: OllamaBridgeAdapter(http: http),
-            lmStudio: LMStudioBridgeAdapter(http: http, cli: lmStudioCLI)
+            lmStudio: LMStudioBridgeAdapter(http: http, cli: lmStudioCLI),
+            llamaCpp: LlamaCppBridgeAdapter(http: http, probe: llamaCppProbe)
         )
     }
 }

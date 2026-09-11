@@ -11,7 +11,11 @@ struct LoopbackHTTPClientTests {
             (.ollamaTags, "http://127.0.0.1:11434/api/tags", "http://[::1]:11434/api/tags"),
             (.ollamaChat, "http://127.0.0.1:11434/api/chat", "http://[::1]:11434/api/chat"),
             (.lmStudioModels, "http://127.0.0.1:1234/api/v1/models", "http://[::1]:1234/api/v1/models"),
-            (.lmStudioChat, "http://127.0.0.1:1234/api/v1/chat", "http://[::1]:1234/api/v1/chat")
+            (.lmStudioChat, "http://127.0.0.1:1234/api/v1/chat", "http://[::1]:1234/api/v1/chat"),
+            (.llamaCppHealth, "http://127.0.0.1:8080/health", "http://[::1]:8080/health"),
+            (.llamaCppProps, "http://127.0.0.1:8080/props", "http://[::1]:8080/props"),
+            (.llamaCppModels, "http://127.0.0.1:8080/v1/models", "http://[::1]:8080/v1/models"),
+            (.llamaCppChat, "http://127.0.0.1:8080/v1/chat/completions", "http://[::1]:8080/v1/chat/completions")
         ]
 
         for (endpoint, ipv4, ipv6) in expected {
@@ -89,22 +93,31 @@ struct LoopbackHTTPClientTests {
         #expect(requests[1].value(forHTTPHeaderField: "Cookie") == nil)
     }
 
-    @Test
-    func connectionFailureRetriesOnlyTheLiteralIPv6Endpoint() async throws {
+    @Test(arguments: [ApprovedLoopbackEndpoint.ollamaVersion, .llamaCppHealth, .llamaCppProps, .llamaCppModels, .llamaCppChat])
+    func connectionFailureRetriesOnlyTheLiteralIPv6Endpoint(endpoint: ApprovedLoopbackEndpoint) async throws {
         let session = FixtureLoopbackHTTPSession(
             outcomes: [
                 .urlError(.cannotConnectToHost),
-                .response(okResponse(for: .ollamaVersion, ipv6: true))
+                .response(okResponse(for: endpoint, ipv6: true))
             ]
         )
         let client = LoopbackHTTPClient(session: session)
 
-        _ = try await client.perform(.ollamaVersion, body: nil, timeoutMilliseconds: 1_000)
+        _ = try await client.perform(endpoint, body: nil, timeoutMilliseconds: 1_000)
 
         #expect(await session.requests.map(\.url) == [
-            ApprovedLoopbackEndpoint.ollamaVersion.ipv4URL,
-            ApprovedLoopbackEndpoint.ollamaVersion.ipv6URL
+            endpoint.ipv4URL,
+            endpoint.ipv6URL
         ])
+    }
+
+    @Test func llamaCppFailedIPv6FallbackDoesNotTryAnotherProvider() async {
+        let session = FixtureLoopbackHTTPSession(outcomes: [.urlError(.cannotConnectToHost), .urlError(.cannotConnectToHost)])
+        let client = LoopbackHTTPClient(session: session)
+        await #expect(throws: (any Error).self) {
+            try await client.perform(.llamaCppChat, body: Data("{}".utf8), timeoutMilliseconds: 1000)
+        }
+        #expect(await session.requests.map(\.url) == [ApprovedLoopbackEndpoint.llamaCppChat.ipv4URL, ApprovedLoopbackEndpoint.llamaCppChat.ipv6URL])
     }
 
     @Test

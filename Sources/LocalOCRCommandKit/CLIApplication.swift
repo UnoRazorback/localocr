@@ -74,6 +74,8 @@ public struct CLIApplication: Sendable {
     let consentStore: any ExternalDataConsentStoring
     let consentIO: any ConsentCommandIO
     let intelligenceManager: (any LocalIntelligenceManaging)?
+    let textLoader: any DocumentTextLoading
+    let intelligence: (any DocumentIntelligenceProviding)?
     let now: @Sendable () -> Date
 
     public init(
@@ -82,6 +84,8 @@ public struct CLIApplication: Sendable {
         consentStore: any ExternalDataConsentStoring = ExternalDataConsentStore(),
         consentIO: any ConsentCommandIO = StandardConsentCommandIO(),
         intelligenceManager: (any LocalIntelligenceManaging)? = nil,
+        textLoader: (any DocumentTextLoading)? = nil,
+        intelligence: (any DocumentIntelligenceProviding)? = nil,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.service = service
@@ -89,6 +93,8 @@ public struct CLIApplication: Sendable {
         self.consentStore = consentStore
         self.consentIO = consentIO
         self.intelligenceManager = intelligenceManager
+        self.textLoader = textLoader ?? LocalOCRDocumentTextLoader(service: service)
+        self.intelligence = intelligence
         self.now = now
     }
 
@@ -131,6 +137,7 @@ public struct CLIApplication: Sendable {
             }
 
             switch command {
+            case "summarize", "organize", "extract-fields": return try await runDocumentIntelligence(command: command, arguments: remainder)
             case "page-count": return try await runPageCount(arguments: remainder)
             case "inspect": return try await runInspect(arguments: remainder)
             case "ocr": return try await runOCR(arguments: remainder)
@@ -182,11 +189,13 @@ public struct CLIApplication: Sendable {
     static let rootHelp = """
     Usage: localocr <command> [options]
 
-    Commands: page-count, inspect, ocr, batch, image, searchable, mcp-consent, intelligence
+    Commands: page-count, inspect, ocr, batch, image, searchable, mcp-consent, intelligence, summarize, organize, extract-fields
     """ + "\n"
 
     static func help(for command: String) -> String? {
         switch command {
+        case "summarize", "organize": "Usage: localocr \(command) <file> [--json]\n"
+        case "extract-fields": "Usage: localocr extract-fields <file> --field <name>... [--json]\n"
         case "page-count": "Usage: localocr page-count <file> [--json]\n"
         case "inspect": "Usage: localocr inspect <file> [--json]\n"
         case "ocr": "Usage: localocr ocr <file> [--pages <spec>] [--dpi <72...600>] [--force-ocr] [--detail] [--no-cache] [--json]\n"
@@ -820,6 +829,7 @@ private func intelligenceProviderDisplayName(_ provider: LocalModelProviderID?) 
     case .appleFoundationModels: "Apple Foundation Models"
     case .ollama: "Ollama"
     case .lmStudio: "LM Studio"
+    case .llamaCpp: "llama.cpp"
     case nil: "Unknown"
     }
 }

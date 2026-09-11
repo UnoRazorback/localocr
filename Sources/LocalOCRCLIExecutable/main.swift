@@ -20,7 +20,8 @@ let application = CLIApplication(
     ),
     consentStore: ExternalDataConsentStore(),
     consentIO: StandardConsentCommandIO(),
-    intelligenceManager: intelligenceEnvironment.manager
+    intelligenceManager: intelligenceEnvironment.manager,
+    intelligence: intelligenceEnvironment.router
 )
 
 let arguments = Array(CommandLine.arguments.dropFirst())

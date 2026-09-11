@@ -145,7 +145,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LocalOCRCommandKitTests",
-            dependencies: ["LocalOCRCommandKit"],
+            dependencies: ["LocalOCRCommandKit", "LocalOCRMCP", "MCPStdio", "LocalOCRModelBridgeProtocol"],
             path: "tests/LocalOCRCommandKitTests",
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         ),
@@ -172,6 +172,7 @@ let package = Package(
                 "LocalOCRIntelligence",
                 "LocalOCRModelCore",
                 "LocalOCRModelBridgeProtocol",
+                "LocalOCRModelBridgeKit",
                 "LocalOCRService",
                 "LocalOCRCore"
             ],

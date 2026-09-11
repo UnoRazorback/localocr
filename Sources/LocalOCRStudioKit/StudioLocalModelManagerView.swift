@@ -311,7 +311,7 @@ struct StudioLocalModelManagerView: View {
     }
 
     private let providerOrder: [LocalModelProviderID] = [
-        .appleFoundationModels, .ollama, .lmStudio,
+        .appleFoundationModels, .ollama, .lmStudio, .llamaCpp,
     ]
 
     private func providerTitle(_ provider: LocalModelProviderID) -> String {
@@ -319,6 +319,7 @@ struct StudioLocalModelManagerView: View {
         case .appleFoundationModels: "APPLE"
         case .ollama: "OLLAMA"
         case .lmStudio: "LM STUDIO"
+        case .llamaCpp: "LLAMA.CPP"
         }
     }
 
@@ -327,6 +328,7 @@ struct StudioLocalModelManagerView: View {
         case .appleFoundationModels: "The Apple system model is not available on this Mac."
         case .ollama: "No Ollama models were detected. Start your existing local harness, then choose Detect."
         case .lmStudio: "No LM Studio models were detected. Start your existing local harness, then choose Detect."
+        case .llamaCpp: "No verified llama.cpp server was detected. Start your existing local server, then choose Detect."
         }
     }
 

@@ -165,7 +165,13 @@ EXPECTED_TARGET_DEPENDENCIES = {
         ("target", "LocalOCRService"),
         ("target", "LocalOCRCore"),
     ),
-    "LocalOCRCommandKitTests": (("target", "LocalOCRCommandKit"),),
+    # Cross-surface contract tests compare CLI JSON with the real MCP dispatcher.
+    "LocalOCRCommandKitTests": (
+        ("target", "LocalOCRCommandKit"),
+        ("target", "LocalOCRMCP"),
+        ("target", "MCPStdio"),
+        ("target", "LocalOCRModelBridgeProtocol"),
+    ),
     "LocalOCRMCPTests": (
         ("target", "LocalOCRMCP"),
         ("target", "LocalOCRService"),
@@ -177,6 +183,7 @@ EXPECTED_TARGET_DEPENDENCIES = {
         ("target", "LocalOCRIntelligence"),
         ("target", "LocalOCRModelCore"),
         ("target", "LocalOCRModelBridgeProtocol"),
+        ("target", "LocalOCRModelBridgeKit"),
         ("target", "LocalOCRService"),
         ("target", "LocalOCRCore"),
     ),
@@ -202,8 +209,8 @@ EXPECTED_TARGET_SETTINGS = [
     }
 ]
 REVIEWED_PACKAGE_PRODUCTS_SHA256 = "2d56d41ce0e14ab086ab25d5915904b26cb035c89f1fbc43a6c5fbd42a007ff2"
-REVIEWED_PACKAGE_TARGETS_SHA256 = "a7d676f5ce425e33514254fdf50dff50bcb8eeffa3e04baac1d3e8d68c0eafec"
-REVIEWED_TARGET_SOURCE_INVENTORY_SHA256 = "e54bde057fbcce4238d5b1fabfd75b6e6c21009609bbad7b9b2456d0d86822cc"
+REVIEWED_PACKAGE_TARGETS_SHA256 = "fc4ca5744cae8726c8a9fa6ba0111faea4340175857365c535bd236e635f0ec6"
+REVIEWED_TARGET_SOURCE_INVENTORY_SHA256 = "7ab37e2d5ad5cfb3e766c2468146c42bf65b25f3a629ecad10852eda29cec02b"
 APPROVED_LOOPBACK_NETWORK_SOURCE = Path(
     "Sources/LocalOCRModelBridgeKit/LoopbackHTTPClient.swift"
 )

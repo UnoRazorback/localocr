@@ -135,7 +135,7 @@ public struct ModelBridgeRequest: Codable, Sendable, Equatable {
         guard version == Self.protocolVersion else {
             throw DecodingError.dataCorruptedError(forKey: .version, in: container, debugDescription: "Unsupported model bridge protocol version.")
         }
-        guard provider == .ollama || provider == .lmStudio else {
+        guard provider == .ollama || provider == .lmStudio || provider == .llamaCpp else {
             throw DecodingError.dataCorruptedError(forKey: .provider, in: container, debugDescription: "Provider is not supported by the model bridge.")
         }
         if let model, model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -167,6 +167,7 @@ public struct ModelBridgeRequest: Codable, Sendable, Equatable {
                   expectedIdentity.model == model,
                   !(expectedIdentity.fingerprint?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
                   !(expectedIdentity.harnessVersion?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
+                  expectedIdentity.hasValidProviderAttestation,
                   operation != nil,
                   let prompt,
                   !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -333,16 +334,23 @@ private func rejectUnknownKeys(in decoder: any Decoder, allowed: [String]) throw
 }
 
 private enum IdentityCodingKeys: String, CodingKey, CaseIterable {
-    case provider, model, fingerprint, harnessVersion
+    case provider, model, fingerprint, harnessVersion, fileAttestation
 }
 
 private func decodeStrictIdentity(from decoder: any Decoder) throws -> LocalModelIdentity {
     try rejectUnknownKeys(in: decoder, allowed: IdentityCodingKeys.allCases.map(\.rawValue))
     let container = try decoder.container(keyedBy: IdentityCodingKeys.self)
+    let attestation: LocalModelFileAttestation?
+    if container.contains(.fileAttestation), try !container.decodeNil(forKey: .fileAttestation) {
+        let nested = try container.superDecoder(forKey: .fileAttestation)
+        try rejectUnknownKeys(in: nested, allowed: ["executablePath", "executableSHA256", "modelPath", "modelSize", "modelModifiedNanoseconds", "executableSize", "executableModifiedNanoseconds", "processID"])
+        attestation = try LocalModelFileAttestation(from: nested)
+    } else { attestation = nil }
     return try LocalModelIdentity(
         provider: container.decode(LocalModelProviderID.self, forKey: .provider),
         model: container.decode(String.self, forKey: .model),
         fingerprint: container.decodeIfPresent(String.self, forKey: .fingerprint),
-        harnessVersion: container.decodeIfPresent(String.self, forKey: .harnessVersion)
+        harnessVersion: container.decodeIfPresent(String.self, forKey: .harnessVersion),
+        fileAttestation: attestation
     )
 }

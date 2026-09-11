@@ -99,7 +99,7 @@ public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging, Local
         var result = [await appleDescriptor(selectionState: selectionState)]
 
         var discovered: [BridgeModelCandidate] = []
-        for provider in [LocalModelProviderID.ollama, .lmStudio] {
+        for provider in [LocalModelProviderID.ollama, .lmStudio, .llamaCpp] {
             if let candidates = try? await discover(provider, expected: nil) {
                 discovered.append(contentsOf: candidates)
             }
@@ -273,13 +273,13 @@ public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging, Local
         _ provider: LocalModelProviderID,
         expected: LocalModelIdentity?
     ) async throws -> [BridgeModelCandidate] {
-        guard provider == .ollama || provider == .lmStudio else {
+        guard provider == .ollama || provider == .lmStudio || provider == .llamaCpp else {
             throw IntelligenceError.selection(.providerUnavailable(provider))
         }
         let id = nextRequestID()
         let response: ModelBridgeResponse
         do {
-            response = try await transport.send(.discover(id: id, provider: provider))
+            response = try await transport.send(.discover(id: id, provider: provider, timeoutMilliseconds: provider == .llamaCpp ? 120_000 : 10_000))
         } catch {
             throw LocalIntelligenceProviderRouter.mappedTransportError(error)
         }
@@ -314,7 +314,7 @@ public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging, Local
         let providerOrder: [LocalModelProviderID: Int] = [
             .appleFoundationModels: 0,
             .ollama: 1,
-            .lmStudio: 2
+            .lmStudio: 2, .llamaCpp: 3
         ]
         let lhsOrder = providerOrder[lhs.identity.provider] ?? 3
         let rhsOrder = providerOrder[rhs.identity.provider] ?? 3

@@ -112,7 +112,7 @@ import Testing
     @Test func intelligenceOutputSchemasDiscloseTheLocalModel() throws {
         let tools = Dictionary(uniqueKeysWithValues: MCPToolCatalog.tools.map { ($0.name, $0) })
         let expectedRequired: Value = .array([
-            .string("provider"), .string("model"), .string("processing")
+            .string("provider_id"), .string("provider_display_name"), .string("model"), .string("processing"), .string("fingerprint"), .string("harness_version"), .string("qualified_at")
         ])
 
         for name in ["summarize_document", "organize_document", "extract_document_fields"] {
@@ -124,9 +124,10 @@ import Testing
             #expect(output["required"]?.arrayValue?.contains(.string("local_model")) == true)
             #expect(model["additionalProperties"] == .bool(false))
             #expect(model["required"] == expectedRequired)
-            #expect(modelProperties["provider"]?.objectValue?["const"] == .string("Apple Foundation Models"))
-            #expect(modelProperties["model"]?.objectValue?["const"] == .string("SystemLanguageModel.default"))
-            #expect(modelProperties["processing"]?.objectValue?["const"] == .string("on_device"))
+            #expect(modelProperties["provider_id"]?.objectValue?["type"] == .string("string"))
+            #expect(modelProperties["model"]?.objectValue?["type"] == .string("string"))
+            #expect(modelProperties["processing"]?.objectValue?["enum"] == .array(["on_device", "on_device_loopback"]))
+            #expect(Set(modelProperties.keys) == Set(expectedRequired.arrayValue!.compactMap(\.stringValue)))
         }
     }
 }

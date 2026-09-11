@@ -13,6 +13,15 @@ from urllib.parse import urlparse
 
 
 ALLOWED_URLS = {
+    "http://127.0.0.1:8080/health",
+    "http://127.0.0.1:8080/props",
+    "http://127.0.0.1:8080/v1/models",
+    "http://127.0.0.1:8080/v1/chat/completions",
+    "http://[::1]:8080/health",
+    "http://[::1]:8080/props",
+    "http://[::1]:8080/v1/models",
+    "http://[::1]:8080/v1/chat/completions",
+
     "http://127.0.0.1:11434/api/version",
     "http://127.0.0.1:11434/api/tags",
     "http://127.0.0.1:11434/api/chat",
@@ -124,7 +133,7 @@ def validate(source_root: Path, binary: Path | None) -> tuple[int, dict[str, obj
     source_urls = sorted(set(URL_PATTERN.findall(source)))
     if set(source_urls) != ALLOWED_URLS:
         failures.append(
-            "source URL inventory differs from the approved Ollama and LM Studio loopback routes"
+            "source URL inventory differs from the approved Ollama, LM Studio, and llama.cpp loopback routes"
         )
     parsed_hosts = sorted({urlparse(value).hostname for value in source_urls if urlparse(value).hostname})
     if parsed_hosts != ["127.0.0.1", "::1"]:

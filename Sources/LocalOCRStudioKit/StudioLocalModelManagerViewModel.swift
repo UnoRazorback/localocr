@@ -110,6 +110,7 @@ public struct StudioProcessingRoute: Sendable, Equatable {
         case .appleFoundationModels: "Apple Foundation Models"
         case .ollama: "Ollama"
         case .lmStudio: "LM Studio"
+        case .llamaCpp: "llama.cpp"
         }
     }
 }
@@ -384,7 +385,7 @@ public final class StudioLocalModelManagerViewModel: StudioLocalModelManaging {
 
     private static func rowOrder(_ lhs: StudioLocalModelRow, _ rhs: StudioLocalModelRow) -> Bool {
         let order: [LocalModelProviderID: Int] = [
-            .appleFoundationModels: 0, .ollama: 1, .lmStudio: 2,
+            .appleFoundationModels: 0, .ollama: 1, .lmStudio: 2, .llamaCpp: 3,
         ]
         let lhsProvider = order[lhs.identity.provider] ?? 3
         let rhsProvider = order[rhs.identity.provider] ?? 3
@@ -397,6 +398,7 @@ public final class StudioLocalModelManagerViewModel: StudioLocalModelManaging {
         case .appleFoundationModels: "Apple"
         case .ollama: "Ollama"
         case .lmStudio: "LM Studio"
+        case .llamaCpp: "llama.cpp"
         }
     }
 

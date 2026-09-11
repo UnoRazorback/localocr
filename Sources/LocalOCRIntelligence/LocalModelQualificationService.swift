@@ -419,10 +419,7 @@ public actor LocalModelQualificationService {
             path: "local-intelligence-qualification-\(identity.provider.rawValue)-\(digest).json",
             directoryHint: .notDirectory
         )
-        let identitySchema = SecureJSONReceiptSchema.object(
-            required: ["provider": .value, "model": .value],
-            optional: ["fingerprint": .value, "harnessVersion": .value]
-        )
+        let identitySchema = SecureJSONReceiptSchema.localModelIdentity
         let receiptSchema = SecureJSONReceiptSchema.object(required: [
             "policy_version": .value,
             "fixture_version": .value,
@@ -789,13 +786,15 @@ public actor LocalModelQualificationService {
         provenance.provider == identity.provider &&
             provenance.model == identity.model &&
             provenance.fingerprint == identity.fingerprint &&
-            provenance.processing == .onDeviceLoopback
+            provenance.processing == .onDeviceLoopback &&
+            (identity.provider != .llamaCpp || provenance.harnessVersion == identity.harnessVersion)
     }
 
     private nonisolated static func hasExactExternalIdentity(
         _ identity: LocalModelIdentity
     ) -> Bool {
-        !identity.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        identity.hasValidProviderAttestation &&
+            !identity.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
             !(identity.fingerprint?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) &&
             !(identity.harnessVersion?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
     }

@@ -927,7 +927,8 @@ import LocalOCRService
         intelligenceManager: environment.manager
     )
     #expect(await modelHarness.run(["intelligence", "models", "--json"]) == 0)
-    #expect(locator.resolutionCount == 2)
+    // Discovery resolves each external provider once: Ollama, LM Studio, llama.cpp.
+    #expect(locator.resolutionCount == 3)
 }
 
 @Test func intelligenceRootGroupAndLeafHelpAreExactAndSideEffectFree() async {

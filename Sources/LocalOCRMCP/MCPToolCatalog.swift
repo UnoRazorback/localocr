@@ -275,11 +275,15 @@ public enum MCPToolCatalog {
 
     private static let localModelSchema: Value = objectSchema(
         properties: [
-            "provider": .object(["const": "Apple Foundation Models"]),
-            "model": .object(["const": "SystemLanguageModel.default"]),
-            "processing": .object(["const": "on_device"])
+            "provider_id": stringSchema,
+            "provider_display_name": stringSchema,
+            "model": stringSchema,
+            "processing": .object(["type": "string", "enum": ["on_device", "on_device_loopback"]]),
+            "fingerprint": nullable(stringSchema),
+            "harness_version": nullable(stringSchema),
+            "qualified_at": nullable(stringSchema)
         ],
-        required: ["provider", "model", "processing"]
+        required: ["provider_id", "provider_display_name", "model", "processing", "fingerprint", "harness_version", "qualified_at"]
     )
 
     private static let citationSchema: Value = objectSchema(

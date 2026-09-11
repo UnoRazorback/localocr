@@ -115,3 +115,14 @@ import Testing
         }
     }
 }
+
+@Test func argumentSurfaceParsesOneShotIntelligenceCommands() throws {
+    let summary = try LocalOCRCommandSurface.parseAsRoot(["summarize", "input.pdf", "--json"]) as? LocalOCRCommandSurface.Summarize
+    #expect(summary?.file == "input.pdf")
+    #expect(summary?.json == true)
+    let organization = try LocalOCRCommandSurface.parseAsRoot(["organize", "input.png", "--json"]) as? LocalOCRCommandSurface.Organize
+    #expect(organization?.file == "input.png")
+    let fields = try LocalOCRCommandSurface.parseAsRoot(["extract-fields", "input.pdf", "--field", "date", "--field", "total", "--json"]) as? LocalOCRCommandSurface.ExtractFields
+    #expect(fields?.field == ["date", "total"])
+    #expect(fields?.json == true)
+}

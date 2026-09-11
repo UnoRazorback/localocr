@@ -78,7 +78,7 @@ public actor LocalIntelligenceProviderRouter: DocumentIntelligenceProviding {
         let id = nextRequestID()
         let response: ModelBridgeResponse
         do {
-            response = try await transport.send(.discover(id: id, provider: selected.provider))
+            response = try await transport.send(.discover(id: id, provider: selected.provider, timeoutMilliseconds: selected.provider == .llamaCpp ? 120_000 : 10_000))
         } catch is CancellationError {
             throw IntelligenceError.cancelled
         } catch {
@@ -124,6 +124,7 @@ public actor LocalIntelligenceProviderRouter: DocumentIntelligenceProviding {
         acknowledgment: ExternalLocalModelAcknowledgment
     ) throws {
         guard identity.provider != .appleFoundationModels,
+              identity.hasValidProviderAttestation,
               !identity.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !(identity.fingerprint?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
               !(identity.harnessVersion?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
@@ -266,11 +267,12 @@ actor BridgeBackedIntelligenceProvider: DocumentIntelligenceProviding {
     ) -> LocalModelProvenance {
         LocalModelProvenance(
             provider: identity.provider,
-            providerDisplayName: identity.provider == .ollama ? "Ollama" : "LM Studio",
+            providerDisplayName: identity.provider == .ollama ? "Ollama" : (identity.provider == .llamaCpp ? "llama.cpp" : "LM Studio"),
             model: identity.model,
             processing: .onDeviceLoopback,
             fingerprint: identity.fingerprint,
-            qualifiedAt: qualifiedAt
+            qualifiedAt: qualifiedAt,
+            harnessVersion: identity.harnessVersion
         )
     }
 }

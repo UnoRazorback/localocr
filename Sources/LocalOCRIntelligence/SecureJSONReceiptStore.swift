@@ -109,6 +109,19 @@ indirect enum SecureJSONReceiptSchema: Sendable {
     }
 }
 
+extension SecureJSONReceiptSchema {
+    static var localModelIdentity: SecureJSONReceiptSchema {
+        .object(required: ["provider": .value, "model": .value], optional: [
+            "fingerprint": .value, "harnessVersion": .value,
+            "fileAttestation": .object(required: [
+                "executablePath": .value, "executableSHA256": .value,
+                "modelPath": .value, "modelSize": .value, "modelModifiedNanoseconds": .value,
+                "executableSize": .value, "executableModifiedNanoseconds": .value, "processID": .value
+            ])
+        ])
+    }
+}
+
 actor SecureJSONReceiptStore<Receipt: Codable & Sendable> {
     private struct FileIdentity: Sendable, Equatable {
         let device: UInt64

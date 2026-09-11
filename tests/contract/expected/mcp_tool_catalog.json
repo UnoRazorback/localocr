@@ -88,20 +88,61 @@
         "local_model" : {
           "additionalProperties" : false,
           "properties" : {
+            "fingerprint" : {
+              "anyOf" : [
+                {
+                  "type" : "string"
+                },
+                {
+                  "type" : "null"
+                }
+              ]
+            },
+            "harness_version" : {
+              "anyOf" : [
+                {
+                  "type" : "string"
+                },
+                {
+                  "type" : "null"
+                }
+              ]
+            },
             "model" : {
-              "const" : "SystemLanguageModel.default"
+              "type" : "string"
             },
             "processing" : {
-              "const" : "on_device"
+              "enum" : [
+                "on_device",
+                "on_device_loopback"
+              ],
+              "type" : "string"
             },
-            "provider" : {
-              "const" : "Apple Foundation Models"
+            "provider_display_name" : {
+              "type" : "string"
+            },
+            "provider_id" : {
+              "type" : "string"
+            },
+            "qualified_at" : {
+              "anyOf" : [
+                {
+                  "type" : "string"
+                },
+                {
+                  "type" : "null"
+                }
+              ]
             }
           },
           "required" : [
-            "provider",
+            "provider_id",
+            "provider_display_name",
             "model",
-            "processing"
+            "processing",
+            "fingerprint",
+            "harness_version",
+            "qualified_at"
           ],
           "type" : "object"
         }
@@ -721,20 +762,61 @@
         "local_model" : {
           "additionalProperties" : false,
           "properties" : {
+            "fingerprint" : {
+              "anyOf" : [
+                {
+                  "type" : "string"
+                },
+                {
+                  "type" : "null"
+                }
+              ]
+            },
+            "harness_version" : {
+              "anyOf" : [
+                {
+                  "type" : "string"
+                },
+                {
+                  "type" : "null"
+                }
+              ]
+            },
             "model" : {
-              "const" : "SystemLanguageModel.default"
+              "type" : "string"
             },
             "processing" : {
-              "const" : "on_device"
+              "enum" : [
+                "on_device",
+                "on_device_loopback"
+              ],
+              "type" : "string"
             },
-            "provider" : {
-              "const" : "Apple Foundation Models"
+            "provider_display_name" : {
+              "type" : "string"
+            },
+            "provider_id" : {
+              "type" : "string"
+            },
+            "qualified_at" : {
+              "anyOf" : [
+                {
+                  "type" : "string"
+                },
+                {
+                  "type" : "null"
+                }
+              ]
             }
           },
           "required" : [
-            "provider",
+            "provider_id",
+            "provider_display_name",
             "model",
-            "processing"
+            "processing",
+            "fingerprint",
+            "harness_version",
+            "qualified_at"
           ],
           "type" : "object"
         },
@@ -805,20 +887,61 @@
         "local_model" : {
           "additionalProperties" : false,
           "properties" : {
+            "fingerprint" : {
+              "anyOf" : [
+                {
+                  "type" : "string"
+                },
+                {
+                  "type" : "null"
+                }
+              ]
+            },
+            "harness_version" : {
+              "anyOf" : [
+                {
+                  "type" : "string"
+                },
+                {
+                  "type" : "null"
+                }
+              ]
+            },
             "model" : {
-              "const" : "SystemLanguageModel.default"
+              "type" : "string"
             },
             "processing" : {
-              "const" : "on_device"
+              "enum" : [
+                "on_device",
+                "on_device_loopback"
+              ],
+              "type" : "string"
             },
-            "provider" : {
-              "const" : "Apple Foundation Models"
+            "provider_display_name" : {
+              "type" : "string"
+            },
+            "provider_id" : {
+              "type" : "string"
+            },
+            "qualified_at" : {
+              "anyOf" : [
+                {
+                  "type" : "string"
+                },
+                {
+                  "type" : "null"
+                }
+              ]
             }
           },
           "required" : [
-            "provider",
+            "provider_id",
+            "provider_display_name",
             "model",
-            "processing"
+            "processing",
+            "fingerprint",
+            "harness_version",
+            "qualified_at"
           ],
           "type" : "object"
         },
