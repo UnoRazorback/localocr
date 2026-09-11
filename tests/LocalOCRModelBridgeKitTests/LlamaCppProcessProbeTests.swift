@@ -21,6 +21,7 @@ struct LlamaCppProcessProbeTests {
         }
     }
     @Test func listenersMustBeUniqueAndLoopback() throws {
+        #expect(try LlamaCppProcessProbe.listenerPID(Data("p1101\nf3\nn127.0.0.1:8080\n".utf8)) == 1101)
         #expect(try LlamaCppProcessProbe.listenerPID(Data("p42\nn127.0.0.1:8080\n".utf8)) == 42)
         #expect(try LlamaCppProcessProbe.listenerPID(Data("p42\nn[::1]:8080\n".utf8)) == 42)
         for invalid in ["", "p1\nn*:8080\n", "p1\nnlocalhost:8080\n", "p1\nn127.0.0.1:8080\np2\nn[::1]:8080\n"] {
@@ -29,7 +30,8 @@ struct LlamaCppProcessProbeTests {
     }
     @Test func versionIsBoundedAndSpecific() throws {
         #expect(try LlamaCppProcessProbe.validVersion(Data("version: 10909 (a2878d30d)\nbuilt with clang\n".utf8)) == "version: 10909 (a2878d30d)")
-        for bad in ["hello", "version: arbitrary", String(repeating: "x", count: 17000)] {
+        #expect(try LlamaCppProcessProbe.validVersion(Data("version: 0.4.0-dev (build 10909, commit a2878d30d)\nbuilt with AppleClang\n".utf8)) == "version: 0.4.0-dev (build 10909, commit a2878d30d)")
+        for bad in ["hello", "version: arbitrary", "version: 0.4.0-dev (build 10909, commit garbage)", String(repeating: "x", count: 17000)] {
             #expect(throws: (any Error).self) { try LlamaCppProcessProbe.validVersion(Data(bad.utf8)) }
         }
     }

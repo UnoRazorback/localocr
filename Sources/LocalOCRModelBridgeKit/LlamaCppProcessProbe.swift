@@ -61,7 +61,9 @@ public struct LlamaCppProcessProbe: LlamaCppProcessProbing {
         let modelHash = try await cachedHash(model)
         try exe.revalidate(); try model.revalidate()
         let versionData = try await LMStudioCommandRunner(
-            commandTimeout: .seconds(5), terminationGracePeriod: .milliseconds(250),
+            // Real llama.cpp build 10909 can take over 13 seconds to report its version
+            // while a model is resident. Keep this bounded within the outer deadline.
+            commandTimeout: .seconds(30), terminationGracePeriod: .milliseconds(250),
             cleanupBudget: .seconds(1), pipeDrainBudget: .milliseconds(250),
             maximumOutputBytes: 16_384, captureStandardError: true
         ).run(executableDescriptor: exe.fd, displayPath: exe.path,
@@ -128,6 +130,8 @@ public struct LlamaCppProcessProbe: LlamaCppProcessProbing {
         for line in text.split(separator: "\n") {
             if line.first == "p" {
                 guard let pid = Int32(line.dropFirst()), pid > 0 else { throw LlamaCppProcessProbeError.unverified }; pids.insert(pid)
+            } else if line.first == "f" {
+                guard !pids.isEmpty, !line.dropFirst().isEmpty, line.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }) else { throw LlamaCppProcessProbeError.unverified }
             } else if line.first == "n" {
                 guard ["n127.0.0.1:8080", "n[::1]:8080"].contains(String(line)) else { throw LlamaCppProcessProbeError.unverified }; addresses += 1
             } else { throw LlamaCppProcessProbeError.unverified }
@@ -139,7 +143,7 @@ public struct LlamaCppProcessProbe: LlamaCppProcessProbing {
     static func validVersion(_ data: Data) throws -> String {
         guard data.count <= 16_384, let text = String(data: data, encoding: .utf8),
               let line = text.split(separator: "\n").first(where: { $0.hasPrefix("version:") }),
-              line.range(of: #"^version: [0-9]+ \([a-fA-F0-9]{7,40}\)$"#, options: .regularExpression) != nil else {
+              line.range(of: #"^version: ([0-9]+ \([a-fA-F0-9]{7,40}\)|[0-9]+\.[0-9]+\.[0-9]+(-dev)? \(build [0-9]+, commit [a-fA-F0-9]{7,40}\))$"#, options: .regularExpression) != nil else {
             throw LlamaCppProcessProbeError.unverified
         }
         return String(line)
