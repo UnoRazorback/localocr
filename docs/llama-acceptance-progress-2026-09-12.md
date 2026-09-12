@@ -39,3 +39,11 @@ The unsigned Studio build, release staging (including rebuilt native helpers and
 The signed helper also passed inspect, ocr, image and intelligence models, each returning exit 0 and valid JSON with the model server stopped (work/llama-build5-signed-smoke.json).
 
 Final exact native-script reruns: scripts/build-native-tools.sh exited 0 (work/llama-build5-native.log), and scripts/smoke-native-tools.sh exited 0 (work/llama-build5-native-smoke.log), both using Xcode 27 RC.
+
+## Notarized and installed on Pro (2026-09-12)
+
+Scott restored the MBA login Keychain profile localocr-notary through secure Terminal input. Access verified; credential reference documented in docs/notarization-credentials.md and the user-requested persistent memory extension (no password).
+
+Synced Documents reintroduced FinderInfo on the signed app, so the identical signed candidate was copied into a detached local /private/tmp release worktree and the prohibited FinderInfo attribute removed. Strict signature verification then passed. Apple accepted submission 552838d9-3a40-4eba-813f-6c80fe030b74; stapling, Gatekeeper, final extracted verification and checksum checks all passed. ZIP SHA256: 84ec88ceb9b4db86b6562f8b85f8a7a48c6929d8d147674677371c7cdcf4c97c. Durable artifacts/evidence: work/localocr-build5-release/.
+
+After Scott closed the Pro app, transferred ZIP hash verified and build5 was installed at /Users/scottray/Applications/LocalOCR Studio.app; build4 retained at /Users/scottray/Applications/LocalOCR Studio.build4-backup-20260912.app. All three helpers executable; installed signature and ticket verified. Signed helper inspect, scanned PDF OCR, image OCR, and intelligence status succeeded with valid JSON. A plutil lint attempt incorrectly treated JSON as plist and was replaced with actual JSON decoding, which passed. Existing Apple selection unchanged; no8080 listener and no model server started. Remaining: Pro installed-helper llama qualification/intelligence and Portfolio sustained acceptance. See PRO-HANDOFF.md in the release directory and Pro Downloads/LocalOCR-build5-20260912.
