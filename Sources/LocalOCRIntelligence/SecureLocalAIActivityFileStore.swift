@@ -99,6 +99,52 @@ struct SecureLocalAIActivityFileStoreHooks: Sendable {
     }
 }
 
+/// Keep readdir's own cursor rather than applying cookies to a newly opened stream.
+/// Only two fixed ledger directories can be retained, and every reuse verifies identity.
+private final class LocalAIActivityDirectoryCursors: @unchecked Sendable {
+    private let lock = NSLock()
+    private var streams: [LocalAILedgerDirectory: UnsafeMutablePointer<DIR>] = [:]
+
+    deinit {
+        for stream in streams.values { closedir(stream) }
+    }
+
+    func withStream<Result>(
+        for directory: LocalAILedgerDirectory,
+        verifiedDescriptor: Int32,
+        body: (UnsafeMutablePointer<DIR>) throws -> Result
+    ) throws -> Result {
+        guard lock.try() else {
+            throw SecureLocalAIActivityFileStoreError.filesystemOperationFailed(EWOULDBLOCK)
+        }
+        defer { lock.unlock() }
+        var current = stat()
+        guard fstat(verifiedDescriptor, &current) == 0 else {
+            throw SecureLocalAIActivityFileStoreError.filesystemOperationFailed(errno)
+        }
+        if let prior = streams[directory] {
+            var old = stat()
+            if fstat(dirfd(prior), &old) != 0 || old.st_dev != current.st_dev || old.st_ino != current.st_ino {
+                closedir(prior)
+                streams.removeValue(forKey: directory)
+            }
+        }
+        if streams[directory] == nil {
+            let duplicate = dup(verifiedDescriptor)
+            guard duplicate >= 0 else {
+                throw SecureLocalAIActivityFileStoreError.filesystemOperationFailed(errno)
+            }
+            guard let stream = fdopendir(duplicate) else {
+                let code = errno
+                Darwin.close(duplicate)
+                throw SecureLocalAIActivityFileStoreError.filesystemOperationFailed(code)
+            }
+            streams[directory] = stream
+        }
+        return try body(streams[directory]!)
+    }
+}
+
 struct SecureLocalAIActivityFileStore: LocalAIActivityFileStoring, Sendable {
     static let maximumDirectoryEntries = 256
     private static let ledgerRootName = "LocalAIActivity"
@@ -119,6 +165,7 @@ struct SecureLocalAIActivityFileStore: LocalAIActivityFileStoring, Sendable {
     private let containerURL: URL
     private let expectedOwnerID: uid_t
     private let hooks: SecureLocalAIActivityFileStoreHooks
+    private let directoryCursors = LocalAIActivityDirectoryCursors()
 
     init(
         containerURL: URL,
@@ -381,44 +428,36 @@ struct SecureLocalAIActivityFileStore: LocalAIActivityFileStoring, Sendable {
 
     func recordIDs(in directory: LocalAILedgerDirectory) throws -> [UUID] {
         try withLedgerDirectory(directory) { directoryDescriptor in
-            let duplicate = dup(directoryDescriptor)
-            guard duplicate >= 0 else {
-                throw SecureLocalAIActivityFileStoreError.filesystemOperationFailed(errno)
-            }
-            guard let stream = fdopendir(duplicate) else {
-                let code = errno
-                Darwin.close(duplicate)
-                throw SecureLocalAIActivityFileStoreError.filesystemOperationFailed(code)
-            }
-            defer { closedir(stream) }
-
-            var ids: [UUID] = []
-            // Charge every entry, including junk and dot entries, before filtering.
-            // Cleanup is best effort: later leases may be left for another scan.
-            for _ in 0..<Self.maximumDirectoryEntries {
-                errno = 0
-                guard let entry = readdir(stream) else {
-                    guard errno == 0 else {
-                        throw SecureLocalAIActivityFileStoreError.filesystemOperationFailed(errno)
+            try directoryCursors.withStream(for: directory, verifiedDescriptor: directoryDescriptor) { stream in
+                var ids: [UUID] = []
+                // Charge every entry, including junk and dot entries, before filtering.
+                // Retain the stream position so later calls reach leases beyond this batch.
+                for _ in 0..<Self.maximumDirectoryEntries {
+                    errno = 0
+                    guard let entry = readdir(stream) else {
+                        guard errno == 0 else {
+                            throw SecureLocalAIActivityFileStoreError.filesystemOperationFailed(errno)
+                        }
+                        rewinddir(stream)
+                        break
                     }
-                    break
-                }
-                hooks.didEnumerateEntry()
-                let name = withUnsafePointer(to: entry.pointee.d_name) { pointer in
-                    pointer.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) {
-                        String(cString: $0)
+                    hooks.didEnumerateEntry()
+                    let name = withUnsafePointer(to: entry.pointee.d_name) { pointer in
+                        pointer.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) {
+                            String(cString: $0)
+                        }
                     }
+                    guard name.hasSuffix(".json") else { continue }
+                    let rawID = String(name.dropLast(5))
+                    guard let id = UUID(uuidString: rawID),
+                          name == recordName(id)
+                    else {
+                        continue
+                    }
+                    ids.append(id)
                 }
-                guard name.hasSuffix(".json") else { continue }
-                let rawID = String(name.dropLast(5))
-                guard let id = UUID(uuidString: rawID),
-                      name == recordName(id)
-                else {
-                    continue
-                }
-                ids.append(id)
+                return ids.sorted { $0.uuidString < $1.uuidString }
             }
-            return ids.sorted { $0.uuidString < $1.uuidString }
         }
     }
 

@@ -15,6 +15,28 @@ import Testing
         #expect(store.removeAttempts.count == 512)
     }
 
+    @Test func repeatedCleanupReachesExpiredLeaseBeyondFirstValidBatch() async throws {
+        let fixture = try ActivityLedgerFixture(now: initialDate)
+        defer { fixture.remove() }
+        let observer = SecureLocalAIActivityFileStore(containerURL: fixture.containerURL)
+        try observer.prepareLedgerDirectories()
+        let ids = (0..<300).map { _ in UUID() }
+        for id in ids {
+            let url = fixture.recordURL(in: .active, id: id)
+            try LocalAIActivityContract.encode(activeRecord(id: id, at: initialDate)).write(to: url)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        }
+        let firstBatch = Set(try observer.recordIDs(in: .active))
+        let expiredID = try #require(ids.first { !firstBatch.contains($0) })
+        try LocalAIActivityContract.encode(activeRecord(id: expiredID, at: initialDate.addingTimeInterval(-100)))
+            .write(to: fixture.recordURL(in: .active, id: expiredID))
+        await fixture.ledger.cleanupExpired()
+        #expect(fixture.exists(in: .active, id: expiredID))
+        await fixture.ledger.cleanupExpired()
+        #expect(!fixture.exists(in: .active, id: expiredID))
+        #expect(try fixture.allRecordURLs(in: .active).count == 299)
+    }
+
     // Catches a begin path that uses the wrong fixed directory, omits a field, or computes a lease other than 45 seconds.
     @Test func beginWritesActiveRecordWithExactLease() async throws {
         let fixture = try ActivityLedgerFixture(now: initialDate)

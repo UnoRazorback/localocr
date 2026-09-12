@@ -60,6 +60,40 @@ import Testing
         #expect(counter.value == 256)
     }
 
+    @Test func repeatedBoundedScansEventuallyVisitRecordsBeyondJunk() throws {
+        let counter = ActivityEnumerationCounter()
+        let fixture = try SecureActivityStoreFixture(hooks: .init(didEnumerateEntry: { counter.increment() }))
+        defer { fixture.remove() }
+        try fixture.store.prepareLedgerDirectories()
+        let expected = Set((0..<300).map { _ in UUID() })
+        for index in 0..<300 {
+            try Data().write(to: fixture.directoryURL(.active).appending(path: "junk-\(index)"))
+        }
+        for id in expected { try Data().write(to: fixture.recordURL(id: id, in: .active)) }
+        var visited: Set<UUID> = []
+        for _ in 0..<4 {
+            let before = counter.value
+            visited.formUnion(try fixture.store.recordIDs(in: .active))
+            #expect(counter.value - before <= 256)
+        }
+        #expect(visited == expected)
+    }
+
+    @Test func retainedCursorIsDiscardedWhenLedgerDirectoryIsReplaced() throws {
+        let fixture = try SecureActivityStoreFixture()
+        defer { fixture.remove() }
+        try fixture.store.prepareLedgerDirectories()
+        for _ in 0..<300 { try Data().write(to: fixture.recordURL(id: UUID(), in: .active)) }
+        _ = try fixture.store.recordIDs(in: .active)
+        let active = fixture.directoryURL(.active)
+        try FileManager.default.moveItem(at: active, to: fixture.rootURL.appending(path: "old-active"))
+        try FileManager.default.createDirectory(at: active, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        let replacementID = UUID()
+        try Data().write(to: fixture.recordURL(id: replacementID, in: .active))
+        #expect(try fixture.store.recordIDs(in: .active) == [replacementID])
+    }
+
     // Catches missing fixed directories, process-umask-dependent permissions, or omission of backup exclusion.
     @Test func prepareCreatesPrivateFixedTreeExcludedFromBackup() throws {
         let fixture = try SecureActivityStoreFixture()
