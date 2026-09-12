@@ -325,14 +325,17 @@ publish_artifact_candidate() {
 cd "$repo_root"
 "$release_xcode_swift_path" package clean
 "$release_xcode_swift_path" build \
+    --build-system native \
     --disable-automatic-resolution \
     -c release \
     --product localocr
 "$release_xcode_swift_path" build \
+    --build-system native \
     --disable-automatic-resolution \
     -c release \
     --product localocr-mcp
 "$release_xcode_swift_path" build \
+    --build-system native \
     --disable-automatic-resolution \
     -c release \
     --product localocr-model-bridge

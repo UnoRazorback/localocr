@@ -109,7 +109,7 @@ The candidate identity is version `0.3.1`, build `4`, planned tag
 `LocalOCR-Studio-0.3.1-4.sha256`. The exact release commit, ZIP SHA-256,
 notarization submission, downloaded-package verification, and target-Mac
 results must be filled from evidence after those gates pass. Development uses
-stable Xcode 26.6 (`17F113`), Swift 6, arm64, and deployment target macOS 14.0.
+Xcode 27 RC (`27A266a`) at `/Applications/Xcode-27-RC.app`, Swift 6, arm64, and deployment target macOS 14.0.
 Future Apple beta compatibility is not guaranteed.
 
 After the release is published, download `LocalOCR-Studio-0.3.1-4.zip` and

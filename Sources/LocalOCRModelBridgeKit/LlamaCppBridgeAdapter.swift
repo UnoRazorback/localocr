@@ -199,7 +199,7 @@ public struct LlamaCppBridgeAdapter: Sendable {
                     ["role": "user", "content": prompt]
                 ],
                 "stream": false, "temperature": 0, "n": 1, "max_tokens": 2048,
-                "tools": [], "tool_choice": "none", "reasoning_format": "none",
+                "tools": [], "tool_choice": "none", "reasoning_format": "auto",
                 "chat_template_kwargs": ["enable_thinking": false],
                 "response_format": ["type": "json_schema", "json_schema": [
                     "name": "grounded_document", "strict": true,

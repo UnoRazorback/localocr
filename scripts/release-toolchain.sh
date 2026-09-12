@@ -4,7 +4,7 @@ set -euo pipefail
 
 release_toolchain_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 release_repo_root="$(cd "$release_toolchain_script_dir/.." && pwd)"
-release_developer_dir="/Applications/Xcode.app/Contents/Developer"
+release_developer_dir="/Applications/Xcode-27-RC.app/Contents/Developer"
 release_xcode_toolchain_dir="$release_developer_dir/Toolchains/XcodeDefault.xctoolchain"
 release_xcode_swift_path="$release_xcode_toolchain_dir/usr/bin/swift"
 release_signing_identity="Developer ID Application: John Scott Ray (DZ8B5454ZN)"
@@ -989,20 +989,26 @@ release_evidence_dir() {
 
 validate_release_developer_dir() {
     local candidate="${1:-}"
-    local normalized
-
     [[ "$candidate" == "$release_developer_dir" ]] || {
-        echo "release builds require the stable Xcode developer directory" >&2
+        echo "release builds require the pinned Xcode 27 RC developer directory" >&2
         return 1
     }
 
-    normalized="$(printf '%s' "$candidate" | /usr/bin/tr '[:upper:]' '[:lower:]')"
-    case "$normalized" in
-        *beta*|*rc*|*preview*)
-            echo "prerelease developer directories are not allowed" >&2
-            return 1
-            ;;
-    esac
+
+}
+
+validate_release_xcode_version() {
+    local version
+    local executable="$release_developer_dir/usr/bin/xcodebuild"
+    [[ -f "$executable" && -x "$executable" && ! -L "$executable" && "$(/bin/realpath "$executable")" == "$executable" ]] || {
+        echo "xcodebuild must be a physical executable within the pinned developer directory" >&2
+        return 1
+    }
+    version="$("$release_developer_dir/usr/bin/xcodebuild" -version)" || return 1
+    [[ "$version" == $'Xcode 27.0\nBuild version 27A266a' ]] || {
+        echo "release requires Xcode 27.0 build 27A266a" >&2
+        return 1
+    }
 }
 
 select_release_swift_toolchain() {
@@ -1015,36 +1021,37 @@ select_release_swift_toolchain() {
     unset SDKROOT
     validate_release_developer_dir "$DEVELOPER_DIR" || return 1
     [[ -d "$release_developer_dir" && ! -L "$release_developer_dir" ]] || {
-        echo "stable Xcode developer directory is missing or symlinked: $release_developer_dir" >&2
+        echo "pinned Xcode 27 RC developer directory is missing or symlinked: $release_developer_dir" >&2
         return 1
     }
     physical_developer_dir="$(cd "$release_developer_dir" && pwd -P)" || return 1
     validate_release_developer_dir "$physical_developer_dir" || return 1
     [[ -d "$release_xcode_toolchain_dir" && ! -L "$release_xcode_toolchain_dir" ]] || {
-        echo "stable Xcode default toolchain is missing or symlinked: $release_xcode_toolchain_dir" >&2
+        echo "pinned Xcode 27 RC default toolchain is missing or symlinked: $release_xcode_toolchain_dir" >&2
         return 1
     }
     physical_toolchain="$(cd "$release_xcode_toolchain_dir" && pwd -P)" || return 1
     [[ "$physical_toolchain" == "$release_xcode_toolchain_dir" ]] || {
-        echo "stable Xcode default toolchain resolved unexpectedly" >&2
+        echo "pinned Xcode 27 RC default toolchain resolved unexpectedly" >&2
         return 1
     }
     [[ -x "$release_xcode_swift_path" ]] || {
-        echo "stable Xcode Swift executable is unavailable: $release_xcode_swift_path" >&2
+        echo "pinned Xcode 27 RC Swift executable is unavailable: $release_xcode_swift_path" >&2
         return 1
     }
     physical_swift="$(/bin/realpath "$release_xcode_swift_path")" || return 1
     case "$physical_swift" in
         "$physical_toolchain/usr/bin/"*) ;;
         *)
-            echo "stable Xcode Swift executable escaped the default toolchain" >&2
+            echo "pinned Xcode 27 RC Swift executable escaped the default toolchain" >&2
             return 1
             ;;
     esac
     [[ -f "$physical_swift" && ! -L "$physical_swift" && -x "$physical_swift" ]] || {
-        echo "stable Xcode Swift executable did not resolve to a physical executable" >&2
+        echo "pinned Xcode 27 RC Swift executable did not resolve to a physical executable" >&2
         return 1
     }
+    validate_release_xcode_version
 }
 
 select_release_developer_dir() {
@@ -1055,7 +1062,7 @@ select_release_developer_dir() {
     validate_release_developer_dir "$DEVELOPER_DIR"
 
     [[ -d "$DEVELOPER_DIR" && ! -L "$DEVELOPER_DIR" ]] || {
-        echo "stable Xcode developer directory is missing or symlinked: $DEVELOPER_DIR" >&2
+        echo "pinned Xcode 27 RC developer directory is missing or symlinked: $DEVELOPER_DIR" >&2
         return 1
     }
     resolved_developer_dir="$(cd "$DEVELOPER_DIR" && pwd -P)"
@@ -1063,9 +1070,10 @@ select_release_developer_dir() {
 
     release_xcodebuild_path="$DEVELOPER_DIR/usr/bin/xcodebuild"
     [[ -x "$release_xcodebuild_path" && ! -L "$release_xcodebuild_path" ]] || {
-        echo "xcodebuild not found as a physical stable-Xcode executable: $release_xcodebuild_path" >&2
+        echo "xcodebuild not found as a physical pinned-Xcode executable: $release_xcodebuild_path" >&2
         return 1
     }
+    validate_release_xcode_version
 }
 
 prepare_release_evidence_directory() {
@@ -1157,7 +1165,7 @@ record_release_toolchain_evidence() {
     local version_file_partial
 
     [[ -n "$release_xcodebuild_path" ]] || {
-        echo "stable Xcode must be selected before recording evidence" >&2
+        echo "pinned Xcode 27 RC must be selected before recording evidence" >&2
         return 1
     }
     evidence_dir="$(

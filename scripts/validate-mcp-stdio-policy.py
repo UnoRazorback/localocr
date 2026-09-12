@@ -20,7 +20,7 @@ UPSTREAM_RELEASE = "0.12.1"
 REVIEWED_LICENSE_SHA256 = "0382b0057770ca05e9c350a50aa3b1c1fea84da0bc81d723bf00b9aa841be58a"
 REVIEWED_ORIGIN_INVENTORY_SHA256 = "dafbceaccc07c3b5a2dfe69f6386bc00ed68ffbb40a42391e90f45790c71f2fc"
 REVIEWED_LOCAL_ONLY_PATHS = {"MCPStdio.swift", "Server/RequestRegistry.swift"}
-XCODE_DEVELOPER_DIR = Path("/Applications/Xcode.app/Contents/Developer")
+XCODE_DEVELOPER_DIR = Path("/Applications/Xcode-27-RC.app/Contents/Developer")
 XCODE_SWIFTC = (
     XCODE_DEVELOPER_DIR
     / "Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
@@ -210,7 +210,7 @@ EXPECTED_TARGET_SETTINGS = [
 ]
 REVIEWED_PACKAGE_PRODUCTS_SHA256 = "2d56d41ce0e14ab086ab25d5915904b26cb035c89f1fbc43a6c5fbd42a007ff2"
 REVIEWED_PACKAGE_TARGETS_SHA256 = "fc4ca5744cae8726c8a9fa6ba0111faea4340175857365c535bd236e635f0ec6"
-REVIEWED_TARGET_SOURCE_INVENTORY_SHA256 = "7ab37e2d5ad5cfb3e766c2468146c42bf65b25f3a629ecad10852eda29cec02b"
+REVIEWED_TARGET_SOURCE_INVENTORY_SHA256 = "052332a1d839c0296c46fdb66bf8bef4251dc35ed00ab17a6248e52c53562f60"
 APPROVED_LOOPBACK_NETWORK_SOURCE = Path(
     "Sources/LocalOCRModelBridgeKit/LoopbackHTTPClient.swift"
 )
@@ -716,7 +716,7 @@ def validate_package_policy(repo_root: Path) -> None:
     require(resolved_path.is_file() and not resolved_path.is_symlink(), "Package.resolved is missing or symlinked")
 
     swift_environment = os.environ.copy()
-    swift_environment["DEVELOPER_DIR"] = "/Applications/Xcode.app/Contents/Developer"
+    swift_environment["DEVELOPER_DIR"] = "/Applications/Xcode-27-RC.app/Contents/Developer"
     swift_environment.pop("SDKROOT", None)
     result = subprocess.run(
         [

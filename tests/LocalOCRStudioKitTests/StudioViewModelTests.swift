@@ -121,7 +121,11 @@ import Testing
         viewModel.open(sourceURL)
         await client.waitForRequest(at: sourceURL)
         await client.fail(sourceURL, with: LocalOCRError.fileNotFound)
-        await flushStateUpdates()
+        // Resuming the client does not imply the main-actor error handler has run.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while case .processing = viewModel.state, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
 
         #expect(viewModel.state == .failure(
             sourceURL: sourceURL,

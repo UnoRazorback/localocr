@@ -44,6 +44,8 @@ struct LlamaCppBridgeAdapterTests {
         let body = try #require(await http.bodies.compactMap { $0 }.first)
         let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(object["temperature"] as? Int == 0)
+        #expect(object["reasoning_format"] as? String == "auto")
+        #expect((object["chat_template_kwargs"] as? [String: Bool])?["enable_thinking"] == false)
         #expect(object["n"] as? Int == 1)
         #expect(object["tool_choice"] as? String == "none")
         #expect(object["response_format"] != nil)

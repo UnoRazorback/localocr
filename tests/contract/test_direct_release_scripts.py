@@ -250,7 +250,7 @@ def _install_stable_swift_fixture(repo: Path, swift_fixture: Path) -> Path:
         "set -euo pipefail\n"
         'tool="${1:-}"\n'
         "shift\n"
-        "unset DEVELOPER_DIR\n"
+        'export DEVELOPER_DIR="/Applications/Xcode-27-RC.app/Contents/Developer"\n'
         'exec /usr/bin/xcrun "$tool" "$@"\n'
     )
     xcrun_fixture.chmod(0o755)
@@ -258,13 +258,13 @@ def _install_stable_swift_fixture(repo: Path, swift_fixture: Path) -> Path:
     xcodebuild_fixture.write_text(
         "#!/bin/bash\n"
         "set -euo pipefail\n"
-        "unset DEVELOPER_DIR\n"
-        'exec /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild "$@"\n'
+        'export DEVELOPER_DIR="/Applications/Xcode-27-RC.app/Contents/Developer"\n'
+        'exec /Applications/Xcode-27-RC.app/Contents/Developer/usr/bin/xcodebuild "$@"\n'
     )
     xcodebuild_fixture.chmod(0o755)
     toolchain = repo / "scripts" / "release-toolchain.sh"
     source = toolchain.read_text()
-    original = 'release_developer_dir="/Applications/Xcode.app/Contents/Developer"'
+    original = 'release_developer_dir="/Applications/Xcode-27-RC.app/Contents/Developer"'
     replacement = f'release_developer_dir={shlex.quote(str(developer_dir))}'
     assert original in source
     toolchain.write_text(source.replace(original, replacement, 1))
@@ -1163,11 +1163,12 @@ def test_signer_rejects_arbitrary_symlink_directly(tmp_path: Path) -> None:
     assert "unexpected nested code symlink" in result.stderr
 
 
-def test_toolchain_rejects_nonstable_xcode_paths() -> None:
+def test_toolchain_accepts_only_pinned_xcode27_rc_path() -> None:
     _assert_script_test_accepts(
-        "toolchain", "--test-developer-dir", "/Applications/Xcode.app/Contents/Developer"
+        "toolchain", "--test-developer-dir", "/Applications/Xcode-27-RC.app/Contents/Developer"
     )
     for developer_dir in (
+        "/Applications/Xcode.app/Contents/Developer",
         "/Applications/Xcode-beta.app/Contents/Developer",
         "/Applications/Xcode-RC.app/Contents/Developer",
         "/Applications/Xcode Preview.app/Contents/Developer",
@@ -1175,6 +1176,31 @@ def test_toolchain_rejects_nonstable_xcode_paths() -> None:
         "/Applications/Xcode_preview.app/Contents/Developer",
     ):
         _assert_script_test_rejects("toolchain", "--test-developer-dir", developer_dir)
+
+
+@pytest.mark.parametrize("version, accepted", [("Xcode 27.0\nBuild version 27A266a", True), ("Xcode 26.6\nBuild version 17G100", False)])
+def test_release_xcode_version_requires_exact_build(tmp_path: Path, version: str, accepted: bool) -> None:
+    developer = tmp_path / "Developer"
+    executable = developer / "usr/bin/xcodebuild"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\ncat <<'VERSION'\n" + version + "\nVERSION\n")
+    executable.chmod(0o755)
+    result = subprocess.run(["/bin/bash", "-c", 'source "$1"; release_developer_dir="$2"; validate_release_xcode_version', "test", str(RELEASE_SCRIPTS["toolchain"]), str(developer)], capture_output=True, text=True)
+    assert (result.returncode == 0) == accepted, result.stderr
+
+
+def test_release_xcode_version_rejects_symlink_before_execution(tmp_path: Path) -> None:
+    developer = tmp_path / "Developer"
+    executable = developer / "usr/bin/xcodebuild"
+    executable.parent.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    marker = tmp_path / "executed"
+    outside.write_text('#!/bin/sh\ntouch "' + str(marker) + '"\n')
+    outside.chmod(0o755)
+    executable.symlink_to(outside)
+    result = subprocess.run(["/bin/bash", "-c", 'source "$1"; release_developer_dir="$2"; validate_release_xcode_version', "test", str(RELEASE_SCRIPTS["toolchain"]), str(developer)], capture_output=True, text=True)
+    assert result.returncode != 0
+    assert not marker.exists()
 
 
 def test_stage_cleanup_rejects_symlinked_release_root_without_deleting_target(
@@ -1367,7 +1393,7 @@ def _real_app_stage_environment(unsigned_app: Path) -> dict[str, str]:
         {
             "LOCALOCR_UNSIGNED_APP": str(unsigned_app),
             "LOCALOCR_RELEASE_VERSION": "0.3.1",
-            "LOCALOCR_RELEASE_BUILD": "4",
+            "LOCALOCR_RELEASE_BUILD": "5",
             "LOCALOCR_EXPECTED_BUNDLE_ID": "com.rayconsulting.localocr",
         }
     )
@@ -2113,7 +2139,7 @@ def test_real_unsigned_studio_app_stages_under_exact_release_policy(
     assert staged_plist["CFBundleExecutable"] == "LocalOCR Studio"
     assert staged_plist["CFBundleIdentifier"] == "com.rayconsulting.localocr"
     assert staged_plist["CFBundleShortVersionString"] == "0.3.1"
-    assert staged_plist["CFBundleVersion"] == "4"
+    assert staged_plist["CFBundleVersion"] == "5"
 
     helpers = real_staged_studio_app / "Contents" / "Helpers"
     assert sorted(path.name for path in helpers.iterdir()) == sorted(EXPECTED_HELPERS)
@@ -2228,7 +2254,7 @@ def test_stage_strips_only_the_copied_main_executable(tmp_path: Path) -> None:
                 "CFBundleExecutable": "LocalOCR Studio",
                 "CFBundleIdentifier": "com.rayconsulting.localocr",
                 "CFBundleShortVersionString": "0.3.1",
-                "CFBundleVersion": "4",
+                "CFBundleVersion": "5",
             },
             plist_file,
         )
@@ -3805,7 +3831,7 @@ exit 64
     assert result.returncode != 0
     assert "private or build path marker" in result.stderr
     assert known_good.read_text() == "preserve validated direct release"
-    assert not list((copy / "dist").glob(".direct-release.candidate.*"))
+    assert not list((copy / "dist").glob(".direct-release.candidate.*")), result.stderr
 
 
 def test_native_candidate_policy_failure_preserves_known_good_artifacts(
@@ -4333,7 +4359,7 @@ def test_verifier_allows_only_the_system_swift_rpath() -> None:
         "/usr/lib/swift/",
         "/usr/lib",
         "/System/Library",
-        "/Applications/Xcode.app/Contents/Developer/usr/lib/swift/macosx",
+        "/Applications/Xcode-27-RC.app/Contents/Developer/usr/lib/swift/macosx",
         "/opt/homebrew/lib",
         "/usr/local/lib",
         "@loader_path/../Frameworks",

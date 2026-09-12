@@ -470,8 +470,11 @@ private func lmStudioStatusModels(model: String, duplicate: Bool = false) throws
     return try JSONSerialization.data(withJSONObject: ["models": models])
 }
 
+private final class ModelBridgeTestBundleMarker {}
+
 private func builtModelBridgeExecutableURL() throws -> URL {
     var directories = [
+        Bundle(for: ModelBridgeTestBundleMarker.self).bundleURL.deletingLastPathComponent(),
         Bundle.main.bundleURL.deletingLastPathComponent(),
         URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(".build/debug")

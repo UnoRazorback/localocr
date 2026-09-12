@@ -169,8 +169,8 @@ localocr intelligence status --json
 localocr intelligence reset --json
 ```
 
-`models` reports Apple Foundation Models availability and detected Ollama or
-LM Studio candidates. `test` runs the bounded local qualification suite for one
+`models` reports Apple Foundation Models availability and detected Ollama,
+LM Studio, or llama.cpp candidates. `test` runs the bounded local qualification suite for one
 exact provider/model identity. `select` makes a qualified identity active;
 third-party loopback providers require the interactive acknowledgment and
 cannot be selected by a noninteractive flag. `status` reports the current

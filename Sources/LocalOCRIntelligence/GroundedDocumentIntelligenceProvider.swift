@@ -2,9 +2,9 @@ import Foundation
 import LocalOCRModelCore
 
 actor GroundedDocumentIntelligenceProvider: DocumentIntelligenceProviding {
-    private static let summaryTask = "Summarize the OCR text as discrete factual statements."
-    private static let organizationTask = "Suggest a concise title, category, and tags for the OCR text."
-    private static let groundingRequirement = "Return only the requested source-grounded structured result. Every factual value must include its one-based source page and an exact evidence quote. Use nil when an extraction is absent or unsupported."
+    private static let summaryTask = "Summarize the OCR text as discrete, complete factual statements. Prefer concise verbatim source sentences. Preserve the subject and its relationship to each date, amount, or status; do not return bare values or add pronouns or inferred relationships. Copy evidence verbatim without the XML page wrapper. Cite short source passages of at most 250 characters in full. For longer passages, cite only the smallest complete supporting sentence or passage. Group related facts that share evidence into one statement to avoid repeating long quotes."
+    private static let organizationTask = "Suggest a concise title, category, and tags for the OCR text. Choose values that occur verbatim in the source. For category, use a source word naming the document type or main subject when available; a heading explicitly called category is not required. Copy evidence verbatim; never append page labels, explanations, or annotations inside evidence. Omit unsupported tags and leave unsupported title or category absent."
+    private static let groundingRequirement = "Return only the requested source-grounded structured result. Every factual value must include its one-based source page and an exact evidence quote. Represent absent or unsupported extraction values as absent optional values (JSON null for JSON output), never the strings \"nil\", \"null\", or \"unknown\"."
     private static let maximumSummaryItems = 12
     private static let maximumOrganizationTags = 5
 
@@ -137,7 +137,7 @@ actor GroundedDocumentIntelligenceProvider: DocumentIntelligenceProviding {
                 "\(index + 1). \(name)"
             }.joined(separator: "\n")
             let extractionTask = """
-                Extract only these requested field names, preserving each name exactly:
+                Extract only these requested field names, preserving each name exactly. Interpret field names by their meaning, including common synonyms and underscore-separated words; the literal field label need not occur in the source. A document identifier can supply a requested reference identifier when its role is unambiguous. Never infer a value that is not present in the source:
                 Requested field names:
                 \(requestedFields)
                 """
