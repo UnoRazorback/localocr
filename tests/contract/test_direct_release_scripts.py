@@ -947,7 +947,7 @@ def test_direct_release_scripts_enforce_immutable_policy() -> None:
         )
         _assert_codesign_deep_policy(release_script)
 
-    assert "--entitlements" not in sign_script
+    assert "--entitlements" in sign_script
 
 
 def test_signing_dry_run_records_nested_first_invocation_order(tmp_path: Path) -> None:
@@ -980,15 +980,29 @@ def test_signing_dry_run_records_nested_first_invocation_order(tmp_path: Path) -
         "runtime",
         "--timestamp",
     ]
+    producer_entitlements = ["--entitlements", str(SCRIPTS / "local-ai-activity.entitlements")]
     assert invocations == [
-        [*expected_prefix, str(staged_app / "Contents" / "Helpers" / "localocr")],
-        [*expected_prefix, str(staged_app / "Contents" / "Helpers" / "localocr-mcp")],
+        [*expected_prefix, *producer_entitlements, str(staged_app / "Contents" / "Helpers" / "localocr")],
+        [*expected_prefix, *producer_entitlements, str(staged_app / "Contents" / "Helpers" / "localocr-mcp")],
         [
             *expected_prefix,
             str(staged_app / "Contents" / "Helpers" / "localocr-model-bridge"),
         ],
-        [*expected_prefix, str(staged_app)],
+        [*expected_prefix, *producer_entitlements, str(staged_app)],
     ]
+
+
+def test_production_activity_entitlements_and_build_are_exact() -> None:
+    entitlement_file = SCRIPTS / "local-ai-activity.entitlements"
+    assert entitlement_file.is_file()
+    assert plistlib.loads(entitlement_file.read_bytes()) == {
+        "com.apple.security.application-groups": [
+            "DZ8B5454ZN.com.rayconsulting.local-ai-activity"
+        ]
+    }
+    assert 'studio_release_build="6"' in BUILD_UNSIGNED_STUDIO_APP.read_text()
+    project = (ROOT / "LocalOCR Studio.xcodeproj" / "project.pbxproj").read_text()
+    assert re.findall(r"CURRENT_PROJECT_VERSION = ([0-9]+);", project) == ["6", "6"]
 
 
 def _nested_code_fixture(tmp_path: Path) -> Path:
@@ -1515,7 +1529,7 @@ def _real_app_stage_environment(unsigned_app: Path) -> dict[str, str]:
         {
             "LOCALOCR_UNSIGNED_APP": str(unsigned_app),
             "LOCALOCR_RELEASE_VERSION": "0.3.1",
-            "LOCALOCR_RELEASE_BUILD": "5",
+            "LOCALOCR_RELEASE_BUILD": "6",
             "LOCALOCR_EXPECTED_BUNDLE_ID": "com.rayconsulting.localocr",
         }
     )
@@ -2261,7 +2275,7 @@ def test_real_unsigned_studio_app_stages_under_exact_release_policy(
     assert staged_plist["CFBundleExecutable"] == "LocalOCR Studio"
     assert staged_plist["CFBundleIdentifier"] == "com.rayconsulting.localocr"
     assert staged_plist["CFBundleShortVersionString"] == "0.3.1"
-    assert staged_plist["CFBundleVersion"] == "5"
+    assert staged_plist["CFBundleVersion"] == "6"
 
     helpers = real_staged_studio_app / "Contents" / "Helpers"
     assert sorted(path.name for path in helpers.iterdir()) == sorted(EXPECTED_HELPERS)
@@ -2376,7 +2390,7 @@ def test_stage_strips_only_the_copied_main_executable(tmp_path: Path) -> None:
                 "CFBundleExecutable": "LocalOCR Studio",
                 "CFBundleIdentifier": "com.rayconsulting.localocr",
                 "CFBundleShortVersionString": "0.3.1",
-                "CFBundleVersion": "5",
+                "CFBundleVersion": "6",
             },
             plist_file,
         )

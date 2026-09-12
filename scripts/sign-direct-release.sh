@@ -244,8 +244,20 @@ build_codesign_command() {
         --options
         runtime
         --timestamp
-        "$target"
     )
+    case "$target" in
+        */Contents/Helpers/localocr|*/Contents/Helpers/localocr-mcp|*/LocalOCR\ Studio.app)
+            CODESIGN_COMMAND+=(--entitlements "$sign_script_dir/local-ai-activity.entitlements")
+            ;;
+        */Contents/Helpers/localocr-model-bridge)
+            # The bridge performs inference but never writes app activity records.
+            ;;
+        *)
+            echo "unexpected code object for signing" >&2
+            return 1
+            ;;
+    esac
+    CODESIGN_COMMAND+=("$target")
 }
 
 execute_codesign_command() {
