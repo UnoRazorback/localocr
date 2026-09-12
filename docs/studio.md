@@ -154,10 +154,10 @@ interface.
 
 ## Beta 2.1 status
 
-The release candidate is version `0.3.1`, build `6`, with planned tag
+The release candidate is version `0.3.1`, build `7`, with planned tag
 `v0.3.1-beta.1`. Follow the [Beta Tester Guide](../BETA_TESTING.md) for the
 desktop-first acceptance path. The planned assets are
-`LocalOCR-Studio-0.3.1-6.zip` and its matching `.sha256` file. Do not use a
+`LocalOCR-Studio-0.3.1-7.zip` and its matching `.sha256` file. Do not use a
 staging copy or bypass Gatekeeper. Signing, notarization, downloaded-package,
 and target-Mac acceptance remain separate gates, so no published Beta 2.1
 download is claimed before their evidence exists.

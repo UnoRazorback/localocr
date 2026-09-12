@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOYMENT_TARGET = "deployment target macOS 14.0"
 VERSION = "0.3.1"
-BUILD = "6"
+BUILD = "7"
 TAG = "v0.3.1-beta.1"
 FILES = {
     "readme": ROOT / "README.md",
@@ -126,7 +126,7 @@ def test_local_ai_activity_entitlement_gate_records_authorized_configuration_and
     assert "blocked pending the approvals below" not in gate
 
 
-def test_private_build_6_candidate_identity_and_suite_boundary():
+def test_private_build_7_candidate_identity_and_suite_boundary():
     for name in ("README.md", "docs/studio.md", "BETA_TESTING.md"):
         text = (ROOT / name).read_text()
         assert f"LocalOCR-Studio-{VERSION}-{BUILD}.zip" in text
