@@ -233,6 +233,12 @@ public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging, Local
             }
             if identity.provider == candidate.identity.provider,
                identity.model == candidate.identity.model {
+                // Qualification belongs to the newly observed exact identity, while
+                // selection and acknowledgment remain bound to the prior identity.
+                if let current = await qualificationService.cachedOutcome(for: candidate.identity),
+                   current.status == .passed {
+                    return (.passed, false, current.receipt?.qualifiedAt)
+                }
                 return (.stale, false, nil)
             }
         }

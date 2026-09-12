@@ -1160,7 +1160,8 @@ actor Task6FixtureProvider: DocumentIntelligenceProviding {
             model: identity.model,
             processing: .onDeviceLoopback,
             fingerprint: identity.fingerprint,
-            qualifiedAt: task6Now
+            qualifiedAt: task6Now,
+            harnessVersion: identity.harnessVersion
         )
         self.summary = summary
         self.organization = organization

@@ -91,6 +91,56 @@ import Testing
         #expect(changedDescriptor?.selected == false)
     }
 
+    @Test(arguments: [LocalModelProviderID.ollama, .lmStudio, .llamaCpp])
+    func freshQualificationAfterIdentityChangeIsDiscoverableWithoutReset(provider: LocalModelProviderID) async throws {
+        func identity(processID: Int32) -> LocalModelIdentity {
+            LocalModelIdentity(provider: provider, model: "fixture.gguf",
+                fingerprint: provider == .llamaCpp ? String(repeating: "a", count: 64) : "sha256:\(processID)",
+                harnessVersion: "fixture", fileAttestation: provider == .llamaCpp ? LocalModelFileAttestation(
+                    executablePath: "/private/tmp/fixture/llama-server", executableSHA256: String(repeating: "b", count: 64),
+                    modelPath: "/private/tmp/fixture/model.gguf", modelSize: 1024, modelModifiedNanoseconds: 1,
+                    executableSize: 1024, executableModifiedNanoseconds: 1, processID: processID
+                ) : nil)
+        }
+        let old = identity(processID: 123)
+        let current = identity(processID: 456)
+        let originalSelection = task6ExternalSelection(identity: old)
+        let store = Task6SelectionStore(.selected(originalSelection))
+        let qualification = task6QualificationService(provider: Task6FixtureProvider(identity: current))
+        let transport = Task6Transport { request in
+            #expect(request.action == .discover)
+            #expect(request.prompt == nil)
+            return task6DiscoveryResponse(request: request,
+                candidates: request.provider == current.provider ? [task6Candidate(identity: current)] : [])
+        }
+        let registry = LocalIntelligenceProviderRegistry(
+            transport: transport, selectionStore: store, qualificationService: qualification,
+            appleProviderFactory: { Task6FixtureProvider(identity: .appleSystemDefault) }, now: { task6Now }
+        )
+        let before = await registry.models().first { $0.identity == current }
+        #expect(before?.qualification == .stale)
+        let outcome = try await registry.qualify(current)
+        #expect(outcome.status == .passed)
+        let refreshed = await registry.models().first { $0.identity == current }
+        #expect(refreshed?.qualification == .passed)
+        #expect(refreshed?.qualifiedAt == outcome.receipt?.qualifiedAt)
+        #expect(refreshed?.selected == false)
+        #expect(await store.state() == .selected(originalSelection))
+        #expect(await store.writes.isEmpty)
+
+        let router = LocalIntelligenceProviderRouter(
+            selectionStore: store, transport: transport,
+            appleProviderFactory: { Task6FixtureProvider(identity: .appleSystemDefault) }
+        )
+        await #expect(throws: IntelligenceError.selection(.identityChanged(expected: old, actual: current))) {
+            try await router.summarize(task6Document)
+        }
+        #expect(await transport.requests.allSatisfy { $0.action == .discover && $0.prompt == nil })
+        try await registry.selectExternal(current, acknowledgmentAcceptedAt: task6Now)
+        #expect(await store.state() == .selected(task6ExternalSelection(identity: current,
+            qualification: outcome.receipt)))
+    }
+
     @Test func selectExternalRequiresCurrentVerifiedIdentityQualificationAndFreshAcknowledgment() async throws {
         let store = Task6SelectionStore(.none)
         let provider = Task6FixtureProvider()
