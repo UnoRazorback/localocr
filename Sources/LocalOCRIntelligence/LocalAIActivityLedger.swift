@@ -224,7 +224,7 @@ public actor LocalAIActivityLedger: LocalAIActivityLedgerWriting {
             } catch {
                 continue
             }
-            for id in ids {
+            for id in ids.prefix(SecureLocalAIActivityFileStore.maximumDirectoryEntries) {
                 do {
                     guard let stored = try store.readRecord(id: id, from: directory) else { continue }
                     guard case let .record(snapshot) = stored else {

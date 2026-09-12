@@ -7,6 +7,14 @@ import Testing
 @Suite(.serialized) struct LocalAIActivityLedgerTests {
     private let initialDate = Date(timeIntervalSince1970: 1_788_184_800)
 
+    @Test func cleanupBoundsRecordsEvenWhenStoreReturnsMoreThanItsScanBudget() async {
+        let records = Dictionary(uniqueKeysWithValues: (0..<300).map { _ in (UUID(), Data("invalid".utf8)) })
+        let store = RemoveFailingActivityStore(records: records)
+        let ledger = LocalAIActivityLedger(store: store, clock: TestLocalAIActivityClock(now: initialDate))
+        await ledger.cleanupExpired()
+        #expect(store.removeAttempts.count == 512)
+    }
+
     // Catches a begin path that uses the wrong fixed directory, omits a field, or computes a lease other than 45 seconds.
     @Test func beginWritesActiveRecordWithExactLease() async throws {
         let fixture = try ActivityLedgerFixture(now: initialDate)

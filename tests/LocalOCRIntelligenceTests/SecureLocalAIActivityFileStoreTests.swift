@@ -1,9 +1,65 @@
 import Darwin
+import Dispatch
 import Foundation
 @testable import LocalOCRIntelligence
 import Testing
 
 @Suite(.serialized) struct SecureLocalAIActivityFileStoreTests {
+    @Test func contendedMutationLockFailsBeforeOwnerReleasesIt() throws {
+        let fixture = try SecureActivityStoreFixture()
+        defer { fixture.remove() }
+        try fixture.store.prepareLedgerDirectories()
+        let lockURL = fixture.rootURL.appending(path: "v1/.mutation.lock")
+        let owner = Darwin.open(lockURL.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        #expect(owner >= 0)
+        guard owner >= 0 else { return }
+        defer { Darwin.close(owner) }
+        #expect(flock(owner, LOCK_EX | LOCK_NB) == 0)
+        let result = ContendedActivityWriteResult()
+        let completed = DispatchSemaphore(value: 0)
+        let id = UUID()
+        DispatchQueue.global().async {
+            do {
+                try fixture.store.atomicallyWrite(Data("record".utf8), id: id, to: .active)
+                result.set(nil)
+            } catch {
+                result.set(error as? SecureLocalAIActivityFileStoreError)
+            }
+            completed.signal()
+        }
+        let returnedWhileHeld = completed.wait(timeout: .now() + 1) == .success
+        #expect(flock(owner, LOCK_UN) == 0)
+        if !returnedWhileHeld { _ = completed.wait(timeout: .now() + 5) }
+        #expect(returnedWhileHeld)
+        #expect(result.error == .filesystemOperationFailed(EWOULDBLOCK))
+        #expect(!FileManager.default.fileExists(atPath: fixture.recordURL(id: id, in: .active).path))
+    }
+
+    @Test func enumerationBoundsValidRecordCollection() throws {
+        let fixture = try SecureActivityStoreFixture()
+        defer { fixture.remove() }
+        try fixture.store.prepareLedgerDirectories()
+        for _ in 0..<300 {
+            try Data().write(to: fixture.recordURL(id: UUID(), in: .active))
+        }
+        let ids = try fixture.store.recordIDs(in: .active)
+        #expect(ids.count <= 256)
+        #expect(!ids.isEmpty)
+    }
+
+    @Test func enumerationChargesInvalidNamesAgainstTheSameBudget() throws {
+        let counter = ActivityEnumerationCounter()
+        let fixture = try SecureActivityStoreFixture(hooks: .init(didEnumerateEntry: { counter.increment() }))
+        defer { fixture.remove() }
+        try fixture.store.prepareLedgerDirectories()
+        for index in 0..<300 {
+            try Data().write(to: fixture.directoryURL(.active).appending(path: "invalid-\(index)"))
+        }
+        let ids = try fixture.store.recordIDs(in: .active)
+        #expect(ids.isEmpty)
+        #expect(counter.value == 256)
+    }
+
     // Catches missing fixed directories, process-umask-dependent permissions, or omission of backup exclusion.
     @Test func prepareCreatesPrivateFixedTreeExcludedFromBackup() throws {
         let fixture = try SecureActivityStoreFixture()
@@ -426,4 +482,20 @@ private func version(
         changedNanoseconds: version.changedNanoseconds,
         contentEvidence: evidence
     )
+}
+
+private final class ContendedActivityWriteResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedError: SecureLocalAIActivityFileStoreError?
+    var error: SecureLocalAIActivityFileStoreError? { lock.withLock { storedError } }
+    func set(_ error: SecureLocalAIActivityFileStoreError?) {
+        lock.withLock { storedError = error }
+    }
+}
+
+private final class ActivityEnumerationCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.withLock { count } }
+    func increment() { lock.withLock { count += 1 } }
 }

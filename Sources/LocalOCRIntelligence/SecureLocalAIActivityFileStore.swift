@@ -72,6 +72,7 @@ struct SecureLocalAIActivityFileStoreHooks: Sendable {
 
     let applyAndVerifyBackupExclusion: BackupExclusion
     let synchronizeDescriptor: DescriptorSynchronization
+    let didEnumerateEntry: @Sendable () -> Void
 
     init(
         applyAndVerifyBackupExclusion: @escaping BackupExclusion = { url in
@@ -89,14 +90,17 @@ struct SecureLocalAIActivityFileStoreHooks: Sendable {
                 if errno != EINTR { return errno }
             }
             return 0
-        }
+        },
+        didEnumerateEntry: @escaping @Sendable () -> Void = {}
     ) {
         self.applyAndVerifyBackupExclusion = applyAndVerifyBackupExclusion
         self.synchronizeDescriptor = synchronizeDescriptor
+        self.didEnumerateEntry = didEnumerateEntry
     }
 }
 
 struct SecureLocalAIActivityFileStore: LocalAIActivityFileStoring, Sendable {
+    static let maximumDirectoryEntries = 256
     private static let ledgerRootName = "LocalAIActivity"
     private static let versionName = "v1"
     private static let mutationLockName = ".mutation.lock"
@@ -389,8 +393,17 @@ struct SecureLocalAIActivityFileStore: LocalAIActivityFileStoring, Sendable {
             defer { closedir(stream) }
 
             var ids: [UUID] = []
-            errno = 0
-            while let entry = readdir(stream) {
+            // Charge every entry, including junk and dot entries, before filtering.
+            // Cleanup is best effort: later leases may be left for another scan.
+            for _ in 0..<Self.maximumDirectoryEntries {
+                errno = 0
+                guard let entry = readdir(stream) else {
+                    guard errno == 0 else {
+                        throw SecureLocalAIActivityFileStoreError.filesystemOperationFailed(errno)
+                    }
+                    break
+                }
+                hooks.didEnumerateEntry()
                 let name = withUnsafePointer(to: entry.pointee.d_name) { pointer in
                     pointer.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) {
                         String(cString: $0)
@@ -404,9 +417,6 @@ struct SecureLocalAIActivityFileStore: LocalAIActivityFileStoring, Sendable {
                     continue
                 }
                 ids.append(id)
-            }
-            guard errno == 0 else {
-                throw SecureLocalAIActivityFileStoreError.filesystemOperationFailed(errno)
             }
             return ids.sorted { $0.uuidString < $1.uuidString }
         }
@@ -447,7 +457,8 @@ struct SecureLocalAIActivityFileStore: LocalAIActivityFileStoring, Sendable {
             throw SecureLocalAIActivityFileStoreError.filesystemOperationFailed(errno)
         }
         try validateRecordMetadata(metadata)
-        guard flock(descriptor, LOCK_EX) == 0 else {
+        // A suspended producer must never stall an inference operation in another process.
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
             throw SecureLocalAIActivityFileStoreError.filesystemOperationFailed(errno)
         }
         defer { _ = flock(descriptor, LOCK_UN) }
