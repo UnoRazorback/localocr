@@ -90,6 +90,9 @@ public actor LocalModelQualificationService {
     private let cacheDirectory: URL?
     private let expectedCacheOwnerID: uid_t
     private let cacheStoreHooks: SecureJSONReceiptStoreHooks
+    private let activityReporter: any LocalAIActivityReporting
+    private let producerRole: LocalAIProducerRole
+    private let platform: LocalAIPlatform
     private var outcomes: [ModelKey: LocalModelQualificationOutcome] = [:]
     private var outcomeIdentities: [ModelKey: LocalModelIdentity] = [:]
 
@@ -104,11 +107,17 @@ public actor LocalModelQualificationService {
     public init(
         providerFactory: @escaping ProviderFactory,
         now: @escaping @Sendable () -> Date = Date.init,
-        cacheDirectory: URL? = LocalModelQualificationService.defaultCacheDirectory
+        cacheDirectory: URL? = LocalModelQualificationService.defaultCacheDirectory,
+        activityReporter: any LocalAIActivityReporting = DisabledLocalAIActivityReporter(),
+        producerRole: LocalAIProducerRole = .cli,
+        platform: LocalAIPlatform = .macos
     ) {
         self.providerFactory = providerFactory
         self.now = now
         self.cacheDirectory = cacheDirectory
+        self.activityReporter = activityReporter
+        self.producerRole = producerRole
+        self.platform = platform
         expectedCacheOwnerID = geteuid()
         cacheStoreHooks = SecureJSONReceiptStoreHooks()
         fixture = try? Self.loadFixture()
@@ -124,6 +133,9 @@ public actor LocalModelQualificationService {
         self.now = now
         self.fixture = Self.isCanonicalFixture(fixture) ? fixture : nil
         self.cacheDirectory = cacheDirectory
+        activityReporter = DisabledLocalAIActivityReporter()
+        producerRole = .cli
+        platform = .macos
         expectedCacheOwnerID = geteuid()
         cacheStoreHooks = SecureJSONReceiptStoreHooks()
     }
@@ -140,6 +152,9 @@ public actor LocalModelQualificationService {
         self.cacheDirectory = cacheDirectory
         self.expectedCacheOwnerID = expectedCacheOwnerID
         self.cacheStoreHooks = cacheStoreHooks
+        activityReporter = DisabledLocalAIActivityReporter()
+        producerRole = .cli
+        platform = .macos
         fixture = try? Self.loadFixture()
     }
 
@@ -152,6 +167,9 @@ public actor LocalModelQualificationService {
         self.providerFactory = providerFactory
         self.now = now
         self.cacheDirectory = cacheDirectory
+        activityReporter = DisabledLocalAIActivityReporter()
+        producerRole = .cli
+        platform = .macos
         expectedCacheOwnerID = geteuid()
         cacheStoreHooks = SecureJSONReceiptStoreHooks()
         if let loaded = try? fixtureLoader(), Self.isCanonicalFixture(loaded) {
@@ -178,7 +196,11 @@ public actor LocalModelQualificationService {
         var failures: [String] = []
 
         do {
-            let result = try await provider.summarize(fixture.document)
+            let result = try await activityReporter.withActivity(
+                activityDescriptor(productTask: .summarize)
+            ) {
+                try await provider.summarize(fixture.document)
+            }
             if Self.validSummary(result.value, in: fixture.document),
                Self.provenance(result.model, matches: identity) {
                 passedActions.insert(.summary)
@@ -190,7 +212,11 @@ public actor LocalModelQualificationService {
         }
 
         do {
-            let result = try await provider.organize(fixture.document)
+            let result = try await activityReporter.withActivity(
+                activityDescriptor(productTask: .organize)
+            ) {
+                try await provider.organize(fixture.document)
+            }
             if Self.validOrganization(result.value, in: fixture.document),
                Self.provenance(result.model, matches: identity) {
                 passedActions.insert(.organization)
@@ -202,7 +228,11 @@ public actor LocalModelQualificationService {
         }
 
         do {
-            let result = try await provider.extract(fixture.fields, from: fixture.document)
+            let result = try await activityReporter.withActivity(
+                activityDescriptor(productTask: .extract)
+            ) {
+                try await provider.extract(fixture.fields, from: fixture.document)
+            }
             if Self.validExtraction(
                 result.value,
                 fields: fixture.fields,
@@ -242,6 +272,16 @@ public actor LocalModelQualificationService {
         outcomes[key] = outcome
         outcomeIdentities[key] = identity
         return outcome
+    }
+
+    private func activityDescriptor(
+        productTask: LocalAIProductTask
+    ) -> LocalAIActivityDescriptor {
+        .localRuntime(
+            role: producerRole,
+            platform: platform,
+            task: productTask
+        )
     }
 
     public func cachedOutcome(

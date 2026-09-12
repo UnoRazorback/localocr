@@ -67,6 +67,35 @@ switches providers, refuses remote or locality-ambiguous endpoints, and
 requires explicit acknowledgment before document text is sent to an external
 local runtime. LocalOCR uses no Private Cloud Compute and has no cloud fallback.
 
+### Local AI Activity sharing
+
+Participating LocalOCR model operations can report a small lifecycle record to
+a separately installed reader such as AI Neural Gauge. **Activity sharing is
+content-free**: a record contains only the LocalOCR producer role, an
+allowlisted runtime family, a generic task, timing, and a generic outcome. It
+contains no prompt, response, OCR text, filename, path, document identity,
+requested field name, extracted value, model input, model output, error text,
+command argument, URL, or user identifier.
+
+The reader labels this provenance **App reported** because LocalOCR reports
+only model operations it owns; the reader does not infer model use from Apple
+services or process activity. **Nonparticipating apps are not visible**.
+**No per-app Neural Engine utilization metric is available**, so an absent
+record is not proof that the device is idle. **Vision OCR does not create a
+Local AI Activity record**; only owned Local Intelligence model calls do.
+
+**Active leases expire after 45 seconds** unless refreshed, and **Recent
+activity expires within 24 hours**. Operations continue if activity sharing is
+unavailable. Users can clear recent activity in the reader. Open-source, ad
+hoc, and differently signed builds use explicitly injected development ledgers
+rather than the official group; they do not silently impersonate official
+activity.
+
+Future iPhone and iPad readers reconstruct the ledger on foreground entry and
+during system-granted background opportunities. **iOS background delivery is
+opportunistic, not continuous**, and no complete or immediate background view
+is promised.
+
 ## Quick start from source
 
 Install a current Swift toolchain on macOS 14+, then build the package:

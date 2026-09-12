@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import LocalOCRCore
 import LocalOCRIntelligence
@@ -545,6 +546,95 @@ import Testing
         #expect(errorCode(in: result) == "cancelled")
         #expect(await consent.statusReadCount() == 0)
     }
+
+    // Catches MCP dispatch that bypasses the shared role-aware router boundary.
+    @Test func mcpDispatcherWritesOneIndependentMCPLease() async throws {
+        let fixture = try MCPActivityFixture()
+        defer { fixture.remove() }
+        let router = mcpRouter(
+            provider: FakeIntelligenceProvider(),
+            reporter: fixture.reporter
+        )
+        let dispatcher = makeDispatcher(
+            intelligence: router,
+            currentDirectory: currentDirectory
+        )
+
+        let result = await dispatcher.callTool(
+            name: "summarize_document",
+            arguments: ["file_path": "private.pdf"]
+        )
+        let files = try fixture.activityFiles(in: "recent")
+        let records = try files.map { try LocalAIActivityContract.decode(Data(contentsOf: $0)) }
+
+        #expect(result.structuredContent?.objectValue?["text"] == .string("A short summary."))
+        #expect(try fixture.activityFiles(in: "active").isEmpty)
+        #expect(records.count == 1)
+        #expect(records.first?.producerRole == .mcp)
+        #expect(records.first?.productTask == .summarize)
+        #expect(records.first?.outcome == .success)
+        #expect(files.first?.deletingPathExtension().lastPathComponent.lowercased()
+            == records.first?.activityID.uuidString.lowercased())
+    }
+
+    // Catches MCP paths, OCR text, requested fields, model output, URLs, or errors entering activity files.
+    @Test func mcpExtractionWritesNoContentCanaryToItsLedger() async throws {
+        let fixture = try MCPActivityFixture()
+        defer { fixture.remove() }
+        let canaryPayload = mcpPrivacyCanaries.joined(separator: " | ")
+        let router = mcpRouter(
+            provider: FakeIntelligenceProvider(extractedValue: canaryPayload),
+            reporter: fixture.reporter
+        )
+        let dispatcher = makeDispatcher(
+            textLoader: FakeTextLoader(text: canaryPayload),
+            intelligence: router,
+            currentDirectory: currentDirectory
+        )
+
+        let result = await dispatcher.callTool(
+            name: "extract_document_fields",
+            arguments: [
+                "file_path": "/Users/scott/private.pdf",
+                "fields": ["total", "prompt-canary"],
+            ]
+        )
+
+        #expect(result.isError == nil)
+        #expect(text(in: result)?.contains("response-canary") == true)
+        let records = try fixture.activityFiles(in: "recent")
+            .map { try LocalAIActivityContract.decode(Data(contentsOf: $0)) }
+        #expect(records.count == 1)
+        #expect(records.first?.producerRole == .mcp)
+        #expect(records.first?.productTask == .extract)
+        let allBytes = try fixture.allLedgerBytes()
+        for canary in mcpPrivacyCanaries {
+            #expect(!allBytes.contains(Data(canary.utf8)))
+        }
+    }
+
+    // Catches a ledger write failure replacing an otherwise successful MCP tool response.
+    @Test func mcpResultSurvivesReporterWriteFailure() async {
+        let reporter = LocalAIActivityReporter(
+            ledger: MCPFailingActivityLedger(),
+            clock: SystemLocalAIActivityClock()
+        )
+        let dispatcher = makeDispatcher(
+            intelligence: mcpRouter(
+                provider: FakeIntelligenceProvider(),
+                reporter: reporter
+            ),
+            currentDirectory: currentDirectory
+        )
+
+        let result = await dispatcher.callTool(
+            name: "summarize_document",
+            arguments: ["file_path": "private.pdf"]
+        )
+
+        #expect(result.isError == nil)
+        #expect(result.structuredContent?.objectValue?["text"] == .string("A short summary."))
+    }
 }
 
 private let mcpSelectionIdentity = LocalModelIdentity(
@@ -553,6 +643,12 @@ private let mcpSelectionIdentity = LocalModelIdentity(
     fingerprint: "sha256:fixture",
     harnessVersion: "0.11.8"
 )
+
+private let mcpPrivacyCanaries = [
+    "SECRET OCR TEXT", "/Users/scott/private.pdf", "invoice.pdf",
+    "prompt-canary", "response-canary", "total", "$9,999.00",
+    "https://example.invalid", "model-error-canary",
+]
 
 private let currentConsentReceipt = ExternalDataConsentReceipt(
     schemaVersion: ExternalDataConsentReceipt.currentSchemaVersion,
@@ -576,6 +672,103 @@ private func makeDispatcher(
         consentStore: consentStore,
         currentDirectory: currentDirectory
     )
+}
+
+private func mcpRouter(
+    provider: any DocumentIntelligenceProviding,
+    reporter: any LocalAIActivityReporting
+) -> LocalIntelligenceProviderRouter {
+    LocalIntelligenceProviderRouter(
+        selectionStore: MCPActivitySelectionStore(),
+        transport: StdioModelBridgeClient(),
+        appleProviderFactory: { provider },
+        activityReporter: reporter,
+        producerRole: .mcp,
+        platform: .macos
+    )
+}
+
+private actor MCPActivitySelectionStore: LocalIntelligenceSelectionStoring {
+    func state() async -> LocalIntelligenceSelectionState { .selected(.appleSystemDefault) }
+    func selectApple(at date: Date) async throws { _ = date }
+    func selectExternal(
+        _ identity: LocalModelIdentity,
+        qualification: LocalModelQualificationReceipt,
+        acknowledgment: ExternalLocalModelAcknowledgment
+    ) async throws {
+        _ = identity
+        _ = qualification
+        _ = acknowledgment
+    }
+    func reset(at date: Date) async throws { _ = date }
+}
+
+private actor MCPFailingActivityLedger: LocalAIActivityLedgerWriting {
+    func begin(_ descriptor: LocalAIActivityDescriptor) async throws -> UUID {
+        _ = descriptor
+        throw MCPActivityError.unavailable
+    }
+    func heartbeat(_ activityID: UUID) async throws { _ = activityID }
+    func end(_ activityID: UUID, outcome: LocalAIActivityOutcome) async throws {
+        _ = activityID
+        _ = outcome
+    }
+    func cleanupExpired() async {}
+}
+
+private enum MCPActivityError: Error {
+    case unavailable
+}
+
+private final class MCPActivityFixture: @unchecked Sendable {
+    let containerURL: URL
+    let reporter: LocalAIActivityReporter
+
+    init() throws {
+        containerURL = FileManager.default.temporaryDirectory.appending(
+            path: "LocalOCR-mcp-activity-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(at: containerURL, withIntermediateDirectories: false)
+        guard chmod(containerURL.path, 0o700) == 0 else { throw MCPActivityError.unavailable }
+        let clock = SystemLocalAIActivityClock()
+        reporter = LocalAIActivityReporter(
+            ledger: LocalAIActivityLedger(containerURL: containerURL, clock: clock),
+            clock: clock
+        )
+    }
+
+    func activityFiles(in directory: String) throws -> [URL] {
+        let url = containerURL
+            .appending(path: "LocalAIActivity/v1", directoryHint: .isDirectory)
+            .appending(path: directory, directoryHint: .isDirectory)
+        return try FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ).filter { $0.pathExtension == "json" }
+    }
+
+    func allLedgerBytes() throws -> Data {
+        let root = containerURL.appending(path: "LocalAIActivity", directoryHint: .isDirectory)
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ) else {
+            return Data()
+        }
+        var bytes = Data()
+        for case let url as URL in enumerator {
+            if try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
+                bytes.append(try Data(contentsOf: url))
+            }
+        }
+        return bytes
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: containerURL)
+    }
 }
 
 private func text(in result: CallTool.Result) -> String? {
@@ -687,11 +880,16 @@ private actor FakeOCRService: LocalOCRServing {
 
 private actor FakeTextLoader: DocumentTextLoading {
     private var paths: [URL] = []
+    private let text: String
+
+    init(text: String = "Invoice total: $19.00") {
+        self.text = text
+    }
 
     func load(_ sourceURL: URL) async throws -> IntelligenceDocument {
         paths.append(sourceURL)
         return IntelligenceDocument(pages: [
-            .init(number: 1, text: "Invoice total: $19.00")
+            .init(number: 1, text: text)
         ])
     }
 
@@ -710,10 +908,12 @@ private actor FakeIntelligenceProvider: DocumentIntelligenceProviding {
     private var failure: (any Error & Sendable)?
     private let summaryText: String
     private let model: LocalModelProvenance
+    private let extractedValue: String?
 
-    init(summaryText: String = "A short summary.", model: LocalModelProvenance = .appleSystemDefault) {
+    init(summaryText: String = "A short summary.", model: LocalModelProvenance = .appleSystemDefault, extractedValue: String? = nil) {
         self.model = model
         self.summaryText = summaryText
+        self.extractedValue = extractedValue
     }
 
     var availability: IntelligenceAvailability { .available }
@@ -764,7 +964,12 @@ private actor FakeIntelligenceProvider: DocumentIntelligenceProviding {
         return ProvenancedIntelligenceResult(
             value: [
                 .init(name: names[0], value: nil, sourcePage: nil, evidence: nil),
-                .init(name: names[1], value: "$19.00", sourcePage: 1, evidence: "Total: $19.00"),
+                .init(
+                    name: names[1],
+                    value: extractedValue ?? "$19.00",
+                    sourcePage: 1,
+                    evidence: extractedValue ?? "Total: $19.00"
+                ),
             ],
             model: model
         )

@@ -445,6 +445,124 @@ import LocalOCRService
     #expect(harness.stderr == "")
 }
 
+// Catches CLI qualification that loses its role or groups its three owned probes into one lease.
+@Test func intelligenceTestWritesExactlyThreeContentFreeCLILeases() async throws {
+    let fixture = try CLIActivityFixture()
+    defer { fixture.remove() }
+    let reporter = CLIRecordingActivityReporter(underlying: fixture.reporter)
+    let manager = CLIActivityManager(
+        reporter: reporter,
+        provider: CLIQualificationProvider(invalidExtraction: true)
+    )
+    let harness = CLIHarness(service: FixtureService(), intelligenceManager: manager)
+
+    #expect(await harness.run([
+        "intelligence", "test", "ollama", "gemma4:8b", "--json"
+    ]) == 2)
+    #expect(harness.stdoutJSON()["failures"] as? [String] == ["extraction"])
+
+    let files = try fixture.activityFiles(in: "recent")
+    let data = try files.map { try Data(contentsOf: $0) }
+    let records = try data.map(LocalAIActivityContract.decode)
+    #expect(await reporter.productTasks == [.summarize, .organize, .extract])
+    #expect(try fixture.activityFiles(in: "active").isEmpty)
+    #expect(records.count == 3)
+    #expect(Set(records.map(\.activityID)).count == 3)
+    #expect(records.allSatisfy { $0.producerRole == .cli })
+    #expect(records.allSatisfy { $0.outcome == .success })
+    #expect(cliQualificationRecordsHaveExactDescriptors(records))
+
+    let encodedRecords = data.compactMap { String(data: $0, encoding: .utf8) }.joined()
+    for forbidden in [
+        "Invoice Q-104",
+        "LocalOCR Qualification",
+        "reference_number",
+        "gemma4:8b",
+        #""summary""#,
+        #""organization""#,
+        #""extraction""#,
+    ] {
+        #expect(!encodedRecords.contains(forbidden))
+    }
+}
+
+// Catches CLI fixture input, output, model, URL, and error canaries entering qualification activity files.
+@Test func intelligenceTestNeverWritesAnyContentCanaryToDisk() async throws {
+    let fixture = try CLIActivityFixture()
+    defer { fixture.remove() }
+    let canaryPayload = cliPrivacyCanaries.joined(separator: " | ")
+    let manager = CLIActivityManager(
+        reporter: fixture.reporter,
+        provider: CLIQualificationProvider(privacyPayload: canaryPayload)
+    )
+    let harness = CLIHarness(service: FixtureService(), intelligenceManager: manager)
+
+    #expect(await harness.run([
+        "intelligence", "test", "ollama", "gemma4:8b", "--json"
+    ]) == 2)
+    #expect(try fixture.activityFiles(in: "active").isEmpty)
+    #expect(try fixture.activityFiles(in: "recent").count == 3)
+    let allBytes = try fixture.allLedgerBytes()
+    for canary in cliPrivacyCanaries {
+        #expect(!allBytes.contains(Data(canary.utf8)))
+    }
+}
+
+// Mutation proof: a decoded record with the wrong runtime must fail the CLI descriptor contract.
+@Test func cliQualificationDescriptorProofRejectsAMutatedRuntime() throws {
+    let records = try [
+        cliActivityRecord(productTask: .summarize),
+        cliActivityRecord(productTask: .organize, runtimeFamily: .coreML),
+        cliActivityRecord(productTask: .extract),
+    ].map { record in
+        try LocalAIActivityContract.decode(LocalAIActivityContract.encode(record))
+    }
+
+    #expect(!cliQualificationRecordsHaveExactDescriptors(records))
+}
+
+// Catches discovery and selection management accidentally becoming model-activity claims.
+@Test func modelsSelectStatusAndResetWriteNoCLIActivityRecords() async throws {
+    let fixture = try CLIActivityFixture()
+    defer { fixture.remove() }
+    let reporter = CLIRecordingActivityReporter(underlying: fixture.reporter)
+    let manager = CLIActivityManager(reporter: reporter)
+
+    #expect(await CLIHarness(
+        service: FixtureService(), intelligenceManager: manager
+    ).run(["intelligence", "models", "--json"]) == 0)
+    #expect(await CLIHarness(
+        service: FixtureService(), intelligenceManager: manager
+    ).run([
+        "intelligence", "select", "apple_foundation_models", "SystemLanguageModel.default"
+    ]) == 0)
+    #expect(await CLIHarness(
+        service: FixtureService(), intelligenceManager: manager
+    ).run(["intelligence", "status", "--json"]) == 0)
+    #expect(await CLIHarness(
+        service: FixtureService(), intelligenceManager: manager
+    ).run(["intelligence", "reset", "--json"]) == 0)
+
+    #expect(await reporter.productTasks.isEmpty)
+    #expect(try fixture.activityFiles(in: "active").isEmpty)
+    #expect(try fixture.activityFiles(in: "recent").isEmpty)
+}
+
+// Catches a disabled or unavailable ledger changing the CLI qualification result.
+@Test func intelligenceTestSurvivesReporterWriteFailure() async {
+    let reporter = LocalAIActivityReporter(
+        ledger: CLIFailingActivityLedger(),
+        clock: SystemLocalAIActivityClock()
+    )
+    let manager = CLIActivityManager(reporter: reporter)
+    let harness = CLIHarness(service: FixtureService(), intelligenceManager: manager)
+
+    #expect(await harness.run([
+        "intelligence", "test", "ollama", "gemma4:8b", "--json"
+    ]) == 0)
+    #expect(harness.stdoutJSON()["status"] as? String == "passed")
+}
+
 @Test func intelligenceTestFailedOutcomeUsesInvalidExitAndStableText() async {
     let outcome = LocalModelQualificationOutcome(
         status: .failed,
@@ -969,3 +1087,269 @@ private func containsUnsafeTerminalScalar(
         }
     }
 }
+
+private actor CLIRecordingActivityReporter: LocalAIActivityReporting {
+    private let underlying: any LocalAIActivityReporting
+    private(set) var productTasks: [LocalAIProductTask?] = []
+
+    init(underlying: any LocalAIActivityReporting) {
+        self.underlying = underlying
+    }
+
+    func withActivity<T: Sendable>(
+        _ descriptor: LocalAIActivityDescriptor,
+        operation: @Sendable () async throws -> T
+    ) async throws -> T {
+        productTasks.append(descriptor.productTask)
+        return try await underlying.withActivity(descriptor, operation: operation)
+    }
+}
+
+private func cliQualificationRecordsHaveExactDescriptors(
+    _ records: [LocalAIActivityRecord]
+) -> Bool {
+    let productTasks = records.compactMap(\.productTask).map(\.rawValue).sorted()
+    guard records.count == 3,
+          productTasks == ["extract", "organize", "summarize"]
+    else {
+        return false
+    }
+    return records.allSatisfy { record in
+        record.producerID == LocalAIActivityContract.localOCRProducerID
+            && record.producerRole == .cli
+            && record.platform == .macos
+            && record.runtimeFamily == .localRuntime
+            && record.runtimeIdentifier == nil
+            && record.route == .onDeviceLoopback
+            && record.operation == .generation
+            && record.outcome == .success
+            && record.evidence == .participatingAppReported
+    }
+}
+
+private func cliActivityRecord(
+    productTask: LocalAIProductTask,
+    runtimeFamily: LocalAIRuntimeFamily = .localRuntime
+) -> LocalAIActivityRecord {
+    let startedAt = Date(timeIntervalSince1970: 1_788_000_000)
+    return LocalAIActivityRecord(
+        schemaVersion: LocalAIActivityContract.schemaVersion,
+        activityID: UUID(),
+        producerID: LocalAIActivityContract.localOCRProducerID,
+        producerRole: .cli,
+        platform: .macos,
+        runtimeFamily: runtimeFamily,
+        runtimeIdentifier: nil,
+        route: .onDeviceLoopback,
+        operation: .generation,
+        productTask: productTask,
+        state: .ended,
+        startedAt: startedAt,
+        heartbeatAt: startedAt,
+        expiresAt: startedAt.addingTimeInterval(86_400),
+        endedAt: startedAt,
+        outcome: .success,
+        evidence: .participatingAppReported
+    )
+}
+
+private actor CLIActivityManager: LocalIntelligenceManaging {
+    private let qualification: LocalModelQualificationService
+    private var selectionState: LocalIntelligenceSelectionState = .none
+
+    init(
+        reporter: any LocalAIActivityReporting,
+        provider: CLIQualificationProvider = CLIQualificationProvider()
+    ) {
+        qualification = LocalModelQualificationService(
+            providerFactory: { _ in provider },
+            cacheDirectory: nil,
+            activityReporter: reporter,
+            producerRole: .cli,
+            platform: .macos
+        )
+    }
+
+    func models() async -> [LocalModelDescriptor] {
+        [.fixtureApple, .fixtureOllama]
+    }
+
+    func qualify(_ identity: LocalModelIdentity) async throws -> LocalModelQualificationOutcome {
+        try await qualification.qualify(identity)
+    }
+
+    func selectApple() async throws {
+        selectionState = .selected(.appleSystemDefault)
+    }
+
+    func selectExternal(
+        _ identity: LocalModelIdentity,
+        acknowledgmentAcceptedAt: Date
+    ) async throws {
+        _ = identity
+        _ = acknowledgmentAcceptedAt
+    }
+
+    func status() async -> LocalIntelligenceSelectionState { selectionState }
+
+    func reset() async throws {
+        selectionState = .reset(at: Date(timeIntervalSince1970: 0))
+    }
+}
+
+private actor CLIQualificationProvider: DocumentIntelligenceProviding {
+    nonisolated let availability: IntelligenceAvailability = .available
+    private let invalidExtraction: Bool
+    private let privacyPayload: String?
+    private let provenance = LocalModelProvenance(
+        provider: .ollama,
+        providerDisplayName: "Ollama",
+        model: "gemma4:8b",
+        processing: .onDeviceLoopback,
+        fingerprint: "sha256:abc",
+        qualifiedAt: Date(timeIntervalSince1970: 1_725_000_000)
+    )
+    private var privacySuffix: String { privacyPayload.map { " \($0)" } ?? "" }
+
+    init(invalidExtraction: Bool = false, privacyPayload: String? = nil) {
+        self.invalidExtraction = invalidExtraction
+        self.privacyPayload = privacyPayload
+    }
+
+    func summarize(
+        _ document: IntelligenceDocument
+    ) async throws -> ProvenancedIntelligenceResult<IntelligenceSummary> {
+        _ = document
+        return .init(
+            value: .init(
+                text: "Invoice Q-104 totals $144.17 on 2026-08-29.\(privacySuffix)",
+                citations: [.init(
+                    page: 1,
+                    quote: "Invoice Q-104. Date: 2026-08-29. Total: $144.17.\(privacySuffix)"
+                )]
+            ),
+            model: provenance
+        )
+    }
+
+    func organize(
+        _ document: IntelligenceDocument
+    ) async throws -> ProvenancedIntelligenceResult<OrganizationSuggestion> {
+        _ = document
+        return .init(
+            value: .init(
+                title: "Invoice Q-104\(privacySuffix)",
+                category: "LocalOCR Qualification\(privacySuffix)",
+                tags: ["synthetic test only", privacyPayload].compactMap { $0 },
+                citations: [
+                    .init(page: 1, quote: "Invoice Q-104"),
+                    .init(page: 2, quote: "LocalOCR Qualification"),
+                    .init(page: 2, quote: "synthetic test only"),
+                ]
+            ),
+            model: provenance
+        )
+    }
+
+    func extract(
+        _ names: [String],
+        from document: IntelligenceDocument
+    ) async throws -> ProvenancedIntelligenceResult<[ExtractedDocumentField]> {
+        _ = names
+        _ = document
+        return .init(
+            value: [
+                .init(
+                    name: "date", value: "2026-08-29", sourcePage: 1,
+                    evidence: "Date: 2026-08-29"
+                ),
+                .init(
+                    name: "total", value: "$144.17", sourcePage: 1,
+                    evidence: "Total: $144.17\(privacySuffix)"
+                ),
+                .init(
+                    name: "reference_number",
+                    value: invalidExtraction ? nil : "Q-104",
+                    sourcePage: invalidExtraction ? nil : 1,
+                    evidence: invalidExtraction ? nil : "Invoice Q-104"
+                ),
+            ],
+            model: provenance
+        )
+    }
+}
+
+private actor CLIFailingActivityLedger: LocalAIActivityLedgerWriting {
+    func begin(_ descriptor: LocalAIActivityDescriptor) async throws -> UUID {
+        _ = descriptor
+        throw CLIActivityError.unavailable
+    }
+    func heartbeat(_ activityID: UUID) async throws { _ = activityID }
+    func end(_ activityID: UUID, outcome: LocalAIActivityOutcome) async throws {
+        _ = activityID
+        _ = outcome
+    }
+    func cleanupExpired() async {}
+}
+
+private enum CLIActivityError: Error {
+    case unavailable
+}
+
+private final class CLIActivityFixture: @unchecked Sendable {
+    let containerURL: URL
+    let reporter: LocalAIActivityReporter
+
+    init() throws {
+        containerURL = FileManager.default.temporaryDirectory.appending(
+            path: "LocalOCR-cli-activity-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(at: containerURL, withIntermediateDirectories: false)
+        guard chmod(containerURL.path, 0o700) == 0 else { throw CLIActivityError.unavailable }
+        let clock = SystemLocalAIActivityClock()
+        reporter = LocalAIActivityReporter(
+            ledger: LocalAIActivityLedger(containerURL: containerURL, clock: clock),
+            clock: clock
+        )
+    }
+
+    func activityFiles(in directory: String) throws -> [URL] {
+        let url = containerURL
+            .appending(path: "LocalAIActivity/v1", directoryHint: .isDirectory)
+            .appending(path: directory, directoryHint: .isDirectory)
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        return try FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ).filter { $0.pathExtension == "json" }
+    }
+
+    func allLedgerBytes() throws -> Data {
+        let root = containerURL.appending(path: "LocalAIActivity", directoryHint: .isDirectory)
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ) else {
+            return Data()
+        }
+        var bytes = Data()
+        for case let url as URL in enumerator {
+            if try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
+                bytes.append(try Data(contentsOf: url))
+            }
+        }
+        return bytes
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: containerURL)
+    }
+}
+
+private let cliPrivacyCanaries = [
+    "SECRET OCR TEXT", "/Users/scott/private.pdf", "invoice.pdf",
+    "prompt-canary", "response-canary", "total", "$9,999.00",
+    "https://example.invalid", "model-error-canary",
+]

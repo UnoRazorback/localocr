@@ -177,6 +177,7 @@ let package = Package(
                 "LocalOCRCore"
             ],
             path: "tests/LocalOCRIntelligenceTests",
+            resources: [.copy("Fixtures")],
             swiftSettings: [.enableUpcomingFeature("StrictConcurrency")]
         )
     ]

@@ -20,8 +20,22 @@ public struct LocalIntelligenceEnvironment: Sendable {
     ) -> LocalIntelligenceEnvironment {
         live(
             bridgeLocator: bridgeLocator,
+            producerRole: .studio
+        )
+    }
+
+    public static func live(
+        bridgeLocator: any ModelBridgeExecutableLocating,
+        producerRole: LocalAIProducerRole,
+        activityReporter: any LocalAIActivityReporting = DisabledLocalAIActivityReporter()
+    ) -> LocalIntelligenceEnvironment {
+        live(
+            bridgeLocator: bridgeLocator,
             selectionStore: LocalIntelligenceSelectionStore(),
             appleProviderFactory: liveAppleProvider,
+            activityReporter: activityReporter,
+            producerRole: producerRole,
+            platform: .macos,
             now: Date.init
         )
     }
@@ -30,6 +44,9 @@ public struct LocalIntelligenceEnvironment: Sendable {
         bridgeLocator: any ModelBridgeExecutableLocating,
         selectionStore: any LocalIntelligenceSelectionStoring,
         appleProviderFactory: @escaping @Sendable () -> any DocumentIntelligenceProviding,
+        activityReporter: any LocalAIActivityReporting = DisabledLocalAIActivityReporter(),
+        producerRole: LocalAIProducerRole = .studio,
+        platform: LocalAIPlatform = .macos,
         now: @escaping @Sendable () -> Date
     ) -> LocalIntelligenceEnvironment {
         let transport = StdioModelBridgeClient(executableLocator: bridgeLocator)
@@ -41,7 +58,10 @@ public struct LocalIntelligenceEnvironment: Sendable {
                     transport: transport
                 )
             },
-            now: now
+            now: now,
+            activityReporter: activityReporter,
+            producerRole: producerRole,
+            platform: platform
         )
         let registry = LocalIntelligenceProviderRegistry(
             transport: transport,
@@ -53,7 +73,10 @@ public struct LocalIntelligenceEnvironment: Sendable {
         let router = LocalIntelligenceProviderRouter(
             selectionStore: selectionStore,
             transport: transport,
-            appleProviderFactory: appleProviderFactory
+            appleProviderFactory: appleProviderFactory,
+            activityReporter: activityReporter,
+            producerRole: producerRole,
+            platform: platform
         )
         return LocalIntelligenceEnvironment(
             manager: registry,

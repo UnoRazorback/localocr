@@ -184,7 +184,9 @@ enum LocalOCRStudioRoot {
             executor: StudioBatchExecutor(client: client)
         )
         let intelligenceEnvironment = LocalIntelligenceEnvironment.live(
-            bridgeLocator: RelativeModelBridgeExecutableLocator()
+            bridgeLocator: RelativeModelBridgeExecutableLocator(),
+            producerRole: .studio,
+            activityReporter: LocalAIActivityProduction.makeReporter()
         )
         let intelligenceModel = StudioIntelligenceViewModel(
             provider: intelligenceEnvironment.router,

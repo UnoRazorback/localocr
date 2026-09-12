@@ -13,6 +13,17 @@ FILES = {
     "mcp": ROOT / "docs/mcp.md",
     "cli": ROOT / "docs/cli.md",
 }
+LOCAL_AI_ACTIVITY_GATE = ROOT / "docs/release/local-ai-activity-entitlement-gate.md"
+LOCAL_AI_ACTIVITY_TRUTHS = (
+    "App reported",
+    "Nonparticipating apps are not visible",
+    "No per-app Neural Engine utilization metric is available",
+    "Activity sharing is content-free",
+    "Vision OCR does not create a Local AI Activity record",
+    "Active leases expire after 45 seconds",
+    "Recent activity expires within 24 hours",
+    "iOS background delivery is opportunistic, not continuous",
+)
 
 
 def test_repository_docs_link_to_beta_guide():
@@ -76,3 +87,39 @@ def test_cli_and_mcp_docs_align_on_consent_management():
     for operation in ("status", "accept", "revoke"):
         assert f"localocr mcp-consent {operation}" in cli_text
         assert f'"{installed_cli}" mcp-consent {operation}' in mcp_text
+
+
+def test_local_ai_activity_docs_state_required_truths_and_controls():
+    docs = {key: path.read_text() for key, path in FILES.items()}
+    corpus = " ".join("\n".join(docs.values()).split())
+
+    for truth in LOCAL_AI_ACTIVITY_TRUTHS:
+        assert truth in corpus
+    for text in docs.values():
+        assert "Local AI Activity" in text
+
+    assert "Operations continue if activity sharing is unavailable" in corpus
+    assert "clear recent activity in the reader" in corpus
+    assert "explicitly injected development ledgers" in corpus
+    assert "rather than the official group" in corpus
+
+    mcp = docs["mcp"]
+    assert (
+        "The content-free activity ledger does not prevent an MCP client from "
+        "separately sending OCR inputs or results to its chosen provider"
+    ) in " ".join(mcp.split())
+
+
+def test_local_ai_activity_entitlement_gate_records_authorized_configuration_and_pending_evidence():
+    gate = LOCAL_AI_ACTIVITY_GATE.read_text()
+    prose = " ".join(gate.split())
+    for required in (
+        "DZ8B5454ZN.com.rayconsulting.local-ai-activity",
+        "com.rayconsulting.local-ai-activity.changed",
+        "LocalOCR Studio", "Contents/Helpers/localocr-mcp", "Contents/Helpers/localocr",
+        "signature", "entitlement", "container", "nested helpers first and the containing app last",
+        "17-key", "runtime_identifier", "unsigned", "pending",
+        "localocr-model-bridge", "iOS", "publication",
+    ):
+        assert required in prose
+    assert "blocked pending the approvals below" not in gate

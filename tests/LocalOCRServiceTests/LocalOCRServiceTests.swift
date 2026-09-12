@@ -75,6 +75,74 @@ import Testing
         #expect(result.results[1].isFailure(for: invalidURL.path))
     }
 
+    // Catches Vision PDF, image, batch, or searchable-PDF paths gaining activity-reporting wiring.
+    @Test func visionOCRPathsRemainStructurallyOutsideLocalAIActivityReporting() async throws {
+        let service = privacyVisionService()
+        let sourceURL = try temporaryPDF()
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+        let pdf = try await service.ocrPDF(
+            PDFOCRRequest(fileURL: sourceURL, usesCache: false)
+        )
+        let image = try await service.ocrImage(
+            ImageOCRRequest(fileURL: fixtureImage(named: "sample"))
+        )
+        let batch = await service.ocrPDFBatch(
+            try BatchOCRRequest(fileURLs: [sourceURL], usesCache: false)
+        )
+        let outputDirectory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+        let searchable = try await privacyVisionService(writer: CopyingWriter()).makeSearchablePDF(
+            try SearchablePDFRequest(
+                fileURL: fixturePDF(named: "mixed"),
+                outputURL: outputDirectory.appendingPathComponent("searchable.pdf"),
+                usesCache: false
+            )
+        )
+
+        #expect(pdf.pages.first?.text == visionPrivacyCanary)
+        #expect(image.text == visionPrivacyCanary)
+        #expect(batch.succeeded == 1)
+        #expect(searchable.outputPath.hasSuffix("searchable.pdf"))
+
+        let boundaryFiles = [
+            "Sources/LocalOCRService/LocalOCRService.swift",
+            "Sources/LocalOCRService/ImageDocumentSource.swift",
+            "Sources/LocalOCRCore/OCRProcessor.swift",
+            "Sources/LocalOCRCore/PDFDocumentSource.swift",
+            "Sources/LocalOCRCore/SearchablePDFWriter.swift",
+            "Sources/LocalOCRCore/VisionTextRecognizer.swift",
+            "Sources/LocalOCRStudioKit/StudioOCRClient.swift",
+            "Sources/LocalOCRMCP/MCPToolDispatcher.swift",
+            "Sources/LocalOCRCommandKit/Commands/OCRCommand.swift",
+            "Sources/LocalOCRCommandKit/Commands/ImageCommand.swift",
+            "Sources/LocalOCRCommandKit/Commands/BatchCommand.swift",
+            "Sources/LocalOCRCommandKit/Commands/SearchableCommand.swift",
+        ]
+        for relativePath in boundaryFiles {
+            let source = try String(
+                contentsOf: packageRoot.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            #expect(!source.contains("LocalAIActivity"), "Unexpected activity type in \(relativePath)")
+            #expect(!source.contains("activityReporter"), "Unexpected reporter seam in \(relativePath)")
+        }
+        for relativePath in [
+            "Sources/LocalOCRService/LocalOCRService.swift",
+            "Sources/LocalOCRService/ImageDocumentSource.swift",
+            "Sources/LocalOCRCore/OCRProcessor.swift",
+            "Sources/LocalOCRCore/PDFDocumentSource.swift",
+            "Sources/LocalOCRCore/SearchablePDFWriter.swift",
+            "Sources/LocalOCRCore/VisionTextRecognizer.swift",
+        ] {
+            let source = try String(
+                contentsOf: packageRoot.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            #expect(!source.contains("import LocalOCRIntelligence"))
+        }
+    }
+
     @Test func batchDoesNotConstructACacheWhenTheRequestDisablesCaching() async throws {
         let recorder = BoolRecorder()
         let service = LocalOCRService(
@@ -540,6 +608,67 @@ private struct CancellingImageSource: ImageDocumentRecognizing {
     ) async throws -> String {
         throw CancellationError()
     }
+}
+
+private let visionPrivacyCanary = "SECRET OCR TEXT /Users/scott/private.pdf invoice.pdf prompt-canary response-canary total $9,999.00 https://example.invalid model-error-canary"
+
+private struct PrivacyVisionImageSource: ImageDocumentRecognizing {
+    func recognize(
+        image: CGImage,
+        settings: RecognitionSettings
+    ) async throws -> String {
+        _ = image
+        _ = settings
+        return visionPrivacyCanary
+    }
+}
+
+private struct PrivacyVisionPDFSource: PDFDocumentReading {
+    func inspect(_ url: URL) throws -> PDFInspection {
+        _ = url
+        return PDFInspection(
+            pages: 1,
+            searchablePages: [1],
+            ocrNeededPages: [],
+            characters: visionPrivacyCanary.count,
+            fullySearchable: true,
+            pageDetails: [.init(
+                page: 1,
+                characters: visionPrivacyCanary.count,
+                searchable: true
+            )]
+        )
+    }
+
+    func nativeText(in url: URL, pageIndex: Int) throws -> String {
+        _ = url
+        _ = pageIndex
+        return visionPrivacyCanary
+    }
+
+    func rasterize(_ url: URL, pageIndex: Int, dpi: Int) throws -> CGImage {
+        _ = url
+        _ = pageIndex
+        _ = dpi
+        fatalError("The all-searchable fixture must not rasterize")
+    }
+}
+
+private func privacyVisionService(
+    writer: any SearchablePDFWriting = FixtureWriter()
+) -> LocalOCRService {
+    LocalOCRService(
+        pdfSourceFactory: { PrivacyVisionPDFSource() },
+        processorFactory: { _ in
+            OCRProcessor(
+                pdfSource: PrivacyVisionPDFSource(),
+                recognizer: FixtureRecognizer(),
+                cache: nil
+            )
+        },
+        writerFactory: { writer },
+        imageSourceFactory: { PrivacyVisionImageSource() }
+    )
 }
 
 private func fixturePDF(named name: String) -> URL {

@@ -101,6 +101,9 @@ PREPUBLICATION_SCRIPTS = (
 )
 SECOND_MAC_RECORD = ROOT / "docs" / "release" / "second-mac-acceptance.md"
 README = ROOT / "README.md"
+LOCAL_AI_ACTIVITY_ENTITLEMENT_GATE = (
+    ROOT / "docs" / "release" / "local-ai-activity-entitlement-gate.md"
+)
 UNSIGNED_STUDIO_APP = ROOT / "dist" / "unsigned-app" / "LocalOCR Studio.app"
 STAGED_STUDIO_APP = (
     ROOT / "dist" / "direct-release" / "staged" / "LocalOCR Studio.app"
@@ -112,6 +115,125 @@ FORBIDDEN_BETA_RECORDS = (
     "MCP-MacVision-Beta-Metrics.csv",
     "MCP-MacVision-Feedback-Log.csv",
 )
+PRODUCTION_GROUP_LITERAL = re.compile(
+    r"(?:group|[A-Z0-9]{10})\.[A-Za-z0-9.-]+\.local-ai-activity"
+)
+TEAM_ID_ONLY_LOCAL_AI_ACTIVITY_IDENTIFIER = re.compile(
+    r"\bgroup\.[A-Z0-9]{10}\.local-ai-activity\b"
+)
+HARDCODED_LOCAL_AI_ACTIVITY_WAKE_NAME = re.compile(
+    r'Notification\s*\.\s*Name\s*\(\s*"[^"]*local-ai-activity'
+)
+
+
+def _assert_no_local_ai_activity_production_literals(
+    named_text: dict[str, str],
+) -> None:
+    for name, text in named_text.items():
+        assert not TEAM_ID_ONLY_LOCAL_AI_ACTIVITY_IDENTIFIER.search(text), (
+            f"Team-ID-only identifier in {name}"
+        )
+        assert not PRODUCTION_GROUP_LITERAL.search(
+            text.replace("DZ8B5454ZN.com.rayconsulting.local-ai-activity", "APPROVED_GROUP")
+        ), (
+            f"production App Group literal in {name}"
+        )
+        if name.endswith(".swift"):
+            assert not HARDCODED_LOCAL_AI_ACTIVITY_WAKE_NAME.search(text), (
+                f"hard-coded production wake Notification.Name in {name}"
+            )
+
+
+def _local_ai_activity_production_policy_files() -> tuple[Path, ...]:
+    roots = (
+        ROOT / "App",
+        ROOT / "Sources",
+        ROOT / "LocalOCR Studio.xcodeproj",
+        ROOT / "scripts",
+    )
+    files = [
+        ROOT / "Package.swift",
+        ROOT / "README.md",
+        ROOT / "BETA_TESTING.md",
+    ]
+    for root in roots:
+        files.extend(path for path in root.rglob("*") if path.is_file())
+    files.extend(
+        path
+        for path in (ROOT / "docs").rglob("*")
+        if path.is_file() and path != LOCAL_AI_ACTIVITY_ENTITLEMENT_GATE
+    )
+    files.extend(
+        path
+        for path in ROOT.rglob("*.entitlements")
+        if "tests" not in path.parts and "docs" not in path.parts
+    )
+    return tuple(dict.fromkeys(files))
+
+
+def test_production_files_have_no_unapproved_local_ai_activity_identifiers():
+    files = _local_ai_activity_production_policy_files()
+    named_text = {
+        str(path.relative_to(ROOT)): path.read_text(errors="ignore")
+        for path in files
+    }
+    _assert_no_local_ai_activity_production_literals(named_text)
+
+
+@pytest.mark.parametrize(
+    ("literal", "expected_message"),
+    (
+        (
+            "OTHERTEAM1Z.com.example.local-ai-activity",
+            "production App Group literal",
+        ),
+        (
+            "group.DZ8B5454ZN.local-ai-activity",
+            "Team-ID-only identifier",
+        ),
+        (
+            "group.A1B2C3D4E5.local-ai-activity",
+            "Team-ID-only identifier",
+        ),
+        (
+            'Notification.Name("com.example.local-ai-activity.rescan")',
+            "hard-coded production wake Notification.Name",
+        ),
+        (
+            'Notification.Name ( "com.example.local-ai-activity.wake" )',
+            "hard-coded production wake Notification.Name",
+        ),
+        (
+            'Notification . Name( "com.example.local-ai-activity.wake" )',
+            "hard-coded production wake Notification.Name",
+        ),
+    ),
+)
+def test_local_ai_activity_policy_rejects_each_forbidden_literal(
+    literal: str,
+    expected_message: str,
+) -> None:
+    with pytest.raises(AssertionError, match=re.escape(expected_message)):
+        _assert_no_local_ai_activity_production_literals(
+            {"Sources/Fixture.swift": literal}
+        )
+
+
+def test_local_ai_activity_policy_allows_approved_placeholder_text():
+    policy_files = _local_ai_activity_production_policy_files()
+    assert LOCAL_AI_ACTIVITY_ENTITLEMENT_GATE not in policy_files
+    placeholder = "group.<durable-reverse-domain>.local-ai-activity"
+    _assert_no_local_ai_activity_production_literals(
+        {
+            "docs/release/local-ai-activity-entitlement-gate.md": (
+                LOCAL_AI_ACTIVITY_ENTITLEMENT_GATE.read_text()
+            ),
+            (
+                "docs/superpowers/specs/"
+                "2026-08-31-apple-foundation-model-activity-design.md"
+            ): placeholder,
+        }
+    )
 
 
 def _script(name: str) -> str:

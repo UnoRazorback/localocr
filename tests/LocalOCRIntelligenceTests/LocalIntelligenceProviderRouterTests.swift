@@ -5,6 +5,97 @@ import LocalOCRModelCore
 import Testing
 
 @Suite struct LocalIntelligenceProviderRouterTests {
+    // Catches missing router instrumentation or descriptors that derive identity from document content.
+    @Test func appleOperationsReportOneExactContentFreeDescriptorEach() async throws {
+        let reporter = Task4RecordingActivityReporter()
+        let apple = Task6FixtureProvider(identity: .appleSystemDefault)
+        let router = task6Router(
+            transport: Task6Transport { request in ModelBridgeResponse(id: request.id) },
+            apple: apple,
+            state: .selected(.appleSystemDefault),
+            reporter: reporter,
+            role: .studio
+        )
+
+        _ = try await router.summarize(task6Document)
+        _ = try await router.organize(task6Document)
+        _ = try await router.extract(["SECRET requested field"], from: task6Document)
+
+        #expect(await reporter.descriptors == [
+            .foundationModels(role: .studio, task: .summarize),
+            .foundationModels(role: .studio, task: .organize),
+            .foundationModels(role: .studio, task: .extract)
+        ])
+    }
+
+    // Catches external descriptors that leak model/endpoint identity or claim a Foundation Models route.
+    @Test func externalOperationsUseOnlyTheAllowlistedLocalRuntimeDescriptor() async throws {
+        for identity in [task6OllamaIdentity, task6LMStudioIdentity, LocalModelIdentity(
+            provider: .llamaCpp, model: "SECRET model.gguf", fingerprint: String(repeating: "a", count: 64),
+            harnessVersion: "SECRET harness", fileAttestation: LocalModelFileAttestation(
+                executablePath: "/private/tmp/SECRET/llama-server", executableSHA256: String(repeating: "b", count: 64),
+                modelPath: "/private/tmp/SECRET/model.gguf", modelSize: 1024, modelModifiedNanoseconds: 1,
+                executableSize: 1024, executableModifiedNanoseconds: 1, processID: 123
+            ))] {
+          for role in [LocalAIProducerRole.studio, .mcp, .cli] {
+            let reporter = Task4RecordingActivityReporter()
+            let transport = Task6Transport { request in
+                if request.action == .discover {
+                    return task6DiscoveryResponse(
+                        request: request,
+                        candidates: [task6Candidate(identity: identity)]
+                    )
+                }
+                return ModelBridgeResponse(
+                    id: request.id,
+                    payloadJSON: task6GeneratedPayload(for: try #require(request.operation)),
+                    identity: identity
+                )
+            }
+            let router = task6Router(
+                transport: transport,
+                apple: Task6FixtureProvider(identity: .appleSystemDefault),
+                state: .selected(task6ExternalSelection(identity: identity)),
+                reporter: reporter,
+                role: role
+            )
+
+            _ = try await router.summarize(task6Document)
+            _ = try await router.organize(task6Document)
+            _ = try await router.extract(["date", "total", "reference_number"], from: task6Document)
+
+            #expect(await reporter.descriptors == [LocalAIProductTask.summarize, .organize, .extract].map { task in
+                LocalAIActivityDescriptor(
+                    producerID: LocalAIActivityContract.localOCRProducerID,
+                    producerRole: role,
+                    platform: .macos,
+                    runtimeFamily: .localRuntime,
+                    runtimeIdentifier: nil,
+                    route: .onDeviceLoopback,
+                    operation: .generation,
+                    productTask: task
+                )
+            })
+          }
+        }
+    }
+
+    // Catches activity emitted while merely resolving selection or checking provider availability.
+    @Test func availabilityAndSelectionResolutionEmitNoActivity() async {
+        let reporter = Task4RecordingActivityReporter()
+        let router = task6Router(
+            transport: Task6Transport { request in
+                task6DiscoveryResponse(request: request, candidates: [task6Candidate()])
+            },
+            apple: Task6FixtureProvider(identity: .appleSystemDefault),
+            reporter: reporter,
+            role: .cli
+        )
+
+        #expect(await router.availability == .available)
+        #expect(await reporter.descriptors.isEmpty)
+    }
+
     @Test func unavailableSelectedModelNeverFallsBackToApple() async {
         let apple = Task6FixtureProvider(identity: .appleSystemDefault)
         let transport = Task6Transport { request in
@@ -361,11 +452,17 @@ let task6Document = IntelligenceDocument(pages: [
 func task6Router(
     transport: any ModelBridgeTransporting,
     apple: any DocumentIntelligenceProviding,
-    state: LocalIntelligenceSelectionState = .selected(task6ExternalSelection())
+    state: LocalIntelligenceSelectionState = .selected(task6ExternalSelection()),
+    reporter: any LocalAIActivityReporting = DisabledLocalAIActivityReporter(),
+    role: LocalAIProducerRole = .studio,
+    platform: LocalAIPlatform = .macos
 ) -> LocalIntelligenceProviderRouter {
     LocalIntelligenceProviderRouter(
         selectionStore: Task6SelectionStore(state),
         transport: transport,
-        appleProviderFactory: { apple }
+        appleProviderFactory: { apple },
+        activityReporter: reporter,
+        producerRole: role,
+        platform: platform
     )
 }

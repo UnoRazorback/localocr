@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import LocalOCRIntelligence
 import LocalOCRModelCore
@@ -31,6 +32,36 @@ import Testing
         #expect(model.summaryModel == .appleSystemDefault)
         #expect(model.organizationState == .idle)
         #expect(model.fieldsState == .idle)
+    }
+
+    // Catches Studio document identity, OCR text, model output, URLs, or errors entering activity files.
+    @Test @MainActor func summarizeWritesOnlyContentFreeStudioActivity() async throws {
+        let fixture = try StudioPrivacyActivityFixture()
+        defer { fixture.remove() }
+        let resultText = studioPrivacyCanaries.joined(separator: " | ")
+        let provider = StudioPrivacyActivityProvider(
+            reporter: fixture.reporter,
+            resultText: resultText
+        )
+        let model = StudioIntelligenceViewModel(provider: provider, availability: .available)
+        model.setDocument(
+            document(studioPrivacyCanaries.joined(separator: " | ")),
+            identity: "/Users/scott/private.pdf"
+        )
+
+        model.summarize()
+        await waitForStudioPrivacyCompletion(model: model, fixture: fixture)
+
+        #expect(model.summaryState == .result(IntelligenceSummary(
+            text: resultText,
+            citations: [.init(page: 1, quote: resultText)]
+        )))
+        let allBytes = try fixture.allLedgerBytes()
+        for canary in studioPrivacyCanaries {
+            #expect(!allBytes.contains(Data(canary.utf8)))
+        }
+        #expect(try fixture.recordCount(in: "active") == 0)
+        #expect(try fixture.recordCount(in: "recent") == 1)
     }
 
     @Test @MainActor func everyOperationRetainsActualResultProvenanceAfterFutureSelectionChanges() async {
@@ -212,6 +243,120 @@ private enum IntelligenceOperationRequest: Sendable, Equatable, Hashable {
 
 private enum TestIntelligenceError: Error {
     case failed
+}
+
+private let studioPrivacyCanaries = [
+    "SECRET OCR TEXT", "/Users/scott/private.pdf", "invoice.pdf",
+    "prompt-canary", "response-canary", "total", "$9,999.00",
+    "https://example.invalid", "model-error-canary",
+]
+
+private actor StudioPrivacyActivityProvider: DocumentIntelligenceProviding {
+    nonisolated let availability: IntelligenceAvailability = .available
+    private let reporter: any LocalAIActivityReporting
+    private let resultText: String
+
+    init(reporter: any LocalAIActivityReporting, resultText: String) {
+        self.reporter = reporter
+        self.resultText = resultText
+    }
+
+    func summarize(
+        _ document: IntelligenceDocument
+    ) async throws -> ProvenancedIntelligenceResult<IntelligenceSummary> {
+        try await reporter.withActivity(.foundationModels(role: .studio, task: .summarize)) {
+            _ = document
+            return .init(
+                value: .init(
+                    text: resultText,
+                    citations: [.init(page: 1, quote: resultText)]
+                ),
+                model: .appleSystemDefault
+            )
+        }
+    }
+
+    func organize(
+        _ document: IntelligenceDocument
+    ) async throws -> ProvenancedIntelligenceResult<OrganizationSuggestion> {
+        _ = document
+        throw TestIntelligenceError.failed
+    }
+
+    func extract(
+        _ names: [String],
+        from document: IntelligenceDocument
+    ) async throws -> ProvenancedIntelligenceResult<[ExtractedDocumentField]> {
+        _ = names
+        _ = document
+        throw TestIntelligenceError.failed
+    }
+}
+
+private final class StudioPrivacyActivityFixture: @unchecked Sendable {
+    let containerURL: URL
+    let reporter: LocalAIActivityReporter
+
+    init() throws {
+        containerURL = FileManager.default.temporaryDirectory.appending(
+            path: "LocalOCR-studio-privacy-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(at: containerURL, withIntermediateDirectories: false)
+        guard chmod(containerURL.path, 0o700) == 0 else {
+            throw TestIntelligenceError.failed
+        }
+        let clock = SystemLocalAIActivityClock()
+        reporter = LocalAIActivityReporter(
+            ledger: LocalAIActivityLedger(containerURL: containerURL, clock: clock),
+            clock: clock
+        )
+    }
+
+    func allLedgerBytes() throws -> Data {
+        let root = containerURL.appending(path: "LocalAIActivity", directoryHint: .isDirectory)
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ) else {
+            return Data()
+        }
+        var bytes = Data()
+        for case let url as URL in enumerator {
+            if try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
+                bytes.append(try Data(contentsOf: url))
+            }
+        }
+        return bytes
+    }
+
+    func recordCount(in directory: String) throws -> Int {
+        let url = containerURL
+            .appending(path: "LocalAIActivity/v1", directoryHint: .isDirectory)
+            .appending(path: directory, directoryHint: .isDirectory)
+        guard FileManager.default.fileExists(atPath: url.path) else { return 0 }
+        return try FileManager.default.contentsOfDirectory(atPath: url.path)
+            .filter { $0.hasSuffix(".json") }
+            .count
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: containerURL)
+    }
+}
+
+@MainActor
+private func waitForStudioPrivacyCompletion(
+    model: StudioIntelligenceViewModel,
+    fixture: StudioPrivacyActivityFixture
+) async {
+    for _ in 0..<1_000 {
+        if case .result = model.summaryState,
+           (try? fixture.recordCount(in: "recent")) == 1 {
+            return
+        }
+        await Task.yield()
+    }
 }
 
 private actor ControlledIntelligenceProvider: DocumentIntelligenceProviding {

@@ -5,7 +5,9 @@ import LocalOCRIntelligence
 import LocalOCRService
 
 let intelligenceEnvironment = LocalIntelligenceEnvironment.live(
-    bridgeLocator: RelativeModelBridgeExecutableLocator()
+    bridgeLocator: RelativeModelBridgeExecutableLocator(),
+    producerRole: .cli,
+    activityReporter: LocalAIActivityProduction.makeReporter()
 )
 
 let application = CLIApplication(

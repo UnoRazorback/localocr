@@ -182,6 +182,27 @@ OpenAI-compatible, and locality-ambiguous endpoints are refused. LocalOCR never
 silently switches providers. These commands do not perform OCR and never send
 document text merely to list or test provider metadata.
 
+## Local AI Activity sharing
+
+The CLI can report only the Local Intelligence model probes and document-model
+operations that it owns. A configured reader labels those records **App
+reported**; it does not infer model use from process activity or Apple service
+daemons. Provider discovery, selection, status, receipt access, cache access,
+and ordinary Vision OCR create no Local AI Activity record.
+
+Each record is content-free and limited to the CLI role, an allowlisted runtime
+family, a generic summarize/organize/extract task, timing, and a generic
+outcome. It never contains command arguments, paths, OCR text, fixture text,
+requested field names, model names, endpoints, results, or errors. The CLI
+operation continues unchanged when sharing is unavailable. Active records use
+a 45-second lease; completed records expire within 24 hours and can be cleared
+from the reader.
+
+Nonparticipating apps are not visible, and there is no public per-app Neural
+Engine utilization measurement. Source, ad hoc, and differently signed CLI
+builds can use an explicitly injected temporary development ledger only; they
+do not write to the official production group.
+
 ## Output streams and exit codes
 
 Successful requested data is written to standard output. Normal OCR progress

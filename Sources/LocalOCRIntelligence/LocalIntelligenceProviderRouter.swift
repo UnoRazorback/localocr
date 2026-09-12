@@ -5,25 +5,44 @@ import LocalOCRModelCore
 public actor LocalIntelligenceProviderRouter: DocumentIntelligenceProviding {
     public typealias AppleProviderFactory = @Sendable () -> any DocumentIntelligenceProviding
 
+    private struct ResolvedProvider: Sendable {
+        enum Runtime: Sendable {
+            case foundationModels
+            case localRuntime
+        }
+
+        let provider: any DocumentIntelligenceProviding
+        let runtime: Runtime
+    }
+
     private let selectionStore: any LocalIntelligenceSelectionStoring
     private let transport: any ModelBridgeTransporting
     private let appleProviderFactory: AppleProviderFactory
+    private let activityReporter: any LocalAIActivityReporting
+    private let producerRole: LocalAIProducerRole
+    private let platform: LocalAIPlatform
     private var requestID: UInt64 = 1
 
     public init(
         selectionStore: any LocalIntelligenceSelectionStoring,
         transport: any ModelBridgeTransporting,
-        appleProviderFactory: @escaping AppleProviderFactory
+        appleProviderFactory: @escaping AppleProviderFactory,
+        activityReporter: any LocalAIActivityReporting = DisabledLocalAIActivityReporter(),
+        producerRole: LocalAIProducerRole = .studio,
+        platform: LocalAIPlatform = .macos
     ) {
         self.selectionStore = selectionStore
         self.transport = transport
         self.appleProviderFactory = appleProviderFactory
+        self.activityReporter = activityReporter
+        self.producerRole = producerRole
+        self.platform = platform
     }
 
     public var availability: IntelligenceAvailability {
         get async {
             do {
-                return await (try resolvedProvider()).availability
+                return await (try resolvedProvider()).provider.availability
             } catch {
                 return .modelNotReady
             }
@@ -33,30 +52,48 @@ public actor LocalIntelligenceProviderRouter: DocumentIntelligenceProviding {
     public func summarize(
         _ document: IntelligenceDocument
     ) async throws -> ProvenancedIntelligenceResult<IntelligenceSummary> {
-        try await resolvedProvider().summarize(document)
+        let resolved = try await resolvedProvider()
+        return try await activityReporter.withActivity(
+            descriptor(for: resolved, productTask: .summarize)
+        ) {
+            try await resolved.provider.summarize(document)
+        }
     }
 
     public func organize(
         _ document: IntelligenceDocument
     ) async throws -> ProvenancedIntelligenceResult<OrganizationSuggestion> {
-        try await resolvedProvider().organize(document)
+        let resolved = try await resolvedProvider()
+        return try await activityReporter.withActivity(
+            descriptor(for: resolved, productTask: .organize)
+        ) {
+            try await resolved.provider.organize(document)
+        }
     }
 
     public func extract(
         _ names: [String],
         from document: IntelligenceDocument
     ) async throws -> ProvenancedIntelligenceResult<[ExtractedDocumentField]> {
-        try await resolvedProvider().extract(names, from: document)
+        let resolved = try await resolvedProvider()
+        return try await activityReporter.withActivity(
+            descriptor(for: resolved, productTask: .extract)
+        ) {
+            try await resolved.provider.extract(names, from: document)
+        }
     }
 
-    private func resolvedProvider() async throws -> any DocumentIntelligenceProviding {
+    private func resolvedProvider() async throws -> ResolvedProvider {
         switch await selectionStore.state() {
         case .none, .reset:
             throw IntelligenceError.selection(.corruptReceipt)
         case let .invalid(failure):
             throw IntelligenceError.selection(failure)
         case .selected(.appleSystemDefault):
-            return appleProviderFactory()
+            return ResolvedProvider(
+                provider: appleProviderFactory(),
+                runtime: .foundationModels
+            )
         case let .selected(.external(identity, qualification, acknowledgment)):
             try Self.validate(
                 identity: identity,
@@ -64,10 +101,33 @@ public actor LocalIntelligenceProviderRouter: DocumentIntelligenceProviding {
                 acknowledgment: acknowledgment
             )
             let currentIdentity = try await verifiedCurrentIdentity(identity)
-            return BridgeBackedIntelligenceProvider(
-                identity: currentIdentity,
-                qualifiedAt: qualification.qualifiedAt,
-                transport: transport
+            return ResolvedProvider(
+                provider: BridgeBackedIntelligenceProvider(
+                    identity: currentIdentity,
+                    qualifiedAt: qualification.qualifiedAt,
+                    transport: transport
+                ),
+                runtime: .localRuntime
+            )
+        }
+    }
+
+    private func descriptor(
+        for resolved: ResolvedProvider,
+        productTask: LocalAIProductTask
+    ) -> LocalAIActivityDescriptor {
+        switch resolved.runtime {
+        case .foundationModels:
+            return .foundationModels(
+                role: producerRole,
+                platform: platform,
+                task: productTask
+            )
+        case .localRuntime:
+            return .localRuntime(
+                role: producerRole,
+                platform: platform,
+                task: productTask
             )
         }
     }

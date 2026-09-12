@@ -7,7 +7,9 @@ let currentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectory
 let service = LocalOCRService()
 let textLoader = LocalOCRDocumentTextLoader(service: service)
 let intelligenceEnvironment = LocalIntelligenceEnvironment.live(
-    bridgeLocator: RelativeModelBridgeExecutableLocator()
+    bridgeLocator: RelativeModelBridgeExecutableLocator(),
+    producerRole: .mcp,
+    activityReporter: LocalAIActivityProduction.makeReporter()
 )
 let dispatcher = MCPToolDispatcher(
     service: service,

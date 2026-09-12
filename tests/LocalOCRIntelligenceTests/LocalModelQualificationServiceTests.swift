@@ -6,6 +6,25 @@ import LocalOCRModelCore
 import Testing
 
 @Suite struct LocalModelQualificationServiceTests {
+    // Catches missing qualification instrumentation, wrong CLI provenance, or one lease around all three probes.
+    @Test func qualificationReportsThreeIndependentContentFreeLocalRuntimeOperations() async throws {
+        let reporter = Task4RecordingActivityReporter()
+        let service = task6QualificationService(
+            provider: Task6FixtureProvider(),
+            reporter: reporter,
+            role: .cli
+        )
+
+        _ = try await service.qualify(task6OllamaIdentity)
+        _ = await service.cachedOutcome(for: task6OllamaIdentity)
+
+        #expect(await reporter.descriptors == [
+            task4LocalRuntimeDescriptor(role: .cli, task: .summarize),
+            task4LocalRuntimeDescriptor(role: .cli, task: .organize),
+            task4LocalRuntimeDescriptor(role: .cli, task: .extract)
+        ])
+    }
+
     @Test func qualificationRequiresAllThreeActionsAndCachesNoReceiptForAPartialPass() async throws {
         let provider = Task6FixtureProvider(extraction: [
             .init(name: "date", value: "2026-08-29", sourcePage: 1, evidence: "Date: 2026-08-29"),
@@ -1019,12 +1038,18 @@ func task6ExternalSelection(
 }
 
 func task6QualificationService(
-    provider: any DocumentIntelligenceProviding
+    provider: any DocumentIntelligenceProviding,
+    reporter: any LocalAIActivityReporting = DisabledLocalAIActivityReporter(),
+    role: LocalAIProducerRole = .cli,
+    platform: LocalAIPlatform = .macos
 ) -> LocalModelQualificationService {
     LocalModelQualificationService(
         providerFactory: { _ in provider },
         now: { task6Now },
-        cacheDirectory: nil
+        cacheDirectory: nil,
+        activityReporter: reporter,
+        producerRole: role,
+        platform: platform
     )
 }
 

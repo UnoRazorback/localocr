@@ -366,6 +366,29 @@ their configuration and account terms; their privacy, retention, training, and
 provider behavior may change. Check the current authoritative client
 documentation and your account settings before using sensitive material.
 
+## Local AI Activity sharing
+
+The MCP helper can make a content-free lifecycle report for an owned Local
+Intelligence model operation. A reader presents that evidence as **App
+reported**; it is not inferred from the helper process, Apple service daemons,
+or Neural Engine load. The record is limited to the MCP producer role, an
+allowlisted runtime family, a generic summarize/organize/extract task, timing,
+and a generic outcome. It contains no MCP argument, document path, OCR text,
+prompt, result, extracted field, model identity, endpoint, error text, or user
+identifier. Vision-only tools create no Local AI Activity record.
+
+The content-free activity ledger does not prevent an MCP client from separately
+sending OCR inputs or results to its chosen provider. The existing MCP
+acknowledgment and the client's current privacy and retention terms therefore
+remain the controlling disclosure for that separate transmission boundary.
+
+Reporting is best effort: MCP operations continue unchanged if the reader is
+absent or sharing cannot write. Active records expire unless refreshed,
+completed records expire within 24 hours, and users can clear recent records in
+the reader. Nonparticipating apps remain invisible. Open-source, ad hoc, and
+differently signed helpers use only an explicitly injected temporary
+development ledger; they cannot silently claim official activity.
+
 ## Safe first connection
 
 Use a fictional, non-sensitive fixture in a folder the client can read, and

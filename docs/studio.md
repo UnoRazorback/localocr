@@ -99,6 +99,30 @@ on this Mac. The harness may keep its own logs or history. Studio Local
 Intelligence does not require MCP consent because no external agent is involved;
 the local-runtime acknowledgment and MCP acknowledgment are separate choices.
 
+## Local AI Activity sharing
+
+Studio can report the lifecycle of Local Intelligence model operations it
+owns to a configured Local AI Activity reader. The reader shows the provenance
+as **App reported**. That is an application report, not an inference from
+Apple service daemons, visible process use, or accelerator load. Ordinary
+Apple Vision OCR, searchable-PDF creation, and desktop batch OCR create no
+activity record.
+
+The shared record is content-free: it is limited to Studio's producer role, an
+allowlisted runtime family, a generic summarize/organize/extract task, timing,
+and a generic outcome. It contains no document content, model content,
+filename, path, field name, extracted value, error, or user identifier.
+Reporting is best effort, and document operations continue unchanged when the
+reader is absent or activity sharing is unavailable. Active records use a
+short lease and completed records are retained for no more than 24 hours; the
+reader also lets users clear recent activity immediately.
+
+This source checkout does not select an official production group. Open-source,
+ad hoc, and differently signed builds can participate in development only
+through an explicitly injected temporary ledger. Nonparticipating apps remain
+invisible, and the reader has no public per-app Neural Engine utilization
+measurement.
+
 ## Advanced CLI and MCP
 
 The Studio GUI calls the LocalOCR service directly. It does not launch either
