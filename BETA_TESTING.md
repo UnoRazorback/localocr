@@ -1,6 +1,6 @@
 # LocalOCR Studio Beta 2.1 Tester Guide
 
-The Beta 2.1 release candidate is version `0.3.1`, build `4`, with planned tag
+The Beta 2.1 release candidate is version `0.3.1`, build `6`, with planned tag
 `v0.3.1-beta.1`. It includes the simple one-document desktop flow, an opt-in
 reviewed desktop batch, offline Help, Local Intelligence, guided Codex and
 Claude connection, and all three native helpers. Do not distribute or install
@@ -9,12 +9,12 @@ target-Mac acceptance evidence is complete.
 
 ## Download and install
 
-After publication, download `LocalOCR-Studio-0.3.1-4.zip` and
-`LocalOCR-Studio-0.3.1-4.sha256` from the `v0.3.1-beta.1` prerelease into the
+After publication, download `LocalOCR-Studio-0.3.1-6.zip` and
+`LocalOCR-Studio-0.3.1-6.sha256` from the `v0.3.1-beta.1` prerelease into the
 same directory. Verify the download before expanding it:
 
 ```bash
-shasum -a 256 -c "LocalOCR-Studio-0.3.1-4.sha256"
+shasum -a 256 -c "LocalOCR-Studio-0.3.1-6.sha256"
 ```
 
 The command must report `OK`. Expand the verified ZIP, move `LocalOCR Studio.app` to `/Applications`, then open it normally. Do not bypass Gatekeeper, remove quarantine attributes, or use an unverified build or staging copy.
@@ -63,7 +63,7 @@ MCP clients receive copy-only stdio instructions; LocalOCR does not guess at or
 edit an unknown client's configuration.
 
 Development compilation and automated verification use
-stable Xcode 26.6 (`17F113`), Swift 6.3.3, and the macOS 26.5 SDK while keeping
+Xcode 27 RC (`27A266a`), Swift 6, and the matching macOS 27 SDK while keeping
 the package/app deployment target at macOS 14. This does not replace physical
 provider, downloaded-package, or target-Mac acceptance; those release gates
 remain open until dated evidence is recorded.
@@ -87,12 +87,12 @@ Recognition uses Apple Vision and PDFKit locally. LocalOCR does not upload docum
 
 ## Compatibility and candidate provenance
 
-The Beta 2.1 candidate uses stable Xcode 26.6 (`17F113`), Swift 6, arm64, and
+The Beta 2.1 candidate uses Xcode 27 RC (`27A266a`), Swift 6, arm64, and
 deployment target macOS 14.0. Final Developer ID, Hardened Runtime,
 notarization, staple, Gatekeeper, download, and exact-build target-Mac facts
 will be added only from completed release evidence.
 
-Candidate provenance: version `0.3.1`, build `4`, planned tag
+Candidate provenance: version `0.3.1`, build `6`, planned tag
 `v0.3.1-beta.1`. The exact release commit and verified ZIP SHA-256 are pending
 the immutable release build.
 

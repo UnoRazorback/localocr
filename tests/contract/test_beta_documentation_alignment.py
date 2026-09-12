@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOYMENT_TARGET = "deployment target macOS 14.0"
 VERSION = "0.3.1"
-BUILD = "4"
+BUILD = "6"
 TAG = "v0.3.1-beta.1"
 FILES = {
     "readme": ROOT / "README.md",
@@ -37,12 +37,13 @@ def test_readme_and_studio_describe_beta_2_1_candidate_and_reset():
         text = FILES[key].read_text()
         prose = " ".join(text.split())
         assert VERSION in text
-        assert BUILD in text
+        assert f"build `{BUILD}`" in prose
         assert TAG in text
         assert "release candidate" in text.lower()
         assert "no published Beta 2.1 download is claimed" in prose or "no Beta 2.1 download is being claimed" in prose
         assert "Process Another Document" in text
-        assert "Xcode 26.6" in text
+        assert "Xcode 27 RC (`27A266a`)" in prose
+        assert "Xcode 26.6" not in text
         assert DEPLOYMENT_TARGET in prose
         assert "Future Apple beta compatibility is not guaranteed" in prose
 
@@ -123,3 +124,20 @@ def test_local_ai_activity_entitlement_gate_records_authorized_configuration_and
     ):
         assert required in prose
     assert "blocked pending the approvals below" not in gate
+
+
+def test_private_build_6_candidate_identity_and_suite_boundary():
+    for name in ("README.md", "docs/studio.md", "BETA_TESTING.md"):
+        text = (ROOT / name).read_text()
+        assert f"LocalOCR-Studio-{VERSION}-{BUILD}.zip" in text
+        assert "LocalOCR-Studio-0.3.1-4" not in text
+    readme = FILES["readme"].read_text()
+    assert "private integration release candidate" in readme
+    assert "not a published download" in readme
+    for requirement in ("llama_cpp", "summarize", "organize", "extract-fields",
+                        "Local AI Activity", "Ordinary OCR works without a model server"):
+        assert requirement in readme
+    for name in ("README.md", "docs/studio.md", "docs/mcp.md", "BETA_TESTING.md"):
+        text = (ROOT / name).read_text()
+        assert "27A266a" in text
+        assert "17F113" not in text

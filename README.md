@@ -1,7 +1,8 @@
 # LocalOCR
 
 **Your documents stay on your Mac.** LocalOCR performs PDF and image OCR with
-Apple Vision and the native CLI and MCP server make no network requests.
+Apple Vision. Ordinary OCR makes no network requests; explicitly acknowledged
+local intelligence providers use only verified same-Mac loopback transport.
 Document contents, recognized text, paths, and cache entries are processed and
 stored locally.
 
@@ -9,7 +10,7 @@ LocalOCR is an open-core project for **macOS 14 or later**. The open-source
 core includes the Swift OCR engine, the `localocr` command-line tool, and the
 `localocr-mcp` stdio server. The repository also contains the release pipeline
 for a directly distributed LocalOCR Studio Mac app. The Beta 2.1 release
-candidate is version `0.3.1`, build `4`, with planned tag
+candidate is version `0.3.1`, build `6`, with planned tag
 `v0.3.1-beta.1`. Signing, notarization, target-Mac acceptance, and publication
 remain separate gates; no Beta 2.1 download is being claimed before those
 gates pass. See the [Beta Tester Guide](BETA_TESTING.md) for the desktop-first
@@ -133,20 +134,28 @@ artifacts only; it does not sign, notarize, install, or publish them.
 
 ## Beta 2.1 release candidate
 
-The candidate identity is version `0.3.1`, build `4`, planned tag
-`v0.3.1-beta.1`, and planned assets `LocalOCR-Studio-0.3.1-4.zip` and
-`LocalOCR-Studio-0.3.1-4.sha256`. The exact release commit, ZIP SHA-256,
+Build 6 is a **private integration release candidate**, not a published download.
+It adds the named `llama_cpp` provider (llama.cpp), grounded one-shot
+`summarize`, `organize`, and `extract-fields` JSON CLI commands, and signed
+content-free Local AI Activity sharing with AI Neural Gauge. Each machine's
+signature, container access, provider qualification, and real document acceptance
+must be verified separately. Ordinary OCR works without a model server. There
+is no automatic provider fallback and no model download or server-launch control.
+
+The candidate identity is version `0.3.1`, build `6`, planned tag
+`v0.3.1-beta.1`, and planned assets `LocalOCR-Studio-0.3.1-6.zip` and
+`LocalOCR-Studio-0.3.1-6.sha256`. The exact release commit, ZIP SHA-256,
 notarization submission, downloaded-package verification, and target-Mac
 results must be filled from evidence after those gates pass. Development uses
 Xcode 27 RC (`27A266a`) at `/Applications/Xcode-27-RC.app`, Swift 6, arm64, and deployment target macOS 14.0.
 Future Apple beta compatibility is not guaranteed.
 
-After the release is published, download `LocalOCR-Studio-0.3.1-4.zip` and
-`LocalOCR-Studio-0.3.1-4.sha256` into the same directory and verify them before
+After the release is published, download `LocalOCR-Studio-0.3.1-6.zip` and
+`LocalOCR-Studio-0.3.1-6.sha256` into the same directory and verify them before
 expanding the ZIP:
 
 ```bash
-shasum -a 256 -c "LocalOCR-Studio-0.3.1-4.sha256"
+shasum -a 256 -c "LocalOCR-Studio-0.3.1-6.sha256"
 ```
 
 Continue only if the command reports `OK`. Move the expanded `LocalOCR
