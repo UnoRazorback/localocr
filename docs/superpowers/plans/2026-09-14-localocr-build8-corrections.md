@@ -4,7 +4,7 @@
 
 **Goal:** Build a private LocalOCR 0.3.1 build 8 candidate that preserves table associations, safely supports the attested GPT-OSS 120B response shape, and remains locally verified across sustained llama.cpp use.
 
-**Architecture:** Reconstruct row-oriented intelligence text only from valid Vision line geometry while leaving public OCR text unchanged. Bind the GPT-OSS exception to one immutable GGUF fingerprint and keep all final-schema, identity, locality, and grounding gates. Persist only validated harness-version evidence under the existing private executable-identity cache so repeated helper processes do not relaunch the resident model executable for `--version`.
+**Architecture:** Reconstruct row-oriented intelligence text only from valid Vision line geometry while leaving public OCR text unchanged. Bind the GPT-OSS exception to the conjunction of one exact runtime alias and one immutable GGUF fingerprint, and keep all final-schema, identity, locality, and grounding gates. Persist only validated harness-version evidence under the existing private executable-identity cache so repeated helper processes do not relaunch the resident model executable for `--version`.
 
 **Tech Stack:** Swift 6, Swift Testing, Apple Vision/CoreGraphics, SwiftPM, CryptoKit, Darwin, existing LocalOCR bridge and activity contracts, shell/Python acceptance harnesses.
 
@@ -70,7 +70,7 @@ git commit -m "Preserve OCR table rows for local intelligence"
 
 ---
 
-### Task 2: Add the fingerprint-bound GPT-OSS response adapter
+### Task 2: Add the alias-and-fingerprint-bound GPT-OSS response adapter
 
 **Files:**
 - Modify: `Sources/LocalOCRModelBridgeKit/LlamaCppBridgeAdapter.swift`
@@ -78,11 +78,11 @@ git commit -m "Preserve OCR table rows for local intelligence"
 
 **Interfaces:**
 - Consumes: the already verified `LocalModelIdentity` returned before generation.
-- Produces: `chatContent(_:identity:) -> String?`, which discards only an approved bounded GPT-OSS `reasoning_content` string.
+- Produces: `chatContent(_:identity:) -> String?`, which discards only a bounded GPT-OSS `reasoning_content` string for exact alias `gpt-oss-120b-mxfp4` and the approved fingerprint.
 
 - [ ] **Step 1: Add failing identity-specific response tests**
 
-Define a GPT fixture whose fingerprint is exactly `582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d`. Require valid `role/content/reasoning_content` plus `finish_reason: stop` to succeed for that fixture while the existing generic/Gemma reasoning mutation still returns `schema_failure`.
+Define a GPT fixture whose alias is exactly `gpt-oss-120b-mxfp4` and fingerprint is exactly `582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d`. Require valid `role/content/reasoning_content` plus `finish_reason: stop` to succeed only for that pair while exact-fingerprint/wrong-alias, exact-alias/wrong-fingerprint, and existing generic/Gemma reasoning mutations return `schema_failure`.
 
 Add GPT tests rejecting: non-string reasoning, more than 65,536 UTF-8 bytes, missing or non-stop finish reason, extra message keys, tool calls, multiple choices, response-model mismatch, inline `<think>` content, invalid final JSON, extra final-payload members, and post-generation identity change.
 
@@ -96,7 +96,7 @@ Expected: the approved GPT fixture fails with `schema_failure` because the curre
 
 - [ ] **Step 3: Implement the narrow adapter**
 
-Add private constants for the approved fingerprint and 65,536-byte limit. Pass `before.identity` to `chatContent`. Accept message keys exactly `role/content` for all identities; accept exactly `role/content/reasoning_content` only when provider is `.llamaCpp`, fingerprint equals the approved value, and the reasoning value is a UTF-8-bounded `String`. Never return the reasoning value. Preserve every existing top-level, choice, finish-reason, model, final-payload, identity, metadata, and grounding check.
+Add private constants for the approved alias, approved fingerprint, and 65,536-byte limit. Pass `before.identity` to `chatContent`. Accept message keys exactly `role/content` for all identities; accept exactly `role/content/reasoning_content` only when provider is `.llamaCpp`, model alias equals the approved alias, fingerprint equals the approved value, and the reasoning value is a UTF-8-bounded `String`. Never return the reasoning value. Preserve every existing top-level, choice, finish-reason, model, final-payload, identity, metadata, and grounding check.
 
 - [ ] **Step 4: Run focused bridge and qualification tests**
 

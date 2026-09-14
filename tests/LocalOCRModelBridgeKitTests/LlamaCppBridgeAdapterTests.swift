@@ -19,6 +19,7 @@ struct LlamaCppBridgeAdapterTests {
     }
 
     private let approvedGPTOSSFingerprint = "582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d"
+    private let approvedGPTOSSAlias = "gpt-oss-120b-mxfp4"
     private let snapshot = LlamaCppProcessSnapshot(
         alias: "fixture", modelPath: "/models/fixture.gguf", fingerprint: String(repeating: "a", count: 64),
         harnessVersion: "llama-server:test", executablePath: "/usr/local/bin/llama-server",
@@ -29,7 +30,7 @@ struct LlamaCppBridgeAdapterTests {
 
     private var approvedGPTOSSSnapshot: LlamaCppProcessSnapshot {
         LlamaCppProcessSnapshot(
-            alias: snapshot.alias, modelPath: snapshot.modelPath,
+            alias: approvedGPTOSSAlias, modelPath: snapshot.modelPath,
             fingerprint: approvedGPTOSSFingerprint, harnessVersion: snapshot.harnessVersion,
             executablePath: snapshot.executablePath, executableSHA256: snapshot.executableSHA256,
             modelSize: snapshot.modelSize, modelModifiedNanoseconds: snapshot.modelModifiedNanoseconds,
@@ -88,7 +89,7 @@ struct LlamaCppBridgeAdapterTests {
     }
 
     @Test func acceptsAndDiscardsBoundedReasoningOnlyForAttestedGPTOSS() async throws {
-        let http = LlamaHTTP(mutation: "gpt_reasoning")
+        let http = LlamaHTTP(alias: approvedGPTOSSAlias, mutation: "gpt_reasoning")
         let adapter = LlamaCppBridgeAdapter(http: http, probe: LlamaProbe(snapshot: approvedGPTOSSSnapshot))
         let identity = try #require(try await adapter.discover().first?.identity)
 
@@ -104,7 +105,7 @@ struct LlamaCppBridgeAdapterTests {
         let exactLimit = String(repeating: "€", count: 21_845) + "x"
         #expect(exactLimit.utf8.count == 65_536)
         #expect(exactLimit.count == 21_846)
-        let http = LlamaHTTP(mutation: "gpt_reasoning_multibyte_at_limit")
+        let http = LlamaHTTP(alias: approvedGPTOSSAlias, mutation: "gpt_reasoning_multibyte_at_limit")
         let adapter = LlamaCppBridgeAdapter(http: http, probe: LlamaProbe(snapshot: approvedGPTOSSSnapshot))
         let identity = try #require(try await adapter.discover().first?.identity)
 
@@ -119,7 +120,7 @@ struct LlamaCppBridgeAdapterTests {
         let oneByteOver = String(repeating: "€", count: 21_845) + "xx"
         #expect(oneByteOver.utf8.count == 65_537)
         #expect(oneByteOver.count == 21_847)
-        let http = LlamaHTTP(mutation: "gpt_reasoning_multibyte_one_byte_over")
+        let http = LlamaHTTP(alias: approvedGPTOSSAlias, mutation: "gpt_reasoning_multibyte_one_byte_over")
         let adapter = LlamaCppBridgeAdapter(http: http, probe: LlamaProbe(snapshot: approvedGPTOSSSnapshot))
         let identity = try #require(try await adapter.discover().first?.identity)
 
@@ -135,7 +136,7 @@ struct LlamaCppBridgeAdapterTests {
             "gpt_reasoning_not_string", "gpt_reasoning_too_long", "gpt_finish_missing", "gpt_finish_non_stop",
             "gpt_message_extra", "gpt_tool", "gpt_choices", "gpt_model", "gpt_think", "gpt_invalid_json", "gpt_payload"
         ] {
-            let http = LlamaHTTP(mutation: mutation)
+            let http = LlamaHTTP(alias: approvedGPTOSSAlias, mutation: mutation)
             let adapter = LlamaCppBridgeAdapter(http: http, probe: LlamaProbe(snapshot: approvedGPTOSSSnapshot))
             let identity = try #require(try await adapter.discover().first?.identity)
 
@@ -145,6 +146,52 @@ struct LlamaCppBridgeAdapterTests {
             #expect(response.error?.code == .schemaFailure, "mutation: \(mutation)")
             #expect(response.payloadJSON == nil, "mutation: \(mutation)")
         }
+    }
+
+    @Test func rejectsReasoningForApprovedGPTOSSFingerprintUnderAnyOtherAlias() async throws {
+        let wrongAliasSnapshot = LlamaCppProcessSnapshot(
+            alias: "gpt-oss-120b-mxfp4-copy", modelPath: approvedGPTOSSSnapshot.modelPath,
+            fingerprint: approvedGPTOSSFingerprint, harnessVersion: approvedGPTOSSSnapshot.harnessVersion,
+            executablePath: approvedGPTOSSSnapshot.executablePath,
+            executableSHA256: approvedGPTOSSSnapshot.executableSHA256,
+            modelSize: approvedGPTOSSSnapshot.modelSize,
+            modelModifiedNanoseconds: approvedGPTOSSSnapshot.modelModifiedNanoseconds,
+            executableSize: approvedGPTOSSSnapshot.executableSize,
+            executableModifiedNanoseconds: approvedGPTOSSSnapshot.executableModifiedNanoseconds,
+            processID: approvedGPTOSSSnapshot.processID
+        )
+        let http = LlamaHTTP(alias: wrongAliasSnapshot.alias, mutation: "gpt_reasoning")
+        let adapter = LlamaCppBridgeAdapter(http: http, probe: LlamaProbe(snapshot: wrongAliasSnapshot))
+        let identity = try #require(try await adapter.discover().first?.identity)
+
+        let response = await adapter.generate(.generate(id: 1, expectedIdentity: identity,
+            operation: .summarize, prompt: "Page 1: Fixture."))
+
+        #expect(response.error?.code == .schemaFailure)
+        #expect(response.payloadJSON == nil)
+    }
+
+    @Test func rejectsReasoningForApprovedGPTOSSAliasWithAnyOtherFingerprint() async throws {
+        let wrongFingerprintSnapshot = LlamaCppProcessSnapshot(
+            alias: approvedGPTOSSAlias, modelPath: snapshot.modelPath,
+            fingerprint: snapshot.fingerprint, harnessVersion: snapshot.harnessVersion,
+            executablePath: snapshot.executablePath,
+            executableSHA256: snapshot.executableSHA256,
+            modelSize: snapshot.modelSize,
+            modelModifiedNanoseconds: snapshot.modelModifiedNanoseconds,
+            executableSize: snapshot.executableSize,
+            executableModifiedNanoseconds: snapshot.executableModifiedNanoseconds,
+            processID: snapshot.processID
+        )
+        let http = LlamaHTTP(alias: approvedGPTOSSAlias, mutation: "gpt_reasoning")
+        let adapter = LlamaCppBridgeAdapter(http: http, probe: LlamaProbe(snapshot: wrongFingerprintSnapshot))
+        let identity = try #require(try await adapter.discover().first?.identity)
+
+        let response = await adapter.generate(.generate(id: 1, expectedIdentity: identity,
+            operation: .summarize, prompt: "Page 1: Fixture."))
+
+        #expect(response.error?.code == .schemaFailure)
+        #expect(response.payloadJSON == nil)
     }
 
     @Test func changedMetadataAfterGenerationDiscardsOutput() async throws {
@@ -179,7 +226,7 @@ struct LlamaCppBridgeAdapterTests {
             modelSize: approvedGPTOSSSnapshot.modelSize, modelModifiedNanoseconds: approvedGPTOSSSnapshot.modelModifiedNanoseconds,
             executableSize: approvedGPTOSSSnapshot.executableSize, executableModifiedNanoseconds: approvedGPTOSSSnapshot.executableModifiedNanoseconds,
             processID: approvedGPTOSSSnapshot.processID + 1)
-        let adapter = LlamaCppBridgeAdapter(http: LlamaHTTP(mutation: "gpt_reasoning"),
+        let adapter = LlamaCppBridgeAdapter(http: LlamaHTTP(alias: approvedGPTOSSAlias, mutation: "gpt_reasoning"),
             probe: ChangingLlamaProbe(before: approvedGPTOSSSnapshot, after: changed))
         let identity = try #require(try await adapter.discover().first?.identity)
 

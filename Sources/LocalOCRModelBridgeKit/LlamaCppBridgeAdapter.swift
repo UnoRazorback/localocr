@@ -13,6 +13,7 @@ public struct LlamaCppBridgeAdapter: Sendable {
     private let probe: any LlamaCppProcessProbing
     private static let maximumStructuredStringLength = 4_096
     private static let approvedGPTOSSFingerprint = "582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d"
+    private static let approvedGPTOSSAlias = "gpt-oss-120b-mxfp4"
     private static let maximumGPTOSSReasoningContentUTF8Bytes = 65_536
 
     public init(http: any LoopbackHTTPPerforming, probe: any LlamaCppProcessProbing) {
@@ -239,6 +240,7 @@ public struct LlamaCppBridgeAdapter: Sendable {
               !content.contains("<think>"), !content.contains("</think>") else { return nil }
         let standardMessageKeys: Set<String> = ["role", "content"]
         let hasApprovedGPTOSSIdentity = identity.provider == .llamaCpp
+            && identity.model == approvedGPTOSSAlias
             && identity.fingerprint == approvedGPTOSSFingerprint
         let hasBoundedReasoningContent = (message["reasoning_content"] as? String)
             .map { $0.utf8.count <= maximumGPTOSSReasoningContentUTF8Bytes } ?? false
