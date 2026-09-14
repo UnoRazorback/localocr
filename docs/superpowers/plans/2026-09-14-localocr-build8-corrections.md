@@ -162,44 +162,123 @@ git commit -m "Stabilize repeated llama locality attestation"
 
 ---
 
-### Task 4: Build 8 acceptance instrumentation and private release candidate
+### Task 4: Add synthetic endurance acceptance and advance build metadata
 
 **Files:**
-- Modify: `Sources/LocalOCRService/LocalOCRRuntime.swift`
-- Modify: Studio project/build metadata file selected by the existing build-number guard
+- Create: `tests/LocalOCRIntelligenceTests/Build8EnduranceAcceptanceTests.swift`
+- Modify: `project.yml`
+- Modify: `LocalOCR Studio.xcodeproj/project.pbxproj`
+- Modify: `scripts/build-unsigned-studio-app.sh`
+- Modify: `tests/contract/test_studio_app_project.py`
+- Modify: `tests/contract/test_direct_release_scripts.py`
+- Modify: `tests/contract/test_beta_documentation_alignment.py`
+- Modify: `README.md`
+- Modify: `BETA_TESTING.md`
+- Modify: `docs/studio.md`
 - Create: `docs/localocr-build8-acceptance-2026-09-14.md`
-- Create: `work/localocr-build8-acceptance/` evidence through existing scripts (kept outside source commits when policy requires)
-- Modify: `../reports/mcp-macvision/MCP-MacVision-Time-and-Cost-Log.csv` and project overview only from dated evidence after the milestone closes
 
 **Interfaces:**
-- Consumes: Tasks 1-3 and the existing build-7 qualification, activity, packaging, signing, and notarization workflows.
-- Produces: LocalOCR `0.3.1` build `8`, a signed/notarized/stapled private ZIP, checksums, an acceptance manifest, and a Pro handoff containing no document content.
+- Consumes: Tasks 1-3 and the existing router, qualification, and Local AI Activity test seams.
+- Produces: automated twenty-operation/endurance regression coverage and source metadata for LocalOCR `0.3.1` build `8`.
 
 - [ ] **Step 1: Add or extend synthetic acceptance checks before metadata changes**
 
-Require two consecutive six-operation harness passes, equipment `$2,000.00` on page 1, twenty sequential generations, exact 17-key ended activity records with one unique record per generation, and a post-sequence status check. Use a clock abstraction or bounded test seam for the ten-minute idle in automated tests; reserve the real ten-minute idle for the controlled Pro run.
+Add `Build8EnduranceAcceptanceTests` using existing in-process fixture providers, selection/qualification stores, activity reporter, and temporary secure activity store. Require twenty sequential successful generations against one unchanged llama identity, twenty unique ended records, each JSON object containing exactly `LocalAIActivityContract.v1Keys`, and post-sequence selected/available/qualified status. Simulate a monotonic ten-minute interval through an injected clock/test seam without sleeping; reserve the real ten-minute idle for the controlled Pro run. Keep two consecutive six-operation real-model harnesses and both models' consecutive qualifications as target-machine gates.
 
 - [ ] **Step 2: Run the new checks against pre-build-8 metadata**
 
-Run the focused acceptance entry points documented by the existing harness. Expected: functional tests pass after Tasks 1-3, while metadata guards still report build 7.
+Run:
+
+```bash
+swift test --filter 'Build8EnduranceAcceptanceTests|OCRLayoutTextAssemblerTests|LlamaCppBridgeAdapterTests|LlamaCppProcessProbeTests|LlamaCppQualificationTests'
+```
+
+Expected before adding the new endurance fixture: FAIL because `Build8EnduranceAcceptanceTests` does not exist or its twenty-record/status requirements are not met. After the test seam is complete and before metadata changes, functional tests pass while Python metadata guards still report build 7.
 
 - [ ] **Step 3: Advance only the build number and document scope**
 
-Keep marketing version `0.3.1`; change the guarded app build number from `7` to `8`. Document the exact source commits, synthetic fixture hashes, test commands, baseline flake reruns, provider boundaries, and remaining target-machine gates. Do not claim Gemma/GPT acceptance from fixtures or build output.
+Keep marketing version `0.3.1`; change every current private-candidate build number from `7` to `8` in the project, generated Xcode project, unsigned-build script, exact contract constants, README, Beta guide, and Studio guide. Preserve the existing planned tag without publishing it. Document the exact source commits, synthetic fixture hashes, test commands, baseline flake reruns, provider boundaries, stable Xcode toolchain, macOS 27 GR target gate, and remaining target-machine gates. Do not claim Gemma/GPT acceptance from fixtures or build output.
 
-- [ ] **Step 4: Run complete source and package verification sequentially**
+- [ ] **Step 4: Run focused Swift and metadata tests**
 
-Use stable `/Applications/Xcode.app` after recording `xcodebuild -version`. Run `swift test`, the full Python suite, native helper build and smoke scripts, style/privacy/policy inventories, Studio project tests, unsigned app build, and release staging sequentially. Rerun any baseline-only flaky cleanup test separately and record both outcomes without rewriting the original full-run result.
+```bash
+swift test --filter 'Build8EnduranceAcceptanceTests|OCRLayoutTextAssemblerTests|LlamaCppBridgeAdapterTests|LlamaCppProcessProbeTests|LlamaCppQualificationTests'
+python3 -m pytest -q tests/contract/test_studio_app_project.py tests/contract/test_direct_release_scripts.py tests/contract/test_beta_documentation_alignment.py
+```
 
-- [ ] **Step 5: Sign, notarize, staple, and verify the private candidate**
+Expected: PASS with build 8 aligned everywhere and no activity-record content beyond the approved 17-key contract.
 
-Use Developer Team `DZ8B5454ZN` and the existing Air `localocr-notary` Keychain profile. Build with stable Xcode, sign nested helpers/binaries first and the app last with Hardened Runtime, verify every signature, reject absolute Xcode RPATHs and non-Apple/non-system shipped dependencies, submit with `notarytool`, staple, verify the ticket, run `spctl`, extract a fresh copy, and repeat signature/helper/checksum verification. Preserve the notarization UUID and all command logs.
+- [ ] **Step 5: Commit**
 
-- [ ] **Step 6: Send the candidate to the Pro for controlled acceptance**
+```bash
+git add tests/LocalOCRIntelligenceTests/Build8EnduranceAcceptanceTests.swift project.yml 'LocalOCR Studio.xcodeproj/project.pbxproj' scripts/build-unsigned-studio-app.sh tests/contract/test_studio_app_project.py tests/contract/test_direct_release_scripts.py tests/contract/test_beta_documentation_alignment.py README.md BETA_TESTING.md docs/studio.md docs/localocr-build8-acceptance-2026-09-14.md
+git commit -m "Prepare LocalOCR 0.3.1 build 8 acceptance"
+```
 
-Send the signed/notarized ZIP, SHA-256, source commit, and content-free acceptance instructions directly to task `01a08b26-fb24-7391-9450-b0ff52d240b7`. The Pro owner controls model-server launch. Require: two consecutive Gemma Q8 qualifications, two consecutive GPT-OSS 120B qualifications, two consecutive six-operation harnesses, equipment `$2,000.00` page 1, twenty operations, a real ten-minute idle, unchanged process identity, and exactly one readable 17-key activity record per generation. Do not bypass the changed Pro SSH host key.
+---
 
-- [ ] **Step 7: Reconcile evidence and records, then commit source metadata/docs**
+### Task 5: Verify, sign, and notarize the private Build 8 candidate
 
-Update the time-and-cost log and project overview from dated command/test/notary receipts only; leave unsupported hours or costs blank. Commit tracked metadata and documentation, leaving private model paths, document content, credentials, and machine-specific evidence out of the public source tree.
+**Files:**
+- Create: `work/localocr-build8-acceptance/` evidence through existing scripts; keep machine evidence outside source commits.
+- Modify: `docs/localocr-build8-acceptance-2026-09-14.md` only with content-free final outcomes and durable evidence locations.
 
+**Interfaces:**
+- Consumes: Task 4 HEAD and the existing native build, release staging, signing, notarization, download-test, privacy, and policy workflows.
+- Produces: a signed/notarized/stapled private ZIP, SHA-256 file, exact source commit, notarization UUID, and extracted-artifact verification.
+
+- [ ] **Step 1: Record the stable toolchain and clean source identity**
+
+Record `git status --short`, `git rev-parse HEAD`, `xcode-select -p`, `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -version`, `sw_vers`, and the Developer ID identity inventory into the Build 8 evidence directory. Require a clean tracked source tree and Xcode 26.6 build `17F113` or stop and document the new stable version instead of silently switching toolchains.
+
+- [ ] **Step 2: Run complete source verification sequentially**
+
+With `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` and the matching SDK, run full `swift test`, the full Python suite, native helper build and smoke scripts, style/privacy/policy inventories, and Studio project tests sequentially. Rerun any baseline-only flaky cleanup test separately and record both outcomes without rewriting the original full-run result.
+
+- [ ] **Step 3: Build and stage the unsigned app**
+
+Use the existing build/stage scripts with `LOCALOCR_RELEASE_VERSION=0.3.1` and `LOCALOCR_RELEASE_BUILD=8`. Verify exact bundle version/build, app identifier, three-helper inventory, architecture, Hardened Runtime configuration, and absence of prohibited entitlements before signing.
+
+- [ ] **Step 4: Sign nested code first and containing app last**
+
+Use Developer Team `DZ8B5454ZN` and the installed Developer ID Application identity. Run `scripts/sign-direct-release.sh`; verify each of `localocr`, `localocr-mcp`, `localocr-model-bridge`, the main executable, and the containing app with strict codesign checks and required activity entitlements only on the approved producer binaries.
+
+- [ ] **Step 5: Notarize, staple, and verify a fresh archive**
+
+Use the existing Air `localocr-notary` Keychain profile with `scripts/notarize-direct-release.sh`. Preserve the submission UUID and Accepted result, staple the ticket, run `spctl`, reject absolute Xcode RPATHs and non-Apple/non-system helper dependencies, create `LocalOCR-Studio-0.3.1-8.zip` plus `.sha256`, extract a fresh copy, and rerun signature, ticket, Gatekeeper, helper-inventory, dependency, RPATH, and checksum verification.
+
+- [ ] **Step 6: Append source review evidence and commit the content-free acceptance record**
+
+Append exact commands/outcomes, source commit, ZIP hash, notarization UUID, and limitations to `docs/localocr-build8-acceptance-2026-09-14.md`. Do not include credentials, document text, paths to private models, or claim real-model qualification. Commit only that tracked acceptance-doc update.
+
+---
+
+### Task 6: Deliver to the Pro and close controlled acceptance
+
+**Files:**
+- Modify: `docs/localocr-build8-acceptance-2026-09-14.md` with content-free Pro results after receipt.
+- Modify: sibling `reports/mcp-macvision/MCP-MacVision-Time-and-Cost-Log.csv` and project overview only from dated evidence after the milestone closes.
+
+**Interfaces:**
+- Consumes: Task 5 signed/notarized archive, SHA-256, source commit, and acceptance instructions.
+- Produces: authenticated Pro receipt, target macOS 27 GR qualification/harness/endurance evidence, and reconciled milestone records.
+
+- [ ] **Step 1: Send the candidate to the verified Pro task**
+
+Send the signed/notarized ZIP, SHA-256, source commit, and content-free acceptance instructions directly to task `01a08b26-fb24-7391-9450-b0ff52d240b7`. Do not bypass the changed SSH host key. The Pro owner controls model-server launch and the macOS 27 GR upgrade/reboot.
+
+- [ ] **Step 2: Require exact post-upgrade environment evidence**
+
+Require the Pro to record `sw_vers`, machine architecture, installed app version/build, ZIP checksum, codesign/ticket/Gatekeeper results, and three-helper inventory after the macOS 27 GR upgrade. An upgrade statement or build success is not target acceptance.
+
+- [ ] **Step 3: Run the controlled real-model gates**
+
+Require two consecutive Gemma Q8 qualifications, two consecutive GPT-OSS 120B qualifications, two consecutive six-operation synthetic harnesses, equipment `$2,000.00` page 1, twenty sequential operations, a real ten-minute idle, unchanged PID/alias/fingerprint/listener, post-idle selected/available/qualified status, and exactly one readable 17-key activity record per generation. Preserve only synthetic results and content-free real-document timing/SHA evidence.
+
+- [ ] **Step 4: Record the receipt without overstating failures**
+
+Record each gate PASS/FAIL separately. A failing model gate leaves Build 8 unaccepted even if signing, OCR, or other model operations pass. Do not rerun with company documents, weaken qualification, or infer that an unchanged listener proves all locality fields.
+
+- [ ] **Step 5: Reconcile evidence and records, then commit source documentation**
+
+Update the time-and-cost log and project overview from dated command/test/notary receipts only; leave unsupported hours or costs blank. Commit tracked acceptance documentation and recordkeeping changes, leaving private model paths, document content, credentials, and machine-specific raw evidence out of the source tree.
