@@ -16,9 +16,13 @@ notarization, installation, or target acceptance is claimed here.
 - Repeated llama locality attestation: `a7f2b454e371744e5234179742f5f7d5cb709a31`.
 - Split source/release/target acceptance gates (Task 4 parent):
   `2a84c81b2c0fe93f7c29a18f1e674be77de5dd74`.
+- Initial Task 4 endurance/metadata commit:
+  `37909150a6b400a17aa241e20f6be6845ca4b22d`.
 
-The source commit containing this record adds only the endurance test, build
-metadata, and documentation/contract alignment. Resolve it with
+The initial Task 4 commit added the endurance test, build metadata, and
+documentation/contract alignment. Its review fix also re-attests the approved
+source inventory, isolates two test fixtures, and clarifies historical MCP
+toolchain provenance. Resolve the latest record commit with
 `git log -1 --format=%H -- docs/localocr-build8-acceptance-2026-09-14.md`;
 the final immutable release commit must be recorded separately when building.
 
@@ -77,14 +81,51 @@ The exact Python gate is broader than metadata: it also builds/stages native
 artifacts. Its initial pre-metadata run returned 51 failures, 254 passes, and
 16 setup errors, including the expected build-number failures, mixed SDK
 linker errors, stale source-policy inventory, and absent artifact prerequisites.
-The final stable-toolchain rerun returned **13 failures, 292 passes, 16 setup
+The initial stable-toolchain rerun returned **13 failures, 292 passes, 16 setup
 errors** in 148.20 seconds. All remaining failures/errors were in the direct
 release script suite: the closed source inventory has not been re-attested for
 the new source/test files, the validated release candidate is absent, and one
 nonexistent-release-root test receives a different fail-closed error message.
-No source-policy pin, release path guard, or release toolchain check was changed
-or bypassed. The focused metadata/doc subset passed **11 tests**. The full gate
-is **NOT PASSED** and must be rerun after release prerequisites are reconciled.
+That initial run changed no source-policy pin, release path guard, or release
+toolchain check. The focused metadata/doc subset passed **11 tests**. This
+initial full-gate failure is preserved rather than overwritten by later results.
+
+Review fix round 1 re-attested the names-only source inventory using the existing
+`target_source_inventory` and `canonical_json_sha256` functions. Removing exactly
+`Sources/LocalOCRIntelligence/OCRLayoutTextAssembler.swift`,
+`tests/LocalOCRIntelligenceTests/OCRLayoutTextAssemblerTests.swift`, and
+`tests/LocalOCRIntelligenceTests/Build8EnduranceAcceptanceTests.swift` reproduces
+the old pin `02afcf8e40108cd4acf1c207e59bc85d977bd566c37ab6f80756040203eaa0d2`.
+The approved inventory pin is now
+`3461531633aaaeb32af3268d47615fd8d986ae814d20bbf0f207432e4e18b4b5`; all policy
+logic and other pins remain unchanged. The policy command passes and the
+existing injected-unapproved-file test still rejects inventory drift.
+
+The two release tests now use controlled temporary repositories: the native
+publisher exercises a pinned compiler fixture despite a hostile PATH shim, and
+the notarization test independently checks missing-root rejection and existing
+repository-root rejection without mutation. Four targeted tests pass, including
+the unchanged inventory-drift negative test. No production path guard changed.
+The first post-fix full run returned 321 passes and one failure in 1173.98
+seconds: an unchanged native artifact-swap test timed out at its 30-second
+preparation rendezvous before reaching its safety assertions. The isolated
+unmodified case reproduced in 30.44 seconds. An approved test-harness fix keeps
+the helper default at 30 seconds, gives only this slow native rendezvous 120
+seconds, and terminates/reaps its isolated test process group on failure.
+Production timeouts, guards, and original safety assertions remain unchanged.
+The narrow case then passed in 76.67 seconds. A temporary 1 ms mutation failed
+at the expected assertion in 0.31 seconds and left no matching fixture
+processes; the mutation was removed. All 78 MCP source-policy tests also pass.
+
+The final exact three-file Python rerun **passed all 322 tests** in 1314.44
+seconds (21:54), with five existing SWIG deprecation warnings and zero failures
+or setup errors. It used the authorized normal test-only unsigned-app fixture,
+without reuse/skip flags. The earlier failed runs above remain part of the record.
+After that Python run, the focused Swift command was rerun with explicit stable
+DEVELOPER_DIR/SDKROOT and passed all 36 tests in five suites (1.036 seconds).
+The explicit outer environment uses stable Xcode, while the unchanged release
+scripts still invoke their RC-pinned toolchain for that fixture. This is not
+the separate Task 5 stable-toolchain candidate build.
 
 Baseline flake preservation: before Build 8 edits the full Swift run reported
 893 tests and failed in
@@ -116,7 +157,8 @@ It does not relax generic/Gemma closed-schema, grounding, or locality rules.
 
 - Fresh complete Swift/Python, policy/privacy, native-helper, smoke, and Studio
   verification under the stable toolchain; retain original failures and narrow
-  reruns separately. Reconcile source inventory/toolchain pins without bypasses.
+  reruns separately. Preserve the reviewed inventory and reconcile release
+  toolchain pins without bypasses.
 - Immutable unsigned build, exact version/build and helper inventory, then
   separate signing, notarization, stapling, Gatekeeper, extracted-archive,
   dependency/RPATH, and checksum verification. No publication is authorized by

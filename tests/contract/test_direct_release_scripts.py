@@ -1818,8 +1818,8 @@ def _write_publish_pausing_path_guard(destination: Path) -> None:
     destination.write_text(source.replace(injection_point, pause + injection_point))
 
 
-def _wait_for_cleanup_validation(ready_descriptor: int) -> int:
-    readable, _, _ = select.select([ready_descriptor], [], [], 30)
+def _wait_for_cleanup_validation(ready_descriptor: int, timeout_seconds: float = 30) -> int:
+    readable, _, _ = select.select([ready_descriptor], [], [], timeout_seconds)
     assert readable, "cleanup guard never reached its post-validation rendezvous"
     payload = os.read(ready_descriptor, 64)
     assert re.fullmatch(rb"\d+\n", payload), payload
@@ -3546,19 +3546,38 @@ exit 64
         stderr=subprocess.PIPE,
         text=True,
         env=env,
+        start_new_session=True,
     )
     guard_pid: int | None = None
+    completed = False
 
     try:
-        guard_pid = _wait_for_cleanup_validation(ready_descriptor)
+        # Includes real source-policy checks and artifact preparation before the
+        # test-only publication pause; other rendezvous callers retain 30 seconds.
+        guard_pid = _wait_for_cleanup_validation(ready_descriptor, timeout_seconds=120)
         artifacts.rename(detached_artifacts)
         replacement.rename(artifacts)
         os.kill(guard_pid, signal.SIGCONT)
         guard_pid = None
         stdout, stderr = process.communicate(timeout=30)
+        completed = True
     finally:
-        if guard_pid is not None:
-            os.kill(guard_pid, signal.SIGCONT)
+        if not completed:
+            # This session contains only the isolated test publisher and its
+            # children. Resume stopped children so pending termination is handled.
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                os.killpg(process.pid, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate(timeout=5)
         os.close(ready_descriptor)
 
     assert process.returncode != 0, stdout + stderr
@@ -4098,6 +4117,33 @@ def test_native_build_rejects_source_policy_drift_before_swift_build(
 def test_native_build_uses_stable_xcode_swift_when_path_is_shadowed(
     tmp_path: Path,
 ) -> None:
+    isolated_repo = tmp_path / "repo"
+    isolated_scripts = isolated_repo / "scripts"
+    isolated_scripts.mkdir(parents=True)
+    _copy_native_build_policy_scripts(isolated_scripts)
+    artifact_dir = isolated_repo / "dist" / "direct-release" / "native-tools"
+    artifact_dir.parent.mkdir(parents=True)
+    source_fixture = tmp_path / "source-fixture" / "localocr"
+    source_fixture.parent.mkdir()
+    _compile_macos_fixture(source_fixture, architecture="arm64", minimum_macos="14.0")
+    pinned_swift_fixture = tmp_path / "pinned-swift"
+    pinned_trace = tmp_path / "pinned-swift-products.txt"
+    pinned_swift_fixture.write_text(
+        """#!/bin/bash
+set -euo pipefail
+if [[ "$1" == "package" && "$2" == "clean" ]]; then exit 0; fi
+if [[ "$1" == "build" ]]; then
+    product="${!#}"
+    case "$product" in localocr|localocr-mcp|localocr-model-bridge) ;; *) exit 65 ;; esac
+    mkdir -p .build/release
+    cp "${LOCALOCR_TEST_SOURCE_BINARY:?}" ".build/release/$product"
+    printf '%s\\n' "$product" >> "${LOCALOCR_TEST_PINNED_SWIFT_TRACE:?}"
+    exit 0
+fi
+exit 64
+"""
+    )
+    _install_stable_swift_fixture(isolated_repo, pinned_swift_fixture)
     stub_directory = tmp_path / "shadow-bin"
     stub_directory.mkdir()
     shim_marker = tmp_path / "path-swift-was-invoked"
@@ -4114,16 +4160,18 @@ def test_native_build_uses_stable_xcode_swift_when_path_is_shadowed(
         {
             "PATH": f"{stub_directory}:/usr/bin:/bin",
             "LOCALOCR_TEST_PATH_SWIFT_MARKER": str(shim_marker),
+            "LOCALOCR_TEST_SOURCE_BINARY": str(source_fixture),
+            "LOCALOCR_TEST_PINNED_SWIFT_TRACE": str(pinned_trace),
         }
     )
 
     result = subprocess.run(
         [
-            str(SCRIPTS / "build-native-tools.sh"),
+            str(isolated_scripts / "build-native-tools.sh"),
             "--artifact-dir",
-            str(ROOT / "dist" / "direct-release" / "native-tools"),
+            str(artifact_dir),
         ],
-        cwd=ROOT,
+        cwd=isolated_repo,
         check=False,
         capture_output=True,
         text=True,
@@ -4133,6 +4181,11 @@ def test_native_build_uses_stable_xcode_swift_when_path_is_shadowed(
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert not shim_marker.exists(), "native build selected swift from PATH"
+    assert pinned_trace.read_text().splitlines() == list(EXPECTED_HELPERS)
+    assert sorted(path.name for path in artifact_dir.iterdir()) == sorted(EXPECTED_HELPERS)
+    for product in EXPECTED_HELPERS:
+        assert os.access(artifact_dir / product, os.X_OK)
+        assert _macho_uuid(artifact_dir / product) == _macho_uuid(source_fixture)
 
 
 def test_native_build_rejects_post_build_pin_drift_before_atomic_publication(
@@ -5946,13 +5999,23 @@ def test_notarization_rejects_fixed_output_leaf_symlinks_without_following(
     assert outside.read_text() == "keep"
 
 
+@pytest.mark.parametrize("root_exists", (False, True))
 def test_notarization_test_mode_rejects_repo_release_root_without_mutation(
     tmp_path: Path,
+    root_exists: bool,
 ) -> None:
+    isolated_repo = tmp_path / "repo"
+    isolated_scripts = isolated_repo / "scripts"
+    isolated_scripts.mkdir(parents=True)
+    for name in ("notarize-direct-release.sh", "verify-direct-release.sh", "release-toolchain.sh"):
+        shutil.copy2(SCRIPTS / name, isolated_scripts / name)
     submission_json = tmp_path / "submission-result.json"
     trace_file = tmp_path / "notarization-trace.txt"
-    release_root = ROOT / "dist" / "direct-release"
-    existed_before = release_root.exists()
+    release_root = isolated_repo / "dist" / "direct-release"
+    if root_exists:
+        release_root.mkdir(parents=True)
+        (release_root / "keep.txt").write_text("keep controlled release fixture unchanged")
+    assert release_root.exists() == root_exists
     tree_before = (
         sorted(
             (
@@ -5963,7 +6026,7 @@ def test_notarization_test_mode_rejects_repo_release_root_without_mutation(
             )
             for path in release_root.rglob("*")
         )
-        if existed_before
+        if root_exists
         else []
     )
     submission_json.write_text(
@@ -5978,17 +6041,21 @@ def test_notarization_test_mode_rejects_repo_release_root_without_mutation(
         }
     )
 
-    result = _run_script_test(
-        "notarize",
-        "--test-workflow",
-        str(submission_json),
-        extra_arguments=(str(trace_file), str(release_root)),
+    result = subprocess.run(
+        ["/bin/bash", str(isolated_scripts / "notarize-direct-release.sh"),
+         "--test-workflow", str(submission_json), str(trace_file), str(release_root)],
+        check=False,
+        capture_output=True,
+        text=True,
         env=env,
     )
 
     assert result.returncode != 0
-    assert "system temporary directory" in result.stderr
-    assert release_root.exists() == existed_before
+    expected_error = ("test workflow cannot target the release repository" if root_exists
+                      else "test workflow requires a controlled temporary root")
+    assert expected_error in result.stderr
+    assert release_root.exists() == root_exists
+    assert not trace_file.exists(), "rejected root began a test notarization workflow"
     tree_after = (
         sorted(
             (
@@ -6003,6 +6070,8 @@ def test_notarization_test_mode_rejects_repo_release_root_without_mutation(
         else []
     )
     assert tree_after == tree_before
+    if root_exists:
+        assert (release_root / "keep.txt").read_text() == "keep controlled release fixture unchanged"
 
 
 def test_notarization_test_mode_rejects_unmarked_arbitrary_temp_without_mutation(
