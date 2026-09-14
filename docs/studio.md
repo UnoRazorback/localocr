@@ -164,9 +164,9 @@ download is claimed before their evidence exists.
 
 ## Compatibility and build provenance
 
-Build 8 source verification uses stable Xcode 26.6 (`17F113`), Swift 6, arm64,
-and deployment target macOS 14.0. Release-script toolchain alignment and the
-controlled macOS 27 GR target run remain pending. Final signing, notarization,
+Build 8 source verification and release scripts pin stable Xcode 26.6
+(`17F113`) at `/Applications/Xcode.app`, Swift 6, arm64, and deployment target
+macOS 14.0. The controlled macOS 27 GR target run remains pending. Final signing, notarization,
 Gatekeeper, download, and
 target-Mac facts will be added from completed evidence. Future Apple beta
 compatibility is not guaranteed; include the exact macOS version and build

@@ -87,9 +87,9 @@ Recognition uses Apple Vision and PDFKit locally. LocalOCR does not upload docum
 
 ## Compatibility and candidate provenance
 
-The Build 8 source-verification toolchain is Xcode 26.6 (`17F113`), Swift 6,
-arm64, and deployment target macOS 14.0. Release-script toolchain alignment
-and the controlled macOS 27 GR target run remain pending. Final Developer ID,
+The Build 8 source-verification and pinned release toolchain is Xcode 26.6
+(`17F113`) at `/Applications/Xcode.app`, Swift 6, arm64, and deployment target
+macOS 14.0. The controlled macOS 27 GR target run remains pending. Final Developer ID,
 Hardened Runtime,
 notarization, staple, Gatekeeper, download, and exact-build target-Mac facts
 will be added only from completed release evidence.

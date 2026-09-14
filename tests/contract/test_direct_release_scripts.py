@@ -372,7 +372,7 @@ def _install_stable_swift_fixture(repo: Path, swift_fixture: Path) -> Path:
         "set -euo pipefail\n"
         'tool="${1:-}"\n'
         "shift\n"
-        'export DEVELOPER_DIR="/Applications/Xcode-27-RC.app/Contents/Developer"\n'
+        'export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"\n'
         'exec /usr/bin/xcrun "$tool" "$@"\n'
     )
     xcrun_fixture.chmod(0o755)
@@ -380,13 +380,13 @@ def _install_stable_swift_fixture(repo: Path, swift_fixture: Path) -> Path:
     xcodebuild_fixture.write_text(
         "#!/bin/bash\n"
         "set -euo pipefail\n"
-        'export DEVELOPER_DIR="/Applications/Xcode-27-RC.app/Contents/Developer"\n'
-        'exec /Applications/Xcode-27-RC.app/Contents/Developer/usr/bin/xcodebuild "$@"\n'
+        'export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"\n'
+        'exec /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild "$@"\n'
     )
     xcodebuild_fixture.chmod(0o755)
     toolchain = repo / "scripts" / "release-toolchain.sh"
     source = toolchain.read_text()
-    original = 'release_developer_dir="/Applications/Xcode-27-RC.app/Contents/Developer"'
+    original = 'release_developer_dir="/Applications/Xcode.app/Contents/Developer"'
     replacement = f'release_developer_dir={shlex.quote(str(developer_dir))}'
     assert original in source
     toolchain.write_text(source.replace(original, replacement, 1))
@@ -1299,12 +1299,12 @@ def test_signer_rejects_arbitrary_symlink_directly(tmp_path: Path) -> None:
     assert "unexpected nested code symlink" in result.stderr
 
 
-def test_toolchain_accepts_only_pinned_xcode27_rc_path() -> None:
+def test_toolchain_accepts_only_pinned_stable_xcode_path() -> None:
     _assert_script_test_accepts(
-        "toolchain", "--test-developer-dir", "/Applications/Xcode-27-RC.app/Contents/Developer"
+        "toolchain", "--test-developer-dir", "/Applications/Xcode.app/Contents/Developer"
     )
     for developer_dir in (
-        "/Applications/Xcode.app/Contents/Developer",
+        "/Applications/Xcode-27-RC.app/Contents/Developer",
         "/Applications/Xcode-beta.app/Contents/Developer",
         "/Applications/Xcode-RC.app/Contents/Developer",
         "/Applications/Xcode Preview.app/Contents/Developer",
@@ -1314,7 +1314,14 @@ def test_toolchain_accepts_only_pinned_xcode27_rc_path() -> None:
         _assert_script_test_rejects("toolchain", "--test-developer-dir", developer_dir)
 
 
-@pytest.mark.parametrize("version, accepted", [("Xcode 27.0\nBuild version 27A266a", True), ("Xcode 26.6\nBuild version 17G100", False)])
+@pytest.mark.parametrize(
+    "version, accepted",
+    [
+        ("Xcode 26.6\nBuild version 17F113", True),
+        ("Xcode 26.6\nBuild version 17G100", False),
+        ("Xcode 27.0\nBuild version 27A266a", False),
+    ],
+)
 def test_release_xcode_version_requires_exact_build(tmp_path: Path, version: str, accepted: bool) -> None:
     developer = tmp_path / "Developer"
     executable = developer / "usr/bin/xcodebuild"

@@ -147,9 +147,9 @@ The candidate identity is version `0.3.1`, build `8`, planned tag
 `LocalOCR-Studio-0.3.1-8.sha256`. The exact release commit, ZIP SHA-256,
 notarization submission, downloaded-package verification, and target-Mac
 results must be filled from evidence after those gates pass. Build 8 source
-verification uses stable Xcode 26.6 (`17F113`) at `/Applications/Xcode.app`,
-Swift 6, arm64, and deployment target macOS 14.0. Release-script toolchain
-alignment and the macOS 27 GR target run remain separate release gates.
+verification and release scripts pin stable Xcode 26.6 (`17F113`) at
+`/Applications/Xcode.app`, Swift 6, arm64, and deployment target macOS 14.0.
+The controlled macOS 27 GR target run remains a separate acceptance gate.
 Future Apple beta compatibility is not guaranteed.
 
 See the [Build 8 acceptance record](docs/localocr-build8-acceptance-2026-09-14.md)

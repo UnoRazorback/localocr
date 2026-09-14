@@ -462,8 +462,8 @@ The package and app keep a macOS 14 deployment target; Foundation Models code
 is availability-guarded for macOS 26 or later. Prior development evidence used
 Xcode 27 RC (`27A266a`), Swift 6.3.3, and the macOS 26.5 SDK; this is historical
 provenance, not the current Build 8 source-verification toolchain. Build 8 source
-verification uses stable Xcode 26.6 (`17F113`) and its matching macOS SDK.
-Release-script toolchain alignment remains a separate pending gate. Neither
+verification and release scripts pin stable Xcode 26.6 (`17F113`) at
+`/Applications/Xcode.app` and its matching macOS SDK. Neither
 development record is a live provider or release acceptance claim.
 Signature, notarization, download, and target-Mac acceptance
 remain separate gates documented in the [Beta Tester Guide](../BETA_TESTING.md).
