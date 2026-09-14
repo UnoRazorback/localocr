@@ -39,11 +39,15 @@ public enum LlamaCppProcessProbeError: Error, Sendable {
 /// No server lifecycle controls. Process metadata is inspected through Darwin and fixed system tools.
 public struct LlamaCppProcessProbe: LlamaCppProcessProbing {
     private let cacheDirectory: URL
+    private let versionLoader: @Sendable (Int32, String) async throws -> Data
     public init() {
         cacheDirectory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/LocalOCR/llama-cpp-hashes")
+        versionLoader = Self.loadVersion
     }
-    init(cacheDirectory: URL) { self.cacheDirectory = cacheDirectory }
+    init(cacheDirectory: URL, versionLoader: @escaping @Sendable (Int32, String) async throws -> Data = Self.loadVersion) {
+        self.cacheDirectory = cacheDirectory; self.versionLoader = versionLoader
+    }
 
     public func snapshot() async throws -> LlamaCppProcessSnapshot {
         try Task.checkCancellation()
@@ -60,15 +64,7 @@ public struct LlamaCppProcessProbe: LlamaCppProcessProbing {
         let exeHash = try await cachedHash(exe)
         let modelHash = try await cachedHash(model)
         try exe.revalidate(); try model.revalidate()
-        let versionData = try await LMStudioCommandRunner(
-            // Real llama.cpp build 10909 can take over 13 seconds to report its version
-            // while a model is resident. Keep this bounded within the outer deadline.
-            commandTimeout: .seconds(30), terminationGracePeriod: .milliseconds(250),
-            cleanupBudget: .seconds(1), pipeDrainBudget: .milliseconds(250),
-            maximumOutputBytes: 16_384, captureStandardError: true
-        ).run(executableDescriptor: exe.fd, displayPath: exe.path,
-              arguments: ["--version"], environment: ["HOME=\(NSHomeDirectory())", "PATH="])
-        let version = try Self.validVersion(versionData)
+        let version = try await cachedVersion(exe)
         try exe.revalidate(); try model.revalidate()
         guard try Self.processStart(pid) == start,
               try Self.executable(pid) == executable,
@@ -184,6 +180,113 @@ public struct LlamaCppProcessProbe: LlamaCppProcessProbing {
         var env: [String] = []
         while pos < count, data[pos] != 0 { env.append(try string()) }
         return Arguments(argv: argv, environment: env)
+    }
+
+    private static func loadVersion(_ descriptor: Int32, _ path: String) async throws -> Data {
+        try await LMStudioCommandRunner(
+            // Cold attestation remains bounded even while a model is resident.
+            commandTimeout: .seconds(30), terminationGracePeriod: .milliseconds(250),
+            cleanupBudget: .seconds(1), pipeDrainBudget: .milliseconds(250),
+            maximumOutputBytes: 16_384, captureStandardError: true
+        ).run(executableDescriptor: descriptor, displayPath: path,
+              arguments: ["--version"], environment: ["HOME=\(NSHomeDirectory())", "PATH="])
+    }
+
+    func cachedVersion(_ file: PinnedLocalFile) async throws -> String {
+        try Task.checkCancellation()
+        try file.revalidate()
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let key = SHA256.hash(data: try encoder.encode(file.identity)).map { String(format: "%02x", $0) }.joined()
+        let name = key + ".version"
+        try FileManager.default.createDirectory(at: cacheDirectory.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        guard mkdir(cacheDirectory.path, 0o700) == 0 || errno == EEXIST else { throw LlamaCppProcessProbeError.unsafeFile }
+        let dirFD = Darwin.open(cacheDirectory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard dirFD >= 0 else { throw LlamaCppProcessProbeError.unsafeFile }
+        defer { Darwin.close(dirFD) }
+        try validateVersionCacheDirectory(dirFD)
+        if let version = try Self.readCachedVersion(dirFD, name) {
+            try validateVersionCacheDirectory(dirFD)
+            try file.revalidate()
+            return version
+        }
+
+        let data = try await versionLoader(file.fd, file.path)
+        try Task.checkCancellation()
+        let version: String
+        do { version = try Self.validVersion(data) }
+        catch { throw LMStudioCLIProbeError.invalidOutput }
+        let bytes = Data(version.utf8)
+        guard bytes.count <= 512 else { throw LMStudioCLIProbeError.outputTooLarge }
+        try file.revalidate()
+        try validateVersionCacheDirectory(dirFD)
+        let temporaryName = ".pending-version-" + UUID().uuidString
+        let out = openat(dirFD, temporaryName, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard out >= 0 else { throw LlamaCppProcessProbeError.unsafeFile }
+        defer { Darwin.close(out); unlinkat(dirFD, temporaryName, 0) }
+        guard bytes.withUnsafeBytes({ Darwin.write(out, $0.baseAddress, $0.count) }) == bytes.count,
+              fsync(out) == 0 else { throw LlamaCppProcessProbeError.unsafeFile }
+        try file.revalidate()
+        try validateVersionCacheDirectory(dirFD)
+        // Exclusive rename never replaces an unsafe target introduced during the loader await.
+        // Another helper may win; it must pass the identical strict reader before reuse.
+        if renameatx_np(dirFD, temporaryName, dirFD, name, UInt32(RENAME_EXCL)) != 0 {
+            guard errno == EEXIST else { throw LlamaCppProcessProbeError.unsafeFile }
+        }
+        guard fsync(dirFD) == 0,
+              let published = try Self.readCachedVersion(dirFD, name), published == version else {
+            throw LlamaCppProcessProbeError.unsafeFile
+        }
+        try validateVersionCacheDirectory(dirFD)
+        try file.revalidate()
+        return published
+    }
+
+    private func validateVersionCacheDirectory(_ fd: Int32) throws {
+        var opened = stat(); var current = stat()
+        guard fstat(fd, &opened) == 0, lstat(cacheDirectory.path, &current) == 0,
+              opened.st_mode & S_IFMT == S_IFDIR, current.st_mode & S_IFMT == S_IFDIR,
+              opened.st_uid == getuid(), current.st_uid == getuid(),
+              opened.st_mode & 0o077 == 0, current.st_mode & 0o077 == 0,
+              opened.st_dev == current.st_dev, opened.st_ino == current.st_ino,
+              cacheDirectory.resolvingSymlinksInPath().path == cacheDirectory.standardizedFileURL.path else {
+            throw LlamaCppProcessProbeError.unsafeFile
+        }
+    }
+
+    private static func readCachedVersion(_ directory: Int32, _ name: String) throws -> String? {
+        // NONBLOCK ensures a FIFO substituted for an entry cannot hang the helper.
+        let fd = openat(directory, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        if fd < 0 {
+            guard errno == ENOENT else { throw LlamaCppProcessProbeError.unsafeFile }
+            return nil
+        }
+        defer { Darwin.close(fd) }
+        var before = stat(); var after = stat(); var current = stat()
+        guard fstat(fd, &before) == 0, versionCacheMetadataIsSafe(before) else {
+            throw LlamaCppProcessProbeError.unsafeFile
+        }
+        var bytes = [UInt8](repeating: 0, count: 513)
+        let count = Darwin.read(fd, &bytes, bytes.count)
+        guard count == before.st_size,
+              fstat(fd, &after) == 0, versionCacheMetadataIsSafe(after),
+              fstatat(directory, name, &current, AT_SYMLINK_NOFOLLOW) == 0, versionCacheMetadataIsSafe(current),
+              before.st_dev == current.st_dev, before.st_ino == current.st_ino,
+              before.st_size == after.st_size, before.st_size == current.st_size,
+              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec, before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec, before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+              before.st_mtimespec.tv_sec == current.st_mtimespec.tv_sec, before.st_mtimespec.tv_nsec == current.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == current.st_ctimespec.tv_sec, before.st_ctimespec.tv_nsec == current.st_ctimespec.tv_nsec,
+              let version = try? validVersion(Data(bytes.prefix(count))),
+              Data(version.utf8) == Data(bytes.prefix(count)) else {
+            throw LlamaCppProcessProbeError.unsafeFile
+        }
+        return version
+    }
+
+    static func versionCacheMetadataIsSafe(_ metadata: stat) -> Bool {
+        metadata.st_mode & S_IFMT == S_IFREG && metadata.st_uid == getuid() &&
+            metadata.st_mode & 0o077 == 0 && metadata.st_nlink == 1 &&
+            metadata.st_size > 0 && metadata.st_size <= 512
     }
 
     func cachedHash(_ file: PinnedLocalFile) async throws -> String {

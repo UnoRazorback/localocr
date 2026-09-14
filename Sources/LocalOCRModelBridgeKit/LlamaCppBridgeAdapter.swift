@@ -251,6 +251,15 @@ public struct LlamaCppBridgeAdapter: Sendable {
 
     static func errorCode(_ error: any Error) -> ModelBridgeWireErrorCode {
         if error is CancellationError { return .cancelled }
+        if let e = error as? LMStudioCLIProbeError {
+            switch e {
+            case .timedOut: return .generationTimedOut
+            case .cancelled: return .cancelled
+            case .outputTooLarge, .invalidOutput: return .providerResponseInvalid
+            case .commandFailed, .missingExecutable: return .providerUnavailable
+            case .unsafeExecutable: return .localityBlocked
+            }
+        }
         if let e = error as? LlamaCppBridgeError {
             switch e {
             case .invalidProviderResponse: return .providerResponseInvalid

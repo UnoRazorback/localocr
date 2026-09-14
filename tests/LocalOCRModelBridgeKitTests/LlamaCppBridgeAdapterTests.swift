@@ -6,6 +6,18 @@ import Testing
 
 @Suite("Verified local llama.cpp adapter")
 struct LlamaCppBridgeAdapterTests {
+    @Test func commandOperationalErrorsDoNotClaimLocalityChanged() {
+        let cases: [(LMStudioCLIProbeError, ModelBridgeWireErrorCode)] = [
+            (.timedOut, .generationTimedOut), (.cancelled, .cancelled),
+            (.outputTooLarge, .providerResponseInvalid), (.invalidOutput, .providerResponseInvalid),
+            (.commandFailed, .providerUnavailable), (.missingExecutable, .providerUnavailable),
+            (.unsafeExecutable, .localityBlocked)
+        ]
+        for (error, expected) in cases {
+            #expect(LlamaCppBridgeAdapter.errorCode(error) == expected, "error: \(error)")
+        }
+    }
+
     private let approvedGPTOSSFingerprint = "582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d"
     private let snapshot = LlamaCppProcessSnapshot(
         alias: "fixture", modelPath: "/models/fixture.gguf", fingerprint: String(repeating: "a", count: 64),

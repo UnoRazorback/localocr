@@ -1,9 +1,169 @@
 import Foundation
 import CryptoKit
+import Darwin
 import Testing
 @testable import LocalOCRModelBridgeKit
 
 struct LlamaCppProcessProbeTests {
+    @Test func twentyIndependentProbesReuseAttestedVersionAndChangedIdentityMisses() async throws {
+        let fixture = try VersionCacheFixture()
+        defer { fixture.remove() }
+        let loader = VersionLoaderCounter()
+        for _ in 0..<20 {
+            let pinned = try PinnedLocalFile(fixture.executable.path, executable: true)
+            let version = try await LlamaCppProcessProbe(cacheDirectory: fixture.cache,
+                versionLoader: { fd, path in try await loader.load(fd, path) }).cachedVersion(pinned)
+            #expect(version == "version: 10909 (a2878d30d)")
+        }
+        #expect(await loader.calls == 1)
+        let pinned = try PinnedLocalFile(fixture.executable.path, executable: true)
+        let entry = try fixture.entry(pinned)
+        let before = try FileManager.default.attributesOfItem(atPath: entry.path)
+        _ = try await LlamaCppProcessProbe(cacheDirectory: fixture.cache,
+            versionLoader: { fd, path in try await loader.load(fd, path) }).cachedVersion(pinned)
+        let after = try FileManager.default.attributesOfItem(atPath: entry.path)
+        #expect(before[.systemFileNumber] as? NSNumber == after[.systemFileNumber] as? NSNumber)
+        #expect(before[.modificationDate] as? Date == after[.modificationDate] as? Date)
+        try fixture.replaceExecutable()
+        let changed = try PinnedLocalFile(fixture.executable.path, executable: true)
+        #expect(try await LlamaCppProcessProbe(cacheDirectory: fixture.cache,
+            versionLoader: { fd, path in try await loader.load(fd, path) }).cachedVersion(changed) == "version: 10909 (a2878d30d)")
+        #expect(await loader.calls == 2)
+    }
+
+    @Test func invalidLoaderResultAndMidLoadExecutableReplacementNeverPublish() async throws {
+        for kind in ["malformed", "oversized", "identity", "cancelled", "timedOut"] {
+            let fixture = try VersionCacheFixture()
+            defer { fixture.remove() }
+            let pinned = try PinnedLocalFile(fixture.executable.path, executable: true)
+            let probe = LlamaCppProcessProbe(cacheDirectory: fixture.cache, versionLoader: { _, _ in
+                if kind == "identity" { try fixture.replaceExecutable() }
+                if kind == "cancelled" { throw LMStudioCLIProbeError.cancelled }
+                if kind == "timedOut" { throw LMStudioCLIProbeError.timedOut }
+                if kind == "malformed" { return Data("version: garbage".utf8) }
+                if kind == "oversized" { return Data(("version: " + String(repeating: "1", count: 500) + " (abcdef0)").utf8) }
+                return Data("version: 10909 (a2878d30d)".utf8)
+            })
+            await #expect(throws: (any Error).self) { try await probe.cachedVersion(pinned) }
+            #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.cache.path).isEmpty)
+        }
+    }
+
+    @Test func unsafeTargetAppearingDuringLoadIsNotOverwritten() async throws {
+        let fixture = try VersionCacheFixture()
+        defer { fixture.remove() }
+        let pinned = try PinnedLocalFile(fixture.executable.path, executable: true)
+        let entry = try fixture.entry(pinned)
+        let target = fixture.root.appendingPathComponent("target")
+        try Data("untouched".utf8).write(to: target)
+        let probe = LlamaCppProcessProbe(cacheDirectory: fixture.cache, versionLoader: { _, _ in
+            try FileManager.default.createSymbolicLink(at: entry, withDestinationURL: target)
+            return Data("version: 10909 (a2878d30d)".utf8)
+        })
+        await #expect(throws: (any Error).self) { try await probe.cachedVersion(pinned) }
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: entry.path) == target.path)
+        #expect(try String(contentsOf: target, encoding: .utf8) == "untouched")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.cache.path).count == 1)
+    }
+
+    @Test func anotherHelperWinningPublicationIsValidatedAndNeverRewritten() async throws {
+        let fixture = try VersionCacheFixture()
+        defer { fixture.remove() }
+        let pinned = try PinnedLocalFile(fixture.executable.path, executable: true)
+        let entry = try fixture.entry(pinned)
+        let winner = VersionCacheWinner()
+        let probe = LlamaCppProcessProbe(cacheDirectory: fixture.cache, versionLoader: { _, _ in
+            // The outer helper has already observed ENOENT. Publish from a separate
+            // helper before it returns, deterministically exercising the EEXIST path.
+            let otherPinned = try PinnedLocalFile(fixture.executable.path, executable: true)
+            _ = try await LlamaCppProcessProbe(cacheDirectory: fixture.cache, versionLoader: { _, _ in
+                Data("version: 10909 (a2878d30d)".utf8)
+            }).cachedVersion(otherPinned)
+            try await winner.record(entry)
+            return Data("version: 10909 (a2878d30d)".utf8)
+        })
+        #expect(try await probe.cachedVersion(pinned) == "version: 10909 (a2878d30d)")
+        let attributes = try FileManager.default.attributesOfItem(atPath: entry.path)
+        #expect(attributes[.systemFileNumber] as? NSNumber == (await winner.inode))
+        #expect(attributes[.modificationDate] as? Date == (await winner.modified))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.cache.path).count == 1)
+    }
+
+    @Test func unsafeCacheDirectoryIsNotRepairedOrUsed() async throws {
+        let fixture = try VersionCacheFixture()
+        defer { fixture.remove() }
+        #expect(chmod(fixture.cache.path, 0o755) == 0)
+        let pinned = try PinnedLocalFile(fixture.executable.path, executable: true)
+        let loader = VersionLoaderCounter()
+        await #expect(throws: (any Error).self) {
+            try await LlamaCppProcessProbe(cacheDirectory: fixture.cache,
+                versionLoader: { fd, path in try await loader.load(fd, path) }).cachedVersion(pinned)
+        }
+        #expect(await loader.calls == 0)
+        #expect(try FileManager.default.attributesOfItem(atPath: fixture.cache.path)[.posixPermissions] as? NSNumber == 0o755)
+    }
+
+    @Test func cacheMetadataRejectsAnotherOwnerEvenWithOtherwiseSafeMetadata() {
+        // An unprivileged test cannot chown a real file to another user. Exercise the
+        // same stat validator used before and after reads, changing only the owner.
+        var metadata = stat()
+        metadata.st_mode = mode_t(S_IFREG | 0o600)
+        metadata.st_uid = getuid()
+        metadata.st_nlink = 1
+        metadata.st_size = 24
+        #expect(LlamaCppProcessProbe.versionCacheMetadataIsSafe(metadata))
+        metadata.st_uid = getuid() == 0 ? 1 : 0
+        #expect(!LlamaCppProcessProbe.versionCacheMetadataIsSafe(metadata))
+    }
+
+    @Test func unsafeVersionCacheEntriesFailClosedWithoutLoadingOrRewriting() async throws {
+        for kind in ["empty", "oversized", "malformed", "symlink", "hardlink", "mode", "directory", "fifo"] {
+            let fixture = try VersionCacheFixture()
+            defer { fixture.remove() }
+            let pinned = try PinnedLocalFile(fixture.executable.path, executable: true)
+            let entry = try fixture.entry(pinned)
+            let target = fixture.root.appendingPathComponent("target")
+            let valid = Data("version: 10909 (a2878d30d)".utf8)
+            try valid.write(to: target)
+            #expect(chmod(target.path, 0o600) == 0)
+            switch kind {
+            case "symlink": try FileManager.default.createSymbolicLink(at: entry, withDestinationURL: target)
+            case "hardlink": #expect(link(target.path, entry.path) == 0)
+            case "directory": try FileManager.default.createDirectory(at: entry, withIntermediateDirectories: false)
+            case "fifo": #expect(mkfifo(entry.path, 0o600) == 0)
+            default:
+                let oversized = Data(("version: " + String(repeating: "1", count: 494) + " (abcdef0)").utf8)
+                let bytes = kind == "empty" ? Data() : kind == "oversized" ? oversized : kind == "malformed" ? Data("version: garbage".utf8) : valid
+                try bytes.write(to: entry)
+                #expect(chmod(entry.path, kind == "mode" ? 0o644 : 0o600) == 0)
+            }
+            let before = try FileManager.default.attributesOfItem(atPath: entry.path)
+            let loader = VersionLoaderCounter()
+            await #expect(throws: (any Error).self) {
+                try await LlamaCppProcessProbe(cacheDirectory: fixture.cache,
+                    versionLoader: { fd, path in try await loader.load(fd, path) }).cachedVersion(pinned)
+            }
+            #expect(await loader.calls == 0, "unsafe entry: \(kind)")
+            let after = try FileManager.default.attributesOfItem(atPath: entry.path)
+            #expect(before[.systemFileNumber] as? NSNumber == after[.systemFileNumber] as? NSNumber)
+            #expect(before[.modificationDate] as? Date == after[.modificationDate] as? Date)
+            #expect(try Data(contentsOf: target) == valid)
+        }
+    }
+
+    @Test func changedPinnedExecutableCannotUseWarmVersion() async throws {
+        let fixture = try VersionCacheFixture()
+        defer { fixture.remove() }
+        let pinned = try PinnedLocalFile(fixture.executable.path, executable: true)
+        let loader = VersionLoaderCounter()
+        let probe = LlamaCppProcessProbe(cacheDirectory: fixture.cache,
+            versionLoader: { fd, path in try await loader.load(fd, path) })
+        _ = try await probe.cachedVersion(pinned)
+        try fixture.replaceExecutable()
+        await #expect(throws: (any Error).self) { try await probe.cachedVersion(pinned) }
+        #expect(await loader.calls == 1)
+    }
+
     let good = ["llama-server", "--model", "/local/test.gguf", "--alias", "test", "--host", "127.0.0.1", "--port", "8080", "--no-webui", "--jinja", "--reasoning", "off"]
     @Test func explicitLocalArguments() throws {
         #expect(try LlamaCppProcessProbe.parseArguments(good).alias == "test")
@@ -112,4 +272,47 @@ struct LlamaCppProcessProbeTests {
         #expect(try String(contentsOf: target, encoding: .utf8) == hash)
     }
 
+}
+
+private struct VersionCacheFixture {
+    let root: URL
+    var executable: URL { root.appendingPathComponent("llama-server") }
+    var cache: URL { root.appendingPathComponent("cache") }
+    init() throws {
+        root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try replaceExecutable()
+    }
+    func replaceExecutable() throws {
+        // Mach-O magic permits pinning; injected loader never executes this fixture.
+        try (Data([0xcf, 0xfa, 0xed, 0xfe]) + Data(UUID().uuidString.utf8)).write(to: executable, options: .atomic)
+        guard chmod(executable.path, 0o700) == 0 else { throw CocoaError(.fileWriteNoPermission) }
+    }
+    func entry(_ pinned: PinnedLocalFile) throws -> URL {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let key = SHA256.hash(data: try encoder.encode(pinned.identity)).map { String(format: "%02x", $0) }.joined()
+        return cache.appendingPathComponent(key + ".version")
+    }
+    func remove() { try? FileManager.default.removeItem(at: root) }
+}
+
+private actor VersionLoaderCounter {
+    var calls = 0
+    func load(_ fd: Int32, _ path: String) throws -> Data {
+        calls += 1
+        var st = stat()
+        #expect(fstat(fd, &st) == 0)
+        #expect(URL(fileURLWithPath: path).lastPathComponent == "llama-server")
+        return Data("version: 10909 (a2878d30d)\nbuilt with clang\n".utf8)
+    }
+}
+
+private actor VersionCacheWinner {
+    var inode: NSNumber?
+    var modified: Date?
+    func record(_ url: URL) throws {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        inode = attributes[.systemFileNumber] as? NSNumber
+        modified = attributes[.modificationDate] as? Date
+    }
 }
