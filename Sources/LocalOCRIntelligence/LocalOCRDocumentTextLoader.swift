@@ -20,11 +20,17 @@ public struct LocalOCRDocumentTextLoader: DocumentTextLoading {
     public func load(_ sourceURL: URL) async throws -> IntelligenceDocument {
         if sourceURL.pathExtension.caseInsensitiveCompare("pdf") == .orderedSame {
             let response = try await service.ocrPDF(
-                PDFOCRRequest(fileURL: sourceURL, includeLines: false)
+                PDFOCRRequest(fileURL: sourceURL, includeLines: true)
             )
             return IntelligenceDocument(
                 pages: response.pages.map { page in
-                    IntelligenceSourcePage(number: page.page, text: page.text)
+                    let text: String
+                    if page.method == .visionOCR, let lines = page.lines, !lines.isEmpty {
+                        text = OCRLayoutTextAssembler.text(for: lines, fallback: page.text)
+                    } else {
+                        text = page.text
+                    }
+                    return IntelligenceSourcePage(number: page.page, text: text)
                 }
             )
         }

@@ -20,8 +20,40 @@ import Testing
             .init(number: 2, text: "second"),
         ])
         #expect(await service.lastPDFRequest?.fileURL.path == "/tmp/input.PDF")
-        #expect(await service.lastPDFRequest?.includeLines == false)
+        #expect(await service.lastPDFRequest?.includeLines == true)
         #expect(await service.operationCount == 1)
+    }
+
+    // Catches a change that rewrites searchable-PDF text or ignores Vision line layout.
+    @Test func pdfUsesLayoutAssemblyOnlyForVisionPagesWithLines() async throws {
+        let service = RecordingService(pdfPages: [
+            .init(
+                page: 1,
+                text: "Native PDF text stays authoritative.",
+                method: .existingText,
+                lines: [
+                    .init(text: "Do not use this", confidence: 0.99, x: 0.05, y: 0.70, width: 0.30, height: 0.08),
+                ]
+            ),
+            .init(
+                page: 2,
+                text: "flat Vision OCR text",
+                method: .visionOCR,
+                lines: [
+                    .init(text: "$2,000.00", confidence: 0.99, x: 0.72, y: 0.64, width: 0.16, height: 0.08),
+                    .init(text: "Equipment", confidence: 0.99, x: 0.05, y: 0.63, width: 0.16, height: 0.10),
+                    .init(text: "Lift and delivery", confidence: 0.99, x: 0.29, y: 0.65, width: 0.31, height: 0.08),
+                ]
+            ),
+        ])
+
+        let document = try await LocalOCRDocumentTextLoader(service: service)
+            .load(URL(fileURLWithPath: "/tmp/input.pdf"))
+
+        #expect(document.pages == [
+            .init(number: 1, text: "Native PDF text stays authoritative."),
+            .init(number: 2, text: "Equipment | Lift and delivery | $2,000.00"),
+        ])
     }
 
     @Test func imageLoadsRecognizedTextAsPageOne() async throws {
