@@ -220,6 +220,12 @@ git commit -m "Prepare LocalOCR 0.3.1 build 8 acceptance"
 ### Task 5: Verify, sign, and notarize the private Build 8 candidate
 
 **Files:**
+- Modify: `scripts/release-toolchain.sh`
+- Modify: `tests/contract/test_direct_release_scripts.py`
+- Modify: `README.md`
+- Modify: `BETA_TESTING.md`
+- Modify: `docs/studio.md`
+- Modify: `docs/mcp.md`
 - Create: `work/localocr-build8-acceptance/` evidence through existing scripts; keep machine evidence outside source commits.
 - Modify: `docs/localocr-build8-acceptance-2026-09-14.md` only with content-free final outcomes and durable evidence locations.
 
@@ -227,27 +233,35 @@ git commit -m "Prepare LocalOCR 0.3.1 build 8 acceptance"
 - Consumes: Task 4 HEAD and the existing native build, release staging, signing, notarization, download-test, privacy, and policy workflows.
 - Produces: a signed/notarized/stapled private ZIP, SHA-256 file, exact source commit, notarization UUID, and extracted-artifact verification.
 
-- [ ] **Step 1: Record the stable toolchain and clean source identity**
+- [ ] **Step 1: Write a failing stable-release-toolchain contract test**
+
+Change the release-toolchain contract fixtures to require `/Applications/Xcode.app/Contents/Developer` and exact `xcodebuild -version` output `Xcode 26.6\nBuild version 17F113`. Keep rejection tests for symlinked/missing developer directories, mismatched builds, PATH shims, changed loaded code, and absolute tool paths. Run the focused test before implementation and require failure on the old Xcode 27 RC pin.
+
+- [ ] **Step 2: Align the release workflow to stable Xcode 26.6**
+
+Change only the release developer-directory and exact-version pins plus corresponding user-facing current toolchain copy. Preserve descriptor-pinned execution, loaded-code checks, Swift backend flags, SDK derivation from the pinned Xcode, and all rejection paths. Rerun the focused release-toolchain tests and require PASS.
+
+- [ ] **Step 3: Record the stable toolchain and clean source identity**
 
 Record `git status --short`, `git rev-parse HEAD`, `xcode-select -p`, `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -version`, `sw_vers`, and the Developer ID identity inventory into the Build 8 evidence directory. Require a clean tracked source tree and Xcode 26.6 build `17F113` or stop and document the new stable version instead of silently switching toolchains.
 
-- [ ] **Step 2: Run complete source verification sequentially**
+- [ ] **Step 4: Run complete source verification sequentially**
 
 With `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` and the matching SDK, run full `swift test`, the full Python suite, native helper build and smoke scripts, style/privacy/policy inventories, and Studio project tests sequentially. Rerun any baseline-only flaky cleanup test separately and record both outcomes without rewriting the original full-run result.
 
-- [ ] **Step 3: Build and stage the unsigned app**
+- [ ] **Step 5: Build and stage the unsigned app**
 
 Use the existing build/stage scripts with `LOCALOCR_RELEASE_VERSION=0.3.1` and `LOCALOCR_RELEASE_BUILD=8`. Verify exact bundle version/build, app identifier, three-helper inventory, architecture, Hardened Runtime configuration, and absence of prohibited entitlements before signing.
 
-- [ ] **Step 4: Sign nested code first and containing app last**
+- [ ] **Step 6: Sign nested code first and containing app last**
 
 Use Developer Team `DZ8B5454ZN` and the installed Developer ID Application identity. Run `scripts/sign-direct-release.sh`; verify each of `localocr`, `localocr-mcp`, `localocr-model-bridge`, the main executable, and the containing app with strict codesign checks and required activity entitlements only on the approved producer binaries.
 
-- [ ] **Step 5: Notarize, staple, and verify a fresh archive**
+- [ ] **Step 7: Notarize, staple, and verify a fresh archive**
 
 Use the existing Air `localocr-notary` Keychain profile with `scripts/notarize-direct-release.sh`. Preserve the submission UUID and Accepted result, staple the ticket, run `spctl`, reject absolute Xcode RPATHs and non-Apple/non-system helper dependencies, create `LocalOCR-Studio-0.3.1-8.zip` plus `.sha256`, extract a fresh copy, and rerun signature, ticket, Gatekeeper, helper-inventory, dependency, RPATH, and checksum verification.
 
-- [ ] **Step 6: Append source review evidence and commit the content-free acceptance record**
+- [ ] **Step 8: Append source review evidence and commit the content-free acceptance record**
 
 Append exact commands/outcomes, source commit, ZIP hash, notarization UUID, and limitations to `docs/localocr-build8-acceptance-2026-09-14.md`. Do not include credentials, document text, paths to private models, or claim real-model qualification. Commit only that tracked acceptance-doc update.
 
