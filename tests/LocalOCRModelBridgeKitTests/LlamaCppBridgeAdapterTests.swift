@@ -88,6 +88,36 @@ struct LlamaCppBridgeAdapterTests {
         #expect(response.identity == identity)
     }
 
+    @Test func acceptsAttestedGPTOSSReasoningAtTheExactMultibyteUTF8Limit() async throws {
+        let exactLimit = String(repeating: "€", count: 21_845) + "x"
+        #expect(exactLimit.utf8.count == 65_536)
+        #expect(exactLimit.count == 21_846)
+        let http = LlamaHTTP(mutation: "gpt_reasoning_multibyte_at_limit")
+        let adapter = LlamaCppBridgeAdapter(http: http, probe: LlamaProbe(snapshot: approvedGPTOSSSnapshot))
+        let identity = try #require(try await adapter.discover().first?.identity)
+
+        let response = await adapter.generate(.generate(id: 1, expectedIdentity: identity,
+            operation: .summarize, prompt: "Page 1: Fixture."))
+
+        #expect(response.error == nil)
+        #expect(response.payloadJSON == "{\"items\":[]}")
+    }
+
+    @Test func rejectsAttestedGPTOSSReasoningOneMultibyteUTF8ByteOverTheLimit() async throws {
+        let oneByteOver = String(repeating: "€", count: 21_845) + "xx"
+        #expect(oneByteOver.utf8.count == 65_537)
+        #expect(oneByteOver.count == 21_847)
+        let http = LlamaHTTP(mutation: "gpt_reasoning_multibyte_one_byte_over")
+        let adapter = LlamaCppBridgeAdapter(http: http, probe: LlamaProbe(snapshot: approvedGPTOSSSnapshot))
+        let identity = try #require(try await adapter.discover().first?.identity)
+
+        let response = await adapter.generate(.generate(id: 1, expectedIdentity: identity,
+            operation: .summarize, prompt: "Page 1: Fixture."))
+
+        #expect(response.error?.code == .schemaFailure)
+        #expect(response.payloadJSON == nil)
+    }
+
     @Test func attestedGPTOSSStillRejectsMalformedReasoningAndResponses() async throws {
         for mutation in [
             "gpt_reasoning_not_string", "gpt_reasoning_too_long", "gpt_finish_missing", "gpt_finish_non_stop",
@@ -214,8 +244,10 @@ private actor LlamaHTTP: LoopbackHTTPPerforming {
             if isGPTMutation { message["reasoning_content"] = "private reasoning" }
             if mutation == "gpt_reasoning_not_string" { message["reasoning_content"] = 1 }
             if mutation == "gpt_reasoning_too_long" { message["reasoning_content"] = String(repeating: "x", count: 65_537) }
+            if mutation == "gpt_reasoning_multibyte_at_limit" { message["reasoning_content"] = String(repeating: "€", count: 21_845) + "x" }
+            if mutation == "gpt_reasoning_multibyte_one_byte_over" { message["reasoning_content"] = String(repeating: "€", count: 21_845) + "xx" }
             if mutation == "message_extra" || mutation == "gpt_message_extra" { message["refusal"] = NSNull() }
-            if mutation == "think" || mutation == "gpt_think" { message["content"] = "{\"items\":[]}<think>private reasoning</think>" }
+            if mutation == "think" || mutation == "gpt_think" { message["content"] = "{\"items\":[{\"text\":\"<think>private reasoning</think>\",\"page\":1,\"evidence\":\"Fixture\"}]}" }
             if mutation == "invalid_json" || mutation == "gpt_invalid_json" { message["content"] = "{\"items\":[}" }
             if mutation == "gpt_tool" { message["tool_calls"] = [] }
             var choice: [String: Any] = ["index": 0, "message": message, "finish_reason": mutation == "finish_non_stop" || mutation == "gpt_finish_non_stop" ? "length" : "stop"]
