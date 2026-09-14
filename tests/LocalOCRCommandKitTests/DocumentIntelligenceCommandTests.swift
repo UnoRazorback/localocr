@@ -45,7 +45,7 @@ import Testing
         }
     }
 
-    @Test func sharedPDFLoaderUsesNativeFirstServiceDefaults() async throws {
+    @Test func sharedPDFLoaderUsesNativeFirstServiceDefaultsWithLayoutLines() async throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".pdf")
         try Data("abc".utf8).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
@@ -56,7 +56,7 @@ import Testing
         let request = try #require(await service.recorder.lastOCRRequest())
         #expect(request.fileURL == file)
         #expect(request.forceOCR == false)
-        #expect(request.includeLines == false)
+        #expect(request.includeLines == true)
     }
 
     @Test func invalidFieldsFailBeforeLoadingAndProduceNoStdout() async {
