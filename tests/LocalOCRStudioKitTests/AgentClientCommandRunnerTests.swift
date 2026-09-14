@@ -40,9 +40,11 @@ import Testing
         }
     }
 
-    @Test func timeoutTerminatesAndReapsChild() async throws {
+    @Test(arguments: [0, 300])
+    func timeoutTerminatesAndReapsChild(startupDelayMilliseconds: Int) async throws {
         let fixture = try RunnerFixture(script: """
         #!/bin/sh
+        /bin/sleep \(Double(startupDelayMilliseconds) / 1_000)
         printf '%s' "$$" > "$LOCALOCR_PID_FILE"
         while true; do sleep 1; done
         """)
@@ -51,12 +53,19 @@ import Testing
             executableURL: fixture.executableURL,
             environment: ["LOCALOCR_PID_FILE": pidFile.path, "PATH": "/usr/bin:/bin"]
         )
+        // Allow bounded fixture startup before testing timeout-driven reaping.
+        // A 150 ms deadline could kill the shell before it recorded its PID.
+        let commandTimeout = Duration.seconds(2)
+        let task = Task {
+            try await AgentClientCommandRunner().run(spec, timeout: commandTimeout)
+        }
+        defer { task.cancel() }
+        let pid = try await fixture.waitForPID(in: pidFile, timeout: commandTimeout)
 
         await #expect(throws: AgentClientCommandRunnerError.timedOut) {
-            try await AgentClientCommandRunner().run(spec, timeout: .milliseconds(150))
+            try await task.value
         }
 
-        let pid = try await fixture.waitForPID(in: pidFile)
         #expect(kill(pid, 0) == -1)
         #expect(errno == ESRCH)
     }
@@ -111,8 +120,10 @@ private struct RunnerFixture {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
     }
 
-    func waitForPID(in file: URL) async throws -> pid_t {
-        for _ in 0..<100 {
+    func waitForPID(in file: URL, timeout: Duration = .seconds(1)) async throws -> pid_t {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
             if let text = try? String(contentsOf: file, encoding: .utf8),
                let pid = pid_t(text)
             {

@@ -779,9 +779,13 @@ struct LMStudioCLIProbeTests {
         #expect(overflowCapture.exceededLimit)
     }
 
-    @Test
-    func immediateUnobservableEscapeFailsClosedWithoutClaimingContainment() async throws {
-        let fixture = try EscapedPipeExecutionFixture()
+    @Test(arguments: [0, 300])
+    func immediateUnobservableEscapeFailsClosedWithoutClaimingContainment(
+        startupDelayMilliseconds: Int
+    ) async throws {
+        let fixture = try EscapedPipeExecutionFixture(
+            startupDelayMilliseconds: startupDelayMilliseconds
+        )
         defer { fixture.remove() }
         let executableFD = Darwin.open(
             fixture.executableURL.path,
@@ -789,25 +793,33 @@ struct LMStudioCLIProbeTests {
         )
         #expect(executableFD >= 0)
         defer { Darwin.close(executableFD) }
+        // Keep startup allowance separate from the original post-deadline
+        // cleanup bound (1 second total minus the old 200 ms command budget).
+        let commandTimeout = Duration.seconds(2)
+        let cleanupAllowance = Duration.milliseconds(800)
         let clock = ContinuousClock()
-        let start = clock.now
-
-        await #expect(throws: LMStudioCLIProbeError.commandFailed) {
-            try await fixture.runner().run(
+        let commandDeadline = clock.now.advanced(by: commandTimeout)
+        let task = Task {
+            try await fixture.runner(timeout: commandTimeout).run(
                 executableDescriptor: executableFD,
                 displayPath: fixture.executableURL.path,
                 arguments: ["--version"],
                 environment: ["HOME=\(fixture.root.path)", "PATH="]
             )
         }
-
-        #expect(start.duration(to: clock.now) < .seconds(1))
-        let escapedPID = try fixture.escapedProcessID()
-        #expect(kill(escapedPID, 0) == 0)
+        defer { task.cancel() }
+        let escapedPID = try await fixture.waitForEscapedProcessID(timeout: commandTimeout)
         defer {
             _ = kill(escapedPID, SIGKILL)
             _ = kill(-escapedPID, SIGKILL)
         }
+
+        await #expect(throws: LMStudioCLIProbeError.commandFailed) {
+            try await task.value
+        }
+
+        #expect(commandDeadline.duration(to: clock.now) < cleanupAllowance)
+        #expect(kill(escapedPID, 0) == 0)
         var reusePipes = try makeNonblockingReusePipes(count: 64)
         defer { closeReusePipes(&reusePipes) }
         for pipe in reusePipes {
@@ -1797,7 +1809,7 @@ private struct EscapedPipeExecutionFixture {
     var root: URL { scriptFixture.root }
     var executableURL: URL { scriptFixture.executableURL }
 
-    init() throws {
+    init(startupDelayMilliseconds: Int) throws {
         let scriptFixture = try RunnerScriptFixture(prefix: "lmstudio-escaped-pipes")
         self.scriptFixture = scriptFixture
         escapedPIDURL = scriptFixture.root.appendingPathComponent("escaped.pid")
@@ -1810,6 +1822,7 @@ private struct EscapedPipeExecutionFixture {
         #include <stdio.h>
         #include <unistd.h>
         int main(void) {
+          usleep(\(startupDelayMilliseconds * 1_000));
           pid_t child = fork();
           if (child < 0) return 1;
           if (child > 0) return 0;
@@ -1847,9 +1860,9 @@ private struct EscapedPipeExecutionFixture {
         """)
     }
 
-    func runner() -> LMStudioCommandRunner {
+    func runner(timeout: Duration) -> LMStudioCommandRunner {
         scriptFixture.runner(
-            timeout: .milliseconds(200),
+            timeout: timeout,
             cleanupBudget: .milliseconds(300),
             pipeDrainBudget: .milliseconds(100)
         )
@@ -1864,6 +1877,16 @@ private struct EscapedPipeExecutionFixture {
             throw RunnerFixtureError.setupFailed
         }
         return pid
+    }
+
+    func waitForEscapedProcessID(timeout: Duration) async throws -> pid_t {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if let pid = try? escapedProcessID() { return pid }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        throw RunnerFixtureError.executableDidNotStart
     }
 
     func remove() { scriptFixture.remove() }
