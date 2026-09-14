@@ -1,10 +1,10 @@
-# LocalOCR 0.3.1 build 8 — source acceptance record
+# LocalOCR 0.3.1 build 8 — source and private release acceptance
 
-Date: 2026-09-14. Status: private candidate source verification only, not a
-published release or real-model acceptance. Marketing version remains `0.3.1`,
-build is `8`, and `v0.3.1-beta.1` remains a planned, unpublished tag. Planned
-assets are `LocalOCR-Studio-0.3.1-8.zip` and `.sha256`; no ZIP hash, signing,
-notarization, installation, or target acceptance is claimed here.
+Date: 2026-09-14. Status: signed, notarized, stapled private candidate verified;
+not published, installed, or accepted on the Pro/real-model target. Marketing
+version remains `0.3.1`, build is `8`, and `v0.3.1-beta.1` remains a planned,
+unpublished tag. The exact source, ZIP hash, notarization UUID, verification
+evidence, and remaining boundaries are recorded under Task 5 below.
 
 ## Source provenance
 
@@ -24,7 +24,8 @@ documentation/contract alignment. Its review fix also re-attests the approved
 source inventory, isolates two test fixtures, and clarifies historical MCP
 toolchain provenance. Resolve the latest record commit with
 `git log -1 --format=%H -- docs/localocr-build8-acceptance-2026-09-14.md`;
-the final immutable release commit must be recorded separately when building.
+the immutable artifact source commit is recorded separately under Task 5 and
+must not be confused with the later acceptance-document commit.
 
 ## Synthetic fixture evidence
 
@@ -64,7 +65,7 @@ SHA-256 of the exact fixture-bearing source files and canonical activity fixture
 The repeated `a`/`b` digest strings in the synthetic llama identity are fixture
 values, not real GGUF/executable hashes or claims about Gemma/GPT-OSS.
 
-## Commands and outcomes
+## Task 4 commands and outcomes (historical)
 
 ```sh
 swift test --filter 'Build8EnduranceAcceptanceTests|OCRLayoutTextAssemblerTests|LlamaCppBridgeAdapterTests|LlamaCppProcessProbeTests|LlamaCppQualificationTests'
@@ -139,9 +140,10 @@ complete release-verification run.
 
 Read-only local inspection found `/Applications/Xcode.app/Contents/Developer`,
 stable Xcode 26.6 (`17F113`), its `MacOSX26.5.sdk`, and macOS 27.0 build `26A428`.
-The release scripts still pin Xcode 27 RC (`27A266a`); reconciling that pin with
-the stable release requirement is a pending release-verification gate, not an
-implicit toolchain switch. The Python command requires the existing Python
+At Task 4, the release scripts still pinned Xcode 27 RC (`27A266a`). Task 5
+explicitly reconciled the pin to stable Xcode 26.6 (`17F113`) through failing
+then passing release-toolchain contracts; the RC build remains rejected.
+The Python command requires the existing Python
 3.11.16 `.venv` from the parent checkout on PATH (default Python 3.14 has no
 pytest), plus explicit stable `DEVELOPER_DIR` and matching `SDKROOT` to avoid
 mixing an older linker with the Command Line Tools macOS 27 SDK.
@@ -153,16 +155,75 @@ The GPT-OSS reasoning exception is bound to the reviewed GGUF SHA-256
 `582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d`, not an alias.
 It does not relax generic/Gemma closed-schema, grounding, or locality rules.
 
-## Remaining release and target-machine gates
+## Task 5 — verified private signed/notarized candidate
 
-- Fresh complete Swift/Python, policy/privacy, native-helper, smoke, and Studio
-  verification under the stable toolchain; retain original failures and narrow
-  reruns separately. Preserve the reviewed inventory and reconcile release
-  toolchain pins without bypasses.
-- Immutable unsigned build, exact version/build and helper inventory, then
-  separate signing, notarization, stapling, Gatekeeper, extracted-archive,
-  dependency/RPATH, and checksum verification. No publication is authorized by
-  this record.
+Artifact source commit: `a99f01127914cc323b2a8db2d6fa19e81bd2a476`, clean before
+the distinct release build. Reviewed Task 4 starting HEAD was
+`07241f33c6904a9344827a08816dc40a69c4e76a`. Task 5 source commits:
+
+- `5c9e3961b97295f49e0592e8bf26e63739ca0ad9`: stable Xcode release pin and guides.
+- `a6e057cc67d6688478287a16fa9d8695858edb86`: missed command-test expectation for
+  the reviewed OCR layout-line behavior (test only).
+- `5d83b4fe8992df10020a1afe3b264c9c210913f0`: current unpublished notes/guide
+  expectations advanced to Build 8, retaining the version/tag.
+- `a99f01127914cc323b2a8db2d6fa19e81bd2a476`: two timeout tests now establish
+  bounded PID readiness and cover delayed startup; production timeouts and
+  exact cleanup/error assertions remain unchanged.
+
+All machine evidence is retained in the ignored repository-relative directory
+`work/localocr-build8-acceptance/`. Each numbered log records its exact command,
+source commit, stable developer/SDK paths, UTC times, and exit status. Original
+failed runs are retained, not overwritten by successful reruns.
+
+| Gate | Outcome and evidence within that directory |
+| --- | --- |
+| Stable pin TDD | Expected RED in `01-toolchain-red.log`; 10 focused tests passed in `02-toolchain-green.log`; current guides passed in `03-docs-green.log` and `11-docs-green.log`. All existing rejection paths retained. |
+| Complete Python | 496 passed, 1 explicitly opt-in live-model skip, 5 existing SWIG warnings; `23-python-full.log`, source `5d83b4f`. The later source change touched only the two Swift test files. Initial stale-guide/missing-native-prerequisite failures remain in `10-python-full.log`; native prerequisite correction and 19 contract passes are in logs 12–13. |
+| Complete Swift | 913 tests/71 suites passed on clean artifact source in `40-swift-clean-commit.log`; existing opt-in live/model/cross-app cases remain skipped. Earlier full failures remain in logs 05, 16, 18, 20, 22, and 31. The two remaining startup races were reproduced with controlled delay (33), corrected test-only (34), passed 10 repetitions (35 series), both related suites (36), and another full run (37). |
+| Style/privacy/static/policy/native smoke | Passing component suites in full Swift runs; final static/native smoke and source/binary validators in logs 24–25 and 28–29. Log 26 preserves an invocation-only non-executable Python-script error; the unchanged script passed when invoked through Python. |
+| Distinct unsigned Studio build | Stable Xcode build-for-testing and separate Release build passed in `42-distinct-unsigned-build.log`; Release Hardened Runtime configuration in 43. This is not a live UI/Pro acceptance run. |
+| Fresh stage and pre-signing policy | Logs 44–45: version/build, identifier, exact three-helper inventory, arm64-only/minimum macOS 14.0, dependencies, RPATHs, source/binary policy, sanitized paths, and pre-signing entitlement inventory passed. |
+| Signing and strict inventory | Logs 46–47: helpers signed first, app last; strict signatures for each helper, main executable, and app, correct Developer ID/team, secure timestamps, Hardened Runtime, and exact entitlements passed. |
+| Notary/staple/final archive | Log 48 and `release-evidence/`: Accepted, stapled ticket validation, Gatekeeper, checksum, and script-controlled fresh extraction passed. |
+| Independent archive check | Log 50 and `private-candidate/localocr-downloaded-release-evidence-20260914T230214Z-99729.txt`: checksum, path/confinement, signatures/policy, ticket, Gatekeeper, CLI/MCP 0.3.1, synthetic two-page OCR, input immutability, and temporary cleanup all passed. |
+| Exact fresh extracted inventory | Log 53: physical `/private/tmp` extraction from the unchanged ZIP passed strict/deep signatures, ticket, Gatekeeper, CLI/MCP initialization, and exact per-code-object entitlements/dependencies/RPATHs. |
+
+Final artifact: `LocalOCR-Studio-0.3.1-8.zip`.
+SHA-256: `12834eed4c33042ecddb99ebd96bd2b8138a76340075d59465c38ff9ac8b09bd`.
+Notarization UUID: `d045f3d8-33a2-4bfb-8217-b0165d675773`, **Accepted**;
+Apple's retained log reports statusCode 0 and no issues.
+
+Durable local private copies:
+
+- `work/localocr-build8-acceptance/private-candidate/LocalOCR-Studio-0.3.1-8.zip`
+- `work/localocr-build8-acceptance/private-candidate/LocalOCR-Studio-0.3.1-8.sha256`
+- `work/localocr-build8-acceptance/release-evidence/` contains Apple submission,
+  staple, Gatekeeper, checksum, and extracted-verification evidence.
+
+The byte-identical script outputs also remain in `dist/direct-release/final/`.
+The signed identifier is `com.rayconsulting.localocr`, version `0.3.1`, build
+`8`, with exactly `localocr`, `localocr-mcp`, and `localocr-model-bridge` helpers.
+Every executable is arm64 and targets macOS 14.0. Developer ID team is
+`DZ8B5454ZN`. The only producer entitlement is the approved Local AI Activity
+application group on CLI, MCP, and main/app; the bridge has no entitlements.
+No debug entitlement or additional exception was allowed. Absolute Xcode
+RPATHs and non-system dependency paths were rejected.
+
+Preserved environmental failure: log 51 records an additional extraction into
+the synced Documents evidence workspace failing strict app codesign because
+File Provider added `com.apple.FinderInfo`/`com.apple.fileprovider.fpfs#P` to the
+app directory. Read-only metadata evidence is log 52. That failed extraction
+remains unchanged at `work/localocr-build8-acceptance/fresh-extracted.FKzWnZ/`.
+The parent independently reproduced the destination effect. The authorized
+controlled `/private/tmp` rerun (53) from the identical SHA-256 had only
+provenance metadata and passed every exact check without stripping attributes,
+re-signing, or rebuilding. This is a destination-metadata environmental failure,
+not an archive defect; it does not replace or hide the failed result.
+
+## Remaining target-machine and release decisions
+
+- This record authorizes no publication, installation, merge, or push. The
+  private candidate is not a live UI, real-model, or controlled Pro acceptance.
 - Controlled Pro macOS 27 GR run: record `sw_vers`, architecture, exact app
   version/build, archive SHA-256, signature/ticket/Gatekeeper, and all three
   helpers. A local `27.0` version string or upgrade statement is not that gate.
