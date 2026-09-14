@@ -6,6 +6,7 @@ import Testing
 
 @Suite("Verified local llama.cpp adapter")
 struct LlamaCppBridgeAdapterTests {
+    private let approvedGPTOSSFingerprint = "582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d"
     private let snapshot = LlamaCppProcessSnapshot(
         alias: "fixture", modelPath: "/models/fixture.gguf", fingerprint: String(repeating: "a", count: 64),
         harnessVersion: "llama-server:test", executablePath: "/usr/local/bin/llama-server",
@@ -13,6 +14,17 @@ struct LlamaCppBridgeAdapterTests {
         modelModifiedNanoseconds: 1, executableSize: 20, executableModifiedNanoseconds: 2,
         processID: 100
     )
+
+    private var approvedGPTOSSSnapshot: LlamaCppProcessSnapshot {
+        LlamaCppProcessSnapshot(
+            alias: snapshot.alias, modelPath: snapshot.modelPath,
+            fingerprint: approvedGPTOSSFingerprint, harnessVersion: snapshot.harnessVersion,
+            executablePath: snapshot.executablePath, executableSHA256: snapshot.executableSHA256,
+            modelSize: snapshot.modelSize, modelModifiedNanoseconds: snapshot.modelModifiedNanoseconds,
+            executableSize: snapshot.executableSize, executableModifiedNanoseconds: snapshot.executableModifiedNanoseconds,
+            processID: snapshot.processID
+        )
+    }
 
     @Test func discoveryUsesOnlyMetadataAndPinsFiles() async throws {
         let http = LlamaHTTP()
@@ -63,6 +75,36 @@ struct LlamaCppBridgeAdapterTests {
         }
     }
 
+    @Test func acceptsAndDiscardsBoundedReasoningOnlyForAttestedGPTOSS() async throws {
+        let http = LlamaHTTP(mutation: "gpt_reasoning")
+        let adapter = LlamaCppBridgeAdapter(http: http, probe: LlamaProbe(snapshot: approvedGPTOSSSnapshot))
+        let identity = try #require(try await adapter.discover().first?.identity)
+
+        let response = await adapter.generate(.generate(id: 1, expectedIdentity: identity,
+            operation: .summarize, prompt: "Page 1: Fixture."))
+
+        #expect(response.error == nil)
+        #expect(response.payloadJSON == "{\"items\":[]}")
+        #expect(response.identity == identity)
+    }
+
+    @Test func attestedGPTOSSStillRejectsMalformedReasoningAndResponses() async throws {
+        for mutation in [
+            "gpt_reasoning_not_string", "gpt_reasoning_too_long", "gpt_finish_missing", "gpt_finish_non_stop",
+            "gpt_message_extra", "gpt_tool", "gpt_choices", "gpt_model", "gpt_think", "gpt_invalid_json", "gpt_payload"
+        ] {
+            let http = LlamaHTTP(mutation: mutation)
+            let adapter = LlamaCppBridgeAdapter(http: http, probe: LlamaProbe(snapshot: approvedGPTOSSSnapshot))
+            let identity = try #require(try await adapter.discover().first?.identity)
+
+            let response = await adapter.generate(.generate(id: 1, expectedIdentity: identity,
+                operation: .summarize, prompt: "Page 1: Fixture."))
+
+            #expect(response.error?.code == .schemaFailure, "mutation: \(mutation)")
+            #expect(response.payloadJSON == nil, "mutation: \(mutation)")
+        }
+    }
+
     @Test func changedMetadataAfterGenerationDiscardsOutput() async throws {
         let http = LlamaHTTP(mutation: "metadata")
         let adapter = LlamaCppBridgeAdapter(http: http, probe: LlamaProbe(snapshot: snapshot))
@@ -84,6 +126,24 @@ struct LlamaCppBridgeAdapterTests {
         let identity = try #require(try await adapter.discover().first?.identity)
         let response = await adapter.generate(.generate(id: 1, expectedIdentity: identity,
             operation: .summarize, prompt: "Page 1: Fixture."))
+        #expect(response.error?.code == .modelIdentityChanged)
+        #expect(response.payloadJSON == nil)
+    }
+
+    @Test func changedGPTOSSIdentityAfterGenerationDiscardsOutput() async throws {
+        let changed = LlamaCppProcessSnapshot(alias: approvedGPTOSSSnapshot.alias, modelPath: approvedGPTOSSSnapshot.modelPath,
+            fingerprint: approvedGPTOSSSnapshot.fingerprint, harnessVersion: approvedGPTOSSSnapshot.harnessVersion,
+            executablePath: approvedGPTOSSSnapshot.executablePath, executableSHA256: approvedGPTOSSSnapshot.executableSHA256,
+            modelSize: approvedGPTOSSSnapshot.modelSize, modelModifiedNanoseconds: approvedGPTOSSSnapshot.modelModifiedNanoseconds,
+            executableSize: approvedGPTOSSSnapshot.executableSize, executableModifiedNanoseconds: approvedGPTOSSSnapshot.executableModifiedNanoseconds,
+            processID: approvedGPTOSSSnapshot.processID + 1)
+        let adapter = LlamaCppBridgeAdapter(http: LlamaHTTP(mutation: "gpt_reasoning"),
+            probe: ChangingLlamaProbe(before: approvedGPTOSSSnapshot, after: changed))
+        let identity = try #require(try await adapter.discover().first?.identity)
+
+        let response = await adapter.generate(.generate(id: 1, expectedIdentity: identity,
+            operation: .summarize, prompt: "Page 1: Fixture."))
+
         #expect(response.error?.code == .modelIdentityChanged)
         #expect(response.payloadJSON == nil)
     }
@@ -147,12 +207,21 @@ private actor LlamaHTTP: LoopbackHTTPPerforming {
         case .llamaCppModels: object = ["object": "list", "data": [["id": alias, "object": "model"]]]
         case .llamaCppChat:
             generated = true
-            var message: [String: Any] = ["role": "assistant", "content": mutation == "payload" ? "{\"items\":[],\"extra\":true}" : "{\"items\":[]}"]
+            let isGPTMutation = mutation.hasPrefix("gpt_")
+            var message: [String: Any] = ["role": "assistant", "content": mutation == "payload" || mutation == "gpt_payload" ? "{\"items\":[],\"extra\":true}" : "{\"items\":[]}"]
             if mutation == "tool" { message["tool_calls"] = [] }
             if mutation == "reasoning" { message["reasoning_content"] = "secret" }
-            let choice: [String: Any] = ["index": 0, "message": message, "finish_reason": "stop"]
-            var response: [String: Any] = ["object": "chat.completion", "model": mutation == "model" ? "other" : alias,
-                "choices": mutation == "choices" ? [choice, choice] : [choice]]
+            if isGPTMutation { message["reasoning_content"] = "private reasoning" }
+            if mutation == "gpt_reasoning_not_string" { message["reasoning_content"] = 1 }
+            if mutation == "gpt_reasoning_too_long" { message["reasoning_content"] = String(repeating: "x", count: 65_537) }
+            if mutation == "message_extra" || mutation == "gpt_message_extra" { message["refusal"] = NSNull() }
+            if mutation == "think" || mutation == "gpt_think" { message["content"] = "{\"items\":[]}<think>private reasoning</think>" }
+            if mutation == "invalid_json" || mutation == "gpt_invalid_json" { message["content"] = "{\"items\":[}" }
+            if mutation == "gpt_tool" { message["tool_calls"] = [] }
+            var choice: [String: Any] = ["index": 0, "message": message, "finish_reason": mutation == "finish_non_stop" || mutation == "gpt_finish_non_stop" ? "length" : "stop"]
+            if mutation == "finish_missing" || mutation == "gpt_finish_missing" { choice.removeValue(forKey: "finish_reason") }
+            var response: [String: Any] = ["object": "chat.completion", "model": mutation == "model" || mutation == "gpt_model" ? "other" : alias,
+                "choices": mutation == "choices" || mutation == "gpt_choices" ? [choice, choice] : [choice]]
             if mutation == "extra" { response["unexpected"] = true }
             object = response
         default: throw LoopbackHTTPError.nonLoopbackResponse

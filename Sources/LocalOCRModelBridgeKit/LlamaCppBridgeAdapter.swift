@@ -12,6 +12,8 @@ public struct LlamaCppBridgeAdapter: Sendable {
     private let http: any LoopbackHTTPPerforming
     private let probe: any LlamaCppProcessProbing
     private static let maximumStructuredStringLength = 4_096
+    private static let approvedGPTOSSFingerprint = "582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d"
+    private static let maximumGPTOSSReasoningContentUTF8Bytes = 65_536
 
     public init(http: any LoopbackHTTPPerforming, probe: any LlamaCppProcessProbing) {
         self.http = http
@@ -208,7 +210,7 @@ public struct LlamaCppBridgeAdapter: Sendable {
             ], options: [.sortedKeys])
             let data = try await http.perform(.llamaCppChat, body: body, timeoutMilliseconds: request.timeoutMilliseconds)
             guard data.count <= LoopbackHTTPClient.maximumResponseBytes,
-                  let content = Self.chatContent(data, model: model),
+                  let content = Self.chatContent(data, identity: before.identity),
                   Self.validatePayload(content, operation: operation, fields: request.fields) else {
                 return Self.failure(request.id, .schemaFailure)
             }
@@ -221,10 +223,10 @@ public struct LlamaCppBridgeAdapter: Sendable {
         } catch { return Self.failure(request.id, Self.errorCode(error)) }
     }
 
-    private static func chatContent(_ data: Data, model: String) -> String? {
+    private static func chatContent(_ data: Data, identity: LocalModelIdentity) -> String? {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(object.keys).isSubset(of: ["id", "object", "created", "model", "choices", "usage", "system_fingerprint", "timings"]),
-              object["model"] as? String == model,
+              object["model"] as? String == identity.model,
               object["object"] as? String == "chat.completion",
               let choices = object["choices"] as? [[String: Any]], choices.count == 1,
               let choice = choices.first,
@@ -232,9 +234,18 @@ public struct LlamaCppBridgeAdapter: Sendable {
               Self.integer(choice["index"], equals: 0), choice["finish_reason"] as? String == "stop",
               choice["logprobs"] == nil || choice["logprobs"] is NSNull,
               let message = choice["message"] as? [String: Any],
-              Set(message.keys) == ["role", "content"], message["role"] as? String == "assistant",
+              message["role"] as? String == "assistant",
               let content = message["content"] as? String,
               !content.contains("<think>"), !content.contains("</think>") else { return nil }
+        let standardMessageKeys: Set<String> = ["role", "content"]
+        let hasApprovedGPTOSSIdentity = identity.provider == .llamaCpp
+            && identity.fingerprint == approvedGPTOSSFingerprint
+        let hasBoundedReasoningContent = (message["reasoning_content"] as? String)
+            .map { $0.utf8.count <= maximumGPTOSSReasoningContentUTF8Bytes } ?? false
+        guard Set(message.keys) == standardMessageKeys ||
+              (hasApprovedGPTOSSIdentity
+               && Set(message.keys) == standardMessageKeys.union(["reasoning_content"])
+               && hasBoundedReasoningContent) else { return nil }
         return content
     }
 
