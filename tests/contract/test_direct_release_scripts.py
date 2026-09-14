@@ -1000,9 +1000,9 @@ def test_production_activity_entitlements_and_build_are_exact() -> None:
             "DZ8B5454ZN.com.rayconsulting.local-ai-activity"
         ]
     }
-    assert 'studio_release_build="7"' in BUILD_UNSIGNED_STUDIO_APP.read_text()
+    assert 'studio_release_build="8"' in BUILD_UNSIGNED_STUDIO_APP.read_text()
     project = (ROOT / "LocalOCR Studio.xcodeproj" / "project.pbxproj").read_text()
-    assert re.findall(r"CURRENT_PROJECT_VERSION = ([0-9]+);", project) == ["7", "7"]
+    assert re.findall(r"CURRENT_PROJECT_VERSION = ([0-9]+);", project) == ["8", "8"]
 
 
 def _nested_code_fixture(tmp_path: Path) -> Path:
@@ -1529,7 +1529,7 @@ def _real_app_stage_environment(unsigned_app: Path) -> dict[str, str]:
         {
             "LOCALOCR_UNSIGNED_APP": str(unsigned_app),
             "LOCALOCR_RELEASE_VERSION": "0.3.1",
-            "LOCALOCR_RELEASE_BUILD": "7",
+            "LOCALOCR_RELEASE_BUILD": "8",
             "LOCALOCR_EXPECTED_BUNDLE_ID": "com.rayconsulting.localocr",
         }
     )
@@ -2275,7 +2275,7 @@ def test_real_unsigned_studio_app_stages_under_exact_release_policy(
     assert staged_plist["CFBundleExecutable"] == "LocalOCR Studio"
     assert staged_plist["CFBundleIdentifier"] == "com.rayconsulting.localocr"
     assert staged_plist["CFBundleShortVersionString"] == "0.3.1"
-    assert staged_plist["CFBundleVersion"] == "7"
+    assert staged_plist["CFBundleVersion"] == "8"
 
     helpers = real_staged_studio_app / "Contents" / "Helpers"
     assert sorted(path.name for path in helpers.iterdir()) == sorted(EXPECTED_HELPERS)
@@ -2390,7 +2390,7 @@ def test_stage_strips_only_the_copied_main_executable(tmp_path: Path) -> None:
                 "CFBundleExecutable": "LocalOCR Studio",
                 "CFBundleIdentifier": "com.rayconsulting.localocr",
                 "CFBundleShortVersionString": "0.3.1",
-                "CFBundleVersion": "7",
+                "CFBundleVersion": "8",
             },
             plist_file,
         )

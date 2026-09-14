@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOYMENT_TARGET = "deployment target macOS 14.0"
 VERSION = "0.3.1"
-BUILD = "7"
+BUILD = "8"
 TAG = "v0.3.1-beta.1"
 FILES = {
     "readme": ROOT / "README.md",
@@ -42,8 +42,7 @@ def test_readme_and_studio_describe_beta_2_1_candidate_and_reset():
         assert "release candidate" in text.lower()
         assert "no published Beta 2.1 download is claimed" in prose or "no Beta 2.1 download is being claimed" in prose
         assert "Process Another Document" in text
-        assert "Xcode 27 RC (`27A266a`)" in prose
-        assert "Xcode 26.6" not in text
+        assert "Xcode 26.6 (`17F113`)" in prose
         assert DEPLOYMENT_TARGET in prose
         assert "Future Apple beta compatibility is not guaranteed" in prose
 
@@ -126,7 +125,7 @@ def test_local_ai_activity_entitlement_gate_records_authorized_configuration_and
     assert "blocked pending the approvals below" not in gate
 
 
-def test_private_build_7_candidate_identity_and_suite_boundary():
+def test_private_build_8_candidate_identity_and_suite_boundary():
     for name in ("README.md", "docs/studio.md", "BETA_TESTING.md"):
         text = (ROOT / name).read_text()
         assert f"LocalOCR-Studio-{VERSION}-{BUILD}.zip" in text
@@ -139,5 +138,7 @@ def test_private_build_7_candidate_identity_and_suite_boundary():
         assert requirement in readme
     for name in ("README.md", "docs/studio.md", "docs/mcp.md", "BETA_TESTING.md"):
         text = (ROOT / name).read_text()
-        assert "27A266a" in text
-        assert "17F113" not in text
+        if name == "docs/mcp.md":
+            assert "27A266a" in text  # Historical MCP setup provenance, not Build 8 acceptance.
+        else:
+            assert "17F113" in text

@@ -154,18 +154,24 @@ interface.
 
 ## Beta 2.1 status
 
-The release candidate is version `0.3.1`, build `7`, with planned tag
+The release candidate is version `0.3.1`, build `8`, with planned tag
 `v0.3.1-beta.1`. Follow the [Beta Tester Guide](../BETA_TESTING.md) for the
 desktop-first acceptance path. The planned assets are
-`LocalOCR-Studio-0.3.1-7.zip` and its matching `.sha256` file. Do not use a
+`LocalOCR-Studio-0.3.1-8.zip` and its matching `.sha256` file. Do not use a
 staging copy or bypass Gatekeeper. Signing, notarization, downloaded-package,
 and target-Mac acceptance remain separate gates, so no published Beta 2.1
 download is claimed before their evidence exists.
 
 ## Compatibility and build provenance
 
-The candidate uses Xcode 27 RC (`27A266a`), Swift 6, arm64, and deployment
-target macOS 14.0. Final signing, notarization, Gatekeeper, download, and
+Build 8 source verification uses stable Xcode 26.6 (`17F113`), Swift 6, arm64,
+and deployment target macOS 14.0. Release-script toolchain alignment and the
+controlled macOS 27 GR target run remain pending. Final signing, notarization,
+Gatekeeper, download, and
 target-Mac facts will be added from completed evidence. Future Apple beta
 compatibility is not guaranteed; include the exact macOS version and build
 number in feedback.
+
+See the [Build 8 acceptance record](localocr-build8-acceptance-2026-09-14.md)
+for the synthetic twenty-generation/ten-minute-clock checks and remaining
+real-model, real-idle, and target-machine gates.
