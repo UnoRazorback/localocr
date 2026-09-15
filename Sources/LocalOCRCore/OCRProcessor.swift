@@ -2,7 +2,7 @@ import Foundation
 import ImageIO
 
 public actor OCRProcessor {
-    private static let cacheCompatibilityVersion = "ocr-processor-v1"
+    private static let cacheCompatibilityVersion = "ocr-processor-v2"
 
     private let pdfSource: any PDFDocumentReading
     private let recognizer: any TextRecognizing

@@ -53,6 +53,25 @@ import Testing
         #expect(cacheFiles(in: rootURL).isEmpty)
     }
 
+    @Test func rejectsEntryWhoseEmbeddedPageIdentityDoesNotMatchItsPath() async throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let cache = OCRCache(rootURL: rootURL, compatibilityVersion: "v1")
+        let firstKey = makeKey(page: 1)
+        let secondKey = makeKey(page: 2)
+        try await cache.store(makeCandidate(text: "page one"), for: firstKey)
+        let firstFile = try #require(cacheFiles(in: rootURL).first)
+        let firstData = try Data(contentsOf: firstFile)
+
+        try await cache.store(makeCandidate(text: "page two"), for: secondKey)
+        let secondFile = try #require(cacheFiles(in: rootURL).first { $0 != firstFile })
+        try firstData.write(to: secondFile)
+
+        #expect(try await cache.value(for: secondKey) == nil)
+        #expect(!FileManager.default.fileExists(atPath: secondFile.path))
+        #expect(try await cache.value(for: firstKey) == makeCandidate(text: "page one"))
+    }
+
     @Test func configuredCompatibilityVersionIgnoresStaleKeyVersion() async throws {
         let rootURL = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: rootURL) }

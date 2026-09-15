@@ -33,7 +33,8 @@ public actor OCRCache {
     }
 
     public func value(for key: OCRCacheKey) throws -> RecognitionCandidate? {
-        let fileURL = try fileURL(for: key)
+        let effectiveKey = effectiveKey(for: key)
+        let fileURL = try fileURL(for: effectiveKey)
         guard fileManager.fileExists(atPath: fileURL.path) else {
             return nil
         }
@@ -41,6 +42,10 @@ public actor OCRCache {
         let data = try Data(contentsOf: fileURL)
         do {
             let cachedValue = try JSONDecoder().decode(CachedRecognitionCandidate.self, from: data)
+            guard cachedValue.key == effectiveKey else {
+                try? fileManager.removeItem(at: fileURL)
+                return nil
+            }
             return try cachedValue.recognitionCandidate
         } catch {
             try? fileManager.removeItem(at: fileURL)
@@ -49,12 +54,13 @@ public actor OCRCache {
     }
 
     public func store(_ value: RecognitionCandidate, for key: OCRCacheKey) throws {
-        let fileURL = try fileURL(for: key)
+        let effectiveKey = effectiveKey(for: key)
+        let fileURL = try fileURL(for: effectiveKey)
         let directoryURL = fileURL.deletingLastPathComponent()
         try createDirectoryIfNeeded(at: rootURL)
         try createDirectoryIfNeeded(at: directoryURL)
 
-        let data = try CachedRecognitionCandidate(value).encodedData()
+        let data = try CachedRecognitionCandidate(value, key: effectiveKey).encodedData()
         let temporaryURL = directoryURL.appendingPathComponent(".\(fileURL.lastPathComponent).\(UUID().uuidString).tmp")
         defer { try? fileManager.removeItem(at: temporaryURL) }
         try data.write(to: temporaryURL, options: .withoutOverwriting)
@@ -81,17 +87,20 @@ public actor OCRCache {
     }
 
     private func fileURL(for key: OCRCacheKey) throws -> URL {
-        let effectiveKey = OCRCacheKey(
+        let keyData = try JSONEncoder.sortedKeyEncoder.encode(key)
+        let digest = SHA256.hash(data: keyData).hexString
+        return rootURL
+            .appendingPathComponent(String(digest.prefix(2)), isDirectory: true)
+            .appendingPathComponent("\(digest).json", isDirectory: false)
+    }
+
+    private func effectiveKey(for key: OCRCacheKey) -> OCRCacheKey {
+        OCRCacheKey(
             sourceSHA256: key.sourceSHA256,
             page: key.page,
             settings: key.settings,
             compatibilityVersion: compatibilityVersion
         )
-        let keyData = try JSONEncoder.sortedKeyEncoder.encode(effectiveKey)
-        let digest = SHA256.hash(data: keyData).hexString
-        return rootURL
-            .appendingPathComponent(String(digest.prefix(2)), isDirectory: true)
-            .appendingPathComponent("\(digest).json", isDirectory: false)
     }
 
     private func createDirectoryIfNeeded(at directoryURL: URL) throws {
@@ -105,10 +114,12 @@ public actor OCRCache {
 }
 
 private struct CachedRecognitionCandidate: Codable {
+    let key: OCRCacheKey
     let orientation: UInt32
     let lines: [TextLine]
 
-    init(_ candidate: RecognitionCandidate) {
+    init(_ candidate: RecognitionCandidate, key: OCRCacheKey) {
+        self.key = key
         orientation = candidate.orientation.rawValue
         lines = candidate.lines
     }

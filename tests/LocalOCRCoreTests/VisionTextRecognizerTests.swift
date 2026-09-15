@@ -27,6 +27,16 @@ import Testing
         #expect(!(error is LocalOCRError))
     }
 
+    @Test func availabilityProbeContainsKnownText() async throws {
+        let result = try await VisionTextRecognizer.performRecognition(
+            image: VisionTextRecognizer.makeAvailabilityProbeImage(),
+            orientation: .up,
+            settings: .init(recognitionLanguages: ["en-US"])
+        )
+
+        #expect(result.text.contains("LOCAL OCR READY 123"))
+    }
+
     @Test func recognizesUprightSyntheticTextWithRequestedSettings() async throws {
         let image = try fixtureImage(named: "upright-text")
         let settings = RecognitionSettings(
@@ -61,6 +71,44 @@ import Testing
 
         #expect(result.orientation == .right)
         #expect(result.text.contains("LOCAL OCR TEST 123"))
+    }
+
+    @Test func resumesOnlyOnceWhenVisionReportsCompletionThenPerformError() async throws {
+        let operation = VisionRecognitionOperation()
+        let expected = RecognitionCandidate(orientation: .up, lines: [])
+
+        let value = try await withCheckedThrowingContinuation { continuation in
+            operation.install(continuation)
+            #expect(operation.finish(.success(expected)))
+            #expect(!operation.finish(.failure(VisionFixtureError())))
+        }
+
+        #expect(value == expected)
+    }
+
+    @Test func resumesOnlyOnceWhenVisionReportsPerformErrorThenCompletion() async {
+        let operation = VisionRecognitionOperation()
+        let expected = RecognitionCandidate(orientation: .up, lines: [])
+
+        await #expect(throws: VisionFixtureError.self) {
+            try await withCheckedThrowingContinuation { continuation in
+                operation.install(continuation)
+                #expect(operation.finish(.failure(VisionFixtureError())))
+                #expect(!operation.finish(.success(expected)))
+            }
+        }
+    }
+
+    @Test func cancellationBeforeContinuationInstallationResumesOnce() async {
+        let operation = VisionRecognitionOperation()
+        operation.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            try await withCheckedThrowingContinuation { continuation in
+                operation.install(continuation)
+                #expect(!operation.finish(.success(.init(orientation: .up, lines: []))))
+            }
+        }
     }
 }
 
