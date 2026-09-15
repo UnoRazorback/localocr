@@ -387,6 +387,50 @@ import Testing
         ])
     }
 
+    @Test func llamaCppGenerationUsesTheMaximumBoundedDeadline() async throws {
+        let identity = LocalModelIdentity(
+            provider: .llamaCpp,
+            model: "gpt-oss-120b-mxfp4",
+            fingerprint: String(repeating: "a", count: 64),
+            harnessVersion: "version: test",
+            fileAttestation: LocalModelFileAttestation(
+                executablePath: "/private/tmp/llama-server",
+                executableSHA256: String(repeating: "b", count: 64),
+                modelPath: "/private/tmp/model.gguf",
+                modelSize: 1024,
+                modelModifiedNanoseconds: 1,
+                executableSize: 1024,
+                executableModifiedNanoseconds: 1,
+                processID: 123
+            )
+        )
+        let transport = Task6Transport { request in
+            if request.action == .discover {
+                return task6DiscoveryResponse(
+                    request: request,
+                    candidates: [task6Candidate(identity: identity)]
+                )
+            }
+            return ModelBridgeResponse(
+                id: request.id,
+                payloadJSON: task6GeneratedPayload(for: try #require(request.operation)),
+                identity: identity
+            )
+        }
+        let router = task6Router(
+            transport: transport,
+            apple: Task6FixtureProvider(identity: .appleSystemDefault),
+            state: .selected(task6ExternalSelection(identity: identity))
+        )
+
+        _ = try await router.summarize(task6Document)
+
+        let generateRequest = try #require(
+            await transport.requests.first(where: { $0.action == .generate })
+        )
+        #expect(generateRequest.timeoutMilliseconds == 120_000)
+    }
+
     @Test func everyOperationRereadsSelectionAndForwardsStaleReceiptFailures() async throws {
         let store = Task6SelectionStore(.selected(.appleSystemDefault))
         let apple = Task6FixtureProvider(identity: .appleSystemDefault)

@@ -437,7 +437,8 @@ private actor BridgeStructuredIntelligenceSessionDriver: StructuredIntelligenceS
                 expectedIdentity: identity,
                 operation: operation,
                 prompt: prompt,
-                fields: fields
+                fields: fields,
+                timeoutMilliseconds: identity.provider == .llamaCpp ? 120_000 : 30_000
             ))
         } catch is CancellationError {
             throw IntelligenceError.cancelled

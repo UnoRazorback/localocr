@@ -150,12 +150,12 @@ actor GroundedDocumentIntelligenceProvider: DocumentIntelligenceProviding {
                 }
                 for response in responses {
                     let candidates = response.fields.map {
-                        ExtractedDocumentField(
+                        normalizedUnitEncodedField(ExtractedDocumentField(
                             name: $0.name,
                             value: $0.value,
                             sourcePage: $0.page,
                             evidence: $0.evidence
-                        )
+                        ), in: document)
                     }
                     for field in IntelligenceGroundingValidator.validExtractedFields(
                         candidates,
@@ -306,6 +306,53 @@ actor GroundedDocumentIntelligenceProvider: DocumentIntelligenceProviding {
             return nil
         }
         return (fact.value, IntelligenceCitation(page: fact.page, quote: fact.evidence))
+    }
+
+    /// Structured decoders can occasionally emit a malformed scalar such as `.3`
+    /// while still returning the exact grounded evidence `3 calendar days`. For
+    /// unit-encoded field names, recover only a single scalar that appears directly
+    /// beside the requested unit in already-grounded evidence. Ambiguous or
+    /// ungrounded evidence remains unchanged and is rejected by the normal validator.
+    private func normalizedUnitEncodedField(
+        _ field: ExtractedDocumentField,
+        in document: IntelligenceDocument
+    ) -> ExtractedDocumentField {
+        guard
+            let sourcePage = field.sourcePage,
+            let evidence = field.evidence,
+            isGrounded(page: sourcePage, evidence: evidence, in: document),
+            let scalar = Self.singleUnitScalar(in: evidence, for: field.name)
+        else {
+            return field
+        }
+        return ExtractedDocumentField(
+            name: field.name,
+            value: scalar,
+            sourcePage: sourcePage,
+            evidence: evidence
+        )
+    }
+
+    private static func singleUnitScalar(in evidence: String, for fieldName: String) -> String? {
+        let suffixPatterns: [(String, String)] = [
+            ("_days", #"([-+]?\d[\d,]*(?:\.\d+)?)\s*(?:calendar\s+|business\s+|working\s+)?days?\b"#),
+            ("_hours", #"([-+]?\d[\d,]*(?:\.\d+)?)\s*hours?\b"#),
+            ("_percent", #"([-+]?\d[\d,]*(?:\.\d+)?)\s*(?:%|percent\b)"#)
+        ]
+        guard let pattern = suffixPatterns.first(where: { fieldName.lowercased().hasSuffix($0.0) })?.1,
+              let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        else {
+            return nil
+        }
+
+        let range = NSRange(evidence.startIndex..<evidence.endIndex, in: evidence)
+        let values = Set(expression.matches(in: evidence, range: range).compactMap { match -> String? in
+            guard match.numberOfRanges == 2,
+                  let valueRange = Range(match.range(at: 1), in: evidence) else { return nil }
+            return String(evidence[valueRange]).replacingOccurrences(of: ",", with: "")
+        })
+        guard values.count == 1 else { return nil }
+        return values.first
     }
 
     private func uniqueCitations(

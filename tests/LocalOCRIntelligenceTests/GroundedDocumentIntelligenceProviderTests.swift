@@ -151,6 +151,94 @@ import Testing
         ])
     }
 
+    @Test func extractionNormalizesOneUnitScalarFromExactGroundedEvidence() async throws {
+        let driver = ClosureStructuredIntelligenceSessionDriver(
+            extract: { _, _ in
+                .init(fields: [
+                    .init(
+                        name: "schedule_impact_days",
+                        value: ".3",
+                        page: 1,
+                        evidence: "Schedule impact requested: 3 calendar days."
+                    ),
+                    .init(
+                        name: "labor_hours",
+                        value: nil,
+                        page: 1,
+                        evidence: "Labor duration: 120 hours."
+                    )
+                ])
+            }
+        )
+        let provider = GroundedDocumentIntelligenceProvider(
+            availability: { .available },
+            provenance: Self.externalProvenance,
+            sessionDriver: driver
+        )
+        let document = IntelligenceDocument(pages: [
+            .init(number: 1, text: "Schedule impact requested: 3 calendar days.\nLabor duration: 120 hours.")
+        ])
+
+        let result = try await provider.extract(
+            ["schedule_impact_days", "labor_hours"],
+            from: document
+        )
+
+        #expect(result.value == [
+            .init(
+                name: "schedule_impact_days",
+                value: "3",
+                sourcePage: 1,
+                evidence: "Schedule impact requested: 3 calendar days."
+            ),
+            .init(
+                name: "labor_hours",
+                value: "120",
+                sourcePage: 1,
+                evidence: "Labor duration: 120 hours."
+            )
+        ])
+    }
+
+    @Test func extractionDoesNotNormalizeAmbiguousOrUngroundedUnitEvidence() async throws {
+        let driver = ClosureStructuredIntelligenceSessionDriver(
+            extract: { _, _ in
+                .init(fields: [
+                    .init(
+                        name: "schedule_impact_days",
+                        value: ".3",
+                        page: 1,
+                        evidence: "Durations: 3 days and 4 days."
+                    ),
+                    .init(
+                        name: "labor_hours",
+                        value: "120",
+                        page: 1,
+                        evidence: "Invented duration: 120 hours."
+                    )
+                ])
+            }
+        )
+        let provider = GroundedDocumentIntelligenceProvider(
+            availability: { .available },
+            provenance: Self.externalProvenance,
+            sessionDriver: driver
+        )
+        let document = IntelligenceDocument(pages: [
+            .init(number: 1, text: "Durations: 3 days and 4 days.")
+        ])
+
+        let result = try await provider.extract(
+            ["schedule_impact_days", "labor_hours"],
+            from: document
+        )
+
+        #expect(result.value == [
+            .init(name: "schedule_impact_days", value: nil, sourcePage: nil, evidence: nil),
+            .init(name: "labor_hours", value: nil, sourcePage: nil, evidence: nil)
+        ])
+    }
+
     private static let document = IntelligenceDocument(pages: [
         .init(number: 2, text: "Beta fact"),
         .init(number: 1, text: "Alpha fact")
