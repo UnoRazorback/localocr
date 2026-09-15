@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
@@ -284,6 +285,96 @@ IFS= read -r _ || true
     assert result.returncode == 0, result.stderr
     assert result.stdout == '{"jsonrpc":"2.0","id":1,"result":{}}\n'
     assert result.stderr == ""
+
+
+def test_mcp_smoke_exchange_observes_exit_after_complete_pipes_close(tmp_path: Path) -> None:
+    delayed_exit_server = tmp_path / "delayed-exit-mcp"
+    delayed_exit_server.write_text(
+        """#!/bin/bash
+set -euo pipefail
+IFS= read -r _
+printf '{"jsonrpc":"2.0","id":1,"result":{}}\\n'
+exec 1>&-
+exec 2>&-
+/bin/sleep 0.2
+"""
+    )
+    delayed_exit_server.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(MCP_SMOKE_EXCHANGE),
+            "--timeout",
+            "2",
+            "--expect-id",
+            "1",
+            "--",
+            str(delayed_exit_server),
+        ],
+        input='{"jsonrpc":"2.0","id":1,"method":"initialize"}\n',
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == '{"jsonrpc":"2.0","id":1,"result":{}}\n'
+    assert result.stderr == ""
+
+
+def _start_native_smoke_and_find_home() -> tuple[subprocess.Popen[str], Path]:
+    build_root = ROOT / ".build"
+    existing = set(build_root.glob("localocr-mcp-smoke-home.*"))
+    process = subprocess.Popen(
+        [str(SMOKE_SCRIPT)],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        created = set(build_root.glob("localocr-mcp-smoke-home.*")) - existing
+        if created:
+            return process, next(iter(created))
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            raise AssertionError(f"smoke script exited before creating its test home: {stdout}{stderr}")
+        time.sleep(0.005)
+    process.terminate()
+    process.wait(timeout=2)
+    raise AssertionError("smoke script did not create its test home")
+
+
+def test_native_smoke_accepts_a_precreated_private_library_directory() -> None:
+    process, test_home = _start_native_smoke_and_find_home()
+    library = test_home / "Library"
+    library.mkdir(mode=0o755, exist_ok=True)
+    library.chmod(0o755)
+
+    stdout, stderr = process.communicate(timeout=60)
+
+    assert process.returncode == 0, stdout + stderr
+
+
+def test_native_smoke_rejects_library_symlink_without_chmodding_its_target(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside-library"
+    outside.mkdir(mode=0o755)
+    process, test_home = _start_native_smoke_and_find_home()
+    library = test_home / "Library"
+    try:
+        library.symlink_to(outside, target_is_directory=True)
+    except FileExistsError:
+        process.terminate()
+        process.wait(timeout=2)
+        raise AssertionError("smoke process created Library before the symlink guard was installed")
+
+    stdout, stderr = process.communicate(timeout=60)
+
+    assert process.returncode != 0, stdout + stderr
+    assert outside.stat().st_mode & 0o777 == 0o755
 
 
 def test_release_artifacts_expose_only_system_dylibs_and_safe_rpaths() -> None:

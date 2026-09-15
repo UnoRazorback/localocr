@@ -114,6 +114,43 @@ import Testing
         ])
     }
 
+    @Test func extractionPromptRequestsScalarValuesForUnitEncodedFieldNames() async throws {
+        let driver = ClosureStructuredIntelligenceSessionDriver(
+            extract: { names, prompt in
+                #expect(names == ["schedule_impact_days"])
+                #expect(prompt.contains("schedule_impact_days is 3, not \"3 calendar days\""))
+                #expect(prompt.contains("keep the complete source phrase and its units in evidence"))
+                return .init(fields: [
+                    .init(
+                        name: "schedule_impact_days",
+                        value: "3",
+                        page: 1,
+                        evidence: "Schedule impact requested: 3 calendar days."
+                    )
+                ])
+            }
+        )
+        let provider = GroundedDocumentIntelligenceProvider(
+            availability: { .available },
+            provenance: Self.externalProvenance,
+            sessionDriver: driver
+        )
+        let document = IntelligenceDocument(pages: [
+            .init(number: 1, text: "Schedule impact requested: 3 calendar days.")
+        ])
+
+        let result = try await provider.extract(["schedule_impact_days"], from: document)
+
+        #expect(result.value == [
+            .init(
+                name: "schedule_impact_days",
+                value: "3",
+                sourcePage: 1,
+                evidence: "Schedule impact requested: 3 calendar days."
+            )
+        ])
+    }
+
     private static let document = IntelligenceDocument(pages: [
         .init(number: 2, text: "Beta fact"),
         .init(number: 1, text: "Alpha fact")

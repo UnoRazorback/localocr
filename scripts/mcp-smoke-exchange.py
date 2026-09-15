@@ -106,6 +106,15 @@ def main() -> int:
             process.stdin.close()
         selector.close()
 
+    # A process can close both stdio pipes immediately before its exit status is
+    # observable. Give a completed exchange a short graceful-exit window so it
+    # is not mislabeled as a timeout under system load.
+    if process.poll() is None and expected_ids <= observed_ids:
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+
     timed_out = process.poll() is None
     if timed_out:
         _stop(process)

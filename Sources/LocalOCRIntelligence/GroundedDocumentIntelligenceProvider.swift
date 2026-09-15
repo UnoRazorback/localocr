@@ -137,7 +137,7 @@ actor GroundedDocumentIntelligenceProvider: DocumentIntelligenceProviding {
                 "\(index + 1). \(name)"
             }.joined(separator: "\n")
             let extractionTask = """
-                Extract only these requested field names, preserving each name exactly. Interpret field names by their meaning, including common synonyms and underscore-separated words; the literal field label need not occur in the source. A document identifier can supply a requested reference identifier when its role is unambiguous. Never infer a value that is not present in the source:
+                Extract only these requested field names, preserving each name exactly. Interpret field names by their meaning, including common synonyms and underscore-separated words; the literal field label need not occur in the source. When a requested field name encodes a unit such as _days, _hours, _percent, or _count, return only the scalar value in that requested unit (for example, schedule_impact_days is 3, not "3 calendar days"); keep the complete source phrase and its units in evidence. Preserve currency formatting for monetary source values. A document identifier can supply a requested reference identifier when its role is unambiguous. In particular, when reference_number is requested, treat an identifier immediately following the document type (for example, Invoice Q-104) as the reference number even when the word reference is absent. Never infer a value that is not present in the source:
                 Requested field names:
                 \(requestedFields)
                 """

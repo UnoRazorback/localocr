@@ -294,6 +294,55 @@ import Testing
         #expect(outcome.receipt?.passedActions == Set(LocalIntelligenceAction.allCases))
     }
 
+    @Test func completeSentenceLevelCitationsPassQualification() async throws {
+        let provider = Task6FixtureProvider(summary: .init(
+            text: "Invoice reference Q-104 has total $144.17.",
+            citations: [
+                .init(page: 1, quote: "Invoice Q-104."),
+                .init(page: 1, quote: "Date: 2026-08-29."),
+                .init(page: 1, quote: "Total: $144.17.")
+            ]
+        ))
+
+        let outcome = try await task6QualificationService(provider: provider)
+            .qualify(task6OllamaIdentity)
+
+        #expect(outcome.status == .passed)
+        #expect(outcome.failures.isEmpty)
+    }
+
+    @Test func sentenceLevelCitationsWithAnUncoveredCanonicalFactFailQualification() async throws {
+        let provider = Task6FixtureProvider(summary: .init(
+            text: "Invoice reference Q-104 has total $144.17.",
+            citations: [
+                .init(page: 1, quote: "Invoice Q-104."),
+                .init(page: 1, quote: "Total: $144.17.")
+            ]
+        ))
+
+        let outcome = try await task6QualificationService(provider: provider)
+            .qualify(task6OllamaIdentity)
+
+        #expect(outcome.status == .failed)
+        #expect(outcome.failures == ["summary"])
+    }
+
+    @Test func overlappingCanonicalCitationsFailQualification() async throws {
+        let provider = Task6FixtureProvider(summary: .init(
+            text: "Invoice reference Q-104 has total $144.17.",
+            citations: [
+                .init(page: 1, quote: "Invoice Q-104. Date: 2026-08-29."),
+                .init(page: 1, quote: "Date: 2026-08-29. Total: $144.17.")
+            ]
+        ))
+
+        let outcome = try await task6QualificationService(provider: provider)
+            .qualify(task6OllamaIdentity)
+
+        #expect(outcome.status == .failed)
+        #expect(outcome.failures == ["summary"])
+    }
+
     @Test func partialFixtureQuoteIsNotCanonicalQualificationProvenance() async throws {
         let provider = Task6FixtureProvider(summary: .init(
             text: "Invoice reference Q-104.",

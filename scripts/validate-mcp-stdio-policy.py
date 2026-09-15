@@ -20,7 +20,7 @@ UPSTREAM_RELEASE = "0.12.1"
 REVIEWED_LICENSE_SHA256 = "0382b0057770ca05e9c350a50aa3b1c1fea84da0bc81d723bf00b9aa841be58a"
 REVIEWED_ORIGIN_INVENTORY_SHA256 = "dafbceaccc07c3b5a2dfe69f6386bc00ed68ffbb40a42391e90f45790c71f2fc"
 REVIEWED_LOCAL_ONLY_PATHS = {"MCPStdio.swift", "Server/RequestRegistry.swift"}
-XCODE_DEVELOPER_DIR = Path("/Applications/Xcode-27-RC.app/Contents/Developer")
+XCODE_DEVELOPER_DIR = Path("/Applications/Xcode.app/Contents/Developer")
 XCODE_SWIFTC = (
     XCODE_DEVELOPER_DIR
     / "Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
@@ -716,7 +716,7 @@ def validate_package_policy(repo_root: Path) -> None:
     require(resolved_path.is_file() and not resolved_path.is_symlink(), "Package.resolved is missing or symlinked")
 
     swift_environment = os.environ.copy()
-    swift_environment["DEVELOPER_DIR"] = "/Applications/Xcode-27-RC.app/Contents/Developer"
+    swift_environment["DEVELOPER_DIR"] = str(XCODE_DEVELOPER_DIR)
     swift_environment.pop("SDKROOT", None)
     result = subprocess.run(
         [

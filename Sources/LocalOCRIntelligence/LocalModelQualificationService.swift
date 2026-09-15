@@ -504,7 +504,9 @@ public actor LocalModelQualificationService {
         let citationDomains = summary.citations.compactMap {
             canonicalSummaryDomain(for: $0, in: document)
         }
-        guard citationDomains.count == summary.citations.count else {
+        guard citationDomains.count == summary.citations.count,
+              hasCanonicalPageCoverage(summary.citations, in: document)
+        else {
             return false
         }
         let items = summaryItems(in: summary.text)
@@ -531,15 +533,45 @@ public actor LocalModelQualificationService {
         for citation: IntelligenceCitation,
         in document: IntelligenceDocument
     ) -> SummaryDomain? {
-        guard let page = document.pages.first(where: { $0.number == citation.page }),
-              citation.quote == page.text
-        else {
+        guard document.pages.contains(where: { $0.number == citation.page }) else {
             return nil
         }
         switch citation.page {
         case SummaryDomain.invoice.page: return .invoice
         case SummaryDomain.project.page: return .project
         default: return nil
+        }
+    }
+
+    private nonisolated static func hasCanonicalPageCoverage(
+        _ citations: [IntelligenceCitation],
+        in document: IntelligenceDocument
+    ) -> Bool {
+        let citationsByPage = Dictionary(grouping: citations, by: \.page)
+        return citationsByPage.allSatisfy { pageNumber, pageCitations in
+            guard let page = document.pages.first(where: { $0.number == pageNumber }) else {
+                return false
+            }
+            var ranges: [Range<String.Index>] = []
+            for citation in pageCitations {
+                guard let range = page.text.range(of: citation.quote),
+                      !ranges.contains(range)
+                else {
+                    return false
+                }
+                ranges.append(range)
+            }
+            ranges.sort { $0.lowerBound < $1.lowerBound }
+            var cursor = page.text.startIndex
+            for range in ranges {
+                guard cursor <= range.lowerBound,
+                      page.text[cursor..<range.lowerBound].allSatisfy(\.isWhitespace)
+                else {
+                    return false
+                }
+                cursor = range.upperBound
+            }
+            return page.text[cursor...].allSatisfy(\.isWhitespace)
         }
     }
 

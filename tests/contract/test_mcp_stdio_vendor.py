@@ -589,7 +589,7 @@ def test_canonical_policy_freezes_complete_package_dependency_records(
         text=True,
         env={
             **os.environ,
-            "DEVELOPER_DIR": "/Applications/Xcode-27-RC.app/Contents/Developer",
+            "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
         },
     )
     package_dump = json.loads(dump_result.stdout)
@@ -648,7 +648,7 @@ def test_canonical_policy_freezes_complete_product_target_and_source_root_record
         text=True,
         env={
             **os.environ,
-            "DEVELOPER_DIR": "/Applications/Xcode-27-RC.app/Contents/Developer",
+            "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
         },
     )
     package_dump = json.loads(dump_result.stdout)

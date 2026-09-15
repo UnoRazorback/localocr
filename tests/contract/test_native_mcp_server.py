@@ -274,9 +274,13 @@ def test_opt_in_native_foundation_models_subprocess_uses_local_fixture(tmp_path)
                 assert set(payload) == {"citations", "local_model", "text"}
                 assert payload["text"]
                 assert payload["local_model"] == {
+                    "fingerprint": None,
+                    "harness_version": None,
                     "model": "SystemLanguageModel.default",
                     "processing": "on_device",
-                    "provider": "Apple Foundation Models",
+                    "provider_display_name": "Apple Foundation Models",
+                    "provider_id": "apple_foundation_models",
+                    "qualified_at": None,
                 }
 
     with _isolated_test_home(root / ".build") as home:

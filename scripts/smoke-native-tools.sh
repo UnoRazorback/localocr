@@ -348,9 +348,21 @@ if [[ -s "$stderr_file" ]]; then
 fi
 
 consent_directory="$test_home_root/Library/Application Support/com.rayconsulting.localocr"
-mkdir -m 700 "$test_home_root/Library"
-mkdir -m 700 "$test_home_root/Library/Application Support"
-mkdir -m 700 "$consent_directory"
+ensure_private_directory() {
+    local directory="$1"
+    if [[ -e "$directory" || -L "$directory" ]]; then
+        [[ -d "$directory" && ! -L "$directory" ]] || {
+            echo "temporary consent path contains a symlink or non-directory" >&2
+            return 1
+        }
+        chmod 700 "$directory"
+    else
+        mkdir -m 700 "$directory"
+    fi
+}
+ensure_private_directory "$test_home_root/Library"
+ensure_private_directory "$test_home_root/Library/Application Support"
+ensure_private_directory "$consent_directory"
 consent_receipt="$consent_directory/mcp-consent.json"
 printf '%s' '{"schema_version":1,"policy_version":1,"accepted_at":"2026-08-27T00:00:00Z","external_provider_risk_accepted":true,"document_tool_access_accepted":true}' > "$consent_receipt"
 chmod 600 "$consent_receipt"
