@@ -62,8 +62,8 @@ confirmation before updating that client's local MCP configuration. Generic
 MCP clients receive copy-only stdio instructions; LocalOCR does not guess at or
 edit an unknown client's configuration.
 
-Build 8 source compilation and automated verification use stable
-Xcode 26.6 (`17F113`), Swift 6, and its matching macOS SDK while keeping
+Build 8 source compilation and automated verification use Xcode 27.0
+(`27A266a`), Swift 6.4, and the macOS 27.0 SDK while keeping
 the package/app deployment target at macOS 14. This does not replace physical
 provider, downloaded-package, or target-Mac acceptance; those release gates
 remain open until dated evidence is recorded.
@@ -87,9 +87,11 @@ Recognition uses Apple Vision and PDFKit locally. LocalOCR does not upload docum
 
 ## Compatibility and candidate provenance
 
-The Build 8 source-verification and pinned release toolchain is Xcode 26.6
-(`17F113`) at `/Applications/Xcode.app`, Swift 6, arm64, and
-deployment target macOS 14.0. The controlled macOS 27 GR target run remains pending. Final Developer ID,
+The Build 8 source-verification and pinned release toolchain is Xcode 27.0
+(`27A266a`) at `/Applications/Xcode-27-RC.app`, Swift 6.4, arm64, and
+deployment target macOS 14.0. The application name is historical; the exact
+verified build identity is the public Xcode 27 release build. The controlled
+macOS 27 GR target run remains pending. Final Developer ID,
 Hardened Runtime,
 notarization, staple, Gatekeeper, download, and exact-build target-Mac facts
 will be added only from completed release evidence.

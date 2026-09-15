@@ -64,8 +64,8 @@ def test_guide_and_release_notes_use_exact_candidate_identity_without_false_rele
         assert "0.3.1" in text
         assert "build `8`" in text
         assert "v0.3.1-beta.1" in text
-        assert "Xcode 26.6" in text
-        assert "17F113" in text
+        assert "Xcode 27.0" in text
+        assert "27A266a" in text
         assert DEPLOYMENT_TARGET in text
         assert LATER_BETA_WARNING in text
         assert "pending" in text.lower() or "remain" in text.lower()

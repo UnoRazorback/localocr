@@ -138,15 +138,17 @@ complete release-verification run.
 
 ## Toolchain and provider boundaries
 
-Read-only local inspection found `/Applications/Xcode.app/Contents/Developer`,
-stable Xcode 26.6 (`17F113`), its `MacOSX26.5.sdk`, and macOS 27.0 build `26A428`.
-At Task 4, the release scripts still pinned Xcode 27 RC (`27A266a`). Task 5
-explicitly reconciled the pin to stable Xcode 26.6 (`17F113`) through failing
-then passing release-toolchain contracts; the RC build remains rejected.
+Read-only local inspection found both `/Applications/Xcode.app/Contents/Developer`
+with Xcode 26.6 (`17F113`) and `/Applications/Xcode-27-RC.app/Contents/Developer`
+with Xcode 27.0 (`27A266a`). Scott subsequently selected the exact Xcode 27
+release build for the Pro candidate. The application name is historical; its
+verified `xcodebuild -version` identity is the public release build. The release
+guard was moved from 26.6 to that exact path and build through failing then
+passing release-toolchain contracts.
 The Python command requires the existing Python
 3.11.16 `.venv` from the parent checkout on PATH (default Python 3.14 has no
-pytest), plus explicit stable `DEVELOPER_DIR` and matching `SDKROOT` to avoid
-mixing an older linker with the Command Line Tools macOS 27 SDK.
+pytest), plus explicit Xcode 27 `DEVELOPER_DIR` and matching `SDKROOT` to avoid
+mixing toolchains.
 
 Ordinary OCR remains on-device and does not require a model server. Apple
 Foundation Models, Ollama, LM Studio, and llama.cpp remain explicit separate

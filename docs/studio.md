@@ -164,9 +164,11 @@ download is claimed before their evidence exists.
 
 ## Compatibility and build provenance
 
-Build 8 source verification and release scripts pin stable Xcode 26.6
-(`17F113`) at `/Applications/Xcode.app`, Swift 6, arm64, and deployment target
-macOS 14.0. The controlled macOS 27 GR target run remains pending. Final signing, notarization,
+Build 8 source verification and release scripts pin Xcode 27.0 (`27A266a`) at
+`/Applications/Xcode-27-RC.app`, Swift 6.4, arm64, and deployment target
+macOS 14.0. The application name is historical; the verified build identity is
+the public Xcode 27 release build. The controlled macOS 27 GR target run remains
+pending. Final signing, notarization,
 Gatekeeper, download, and
 target-Mac facts will be added from completed evidence. Future Apple beta
 compatibility is not guaranteed; include the exact macOS version and build

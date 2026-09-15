@@ -459,11 +459,10 @@ OCR/PDF tools; LocalOCR has no cloud fallback.
 ## Compatibility and release boundary
 
 The package and app keep a macOS 14 deployment target; Foundation Models code
-is availability-guarded for macOS 26 or later. Prior development evidence used
-Xcode 27 RC (`27A266a`), Swift 6.3.3, and the macOS 26.5 SDK; this is historical
-provenance, not the current Build 8 source-verification toolchain. Build 8 source
-verification and release scripts pin stable Xcode 26.6 (`17F113`) at
-`/Applications/Xcode.app` and its matching macOS SDK. Neither
-development record is a live provider or release acceptance claim.
+is availability-guarded for macOS 26 or later. Build 8 source verification and
+release scripts pin Xcode 27.0 (`27A266a`), Swift 6.4, and the macOS 27.0 SDK at
+`/Applications/Xcode-27-RC.app`. The application name is historical; the exact
+verified build identity is the public Xcode 27 release build. Toolchain
+provenance is not a live provider or release acceptance claim.
 Signature, notarization, download, and target-Mac acceptance
 remain separate gates documented in the [Beta Tester Guide](../BETA_TESTING.md).
