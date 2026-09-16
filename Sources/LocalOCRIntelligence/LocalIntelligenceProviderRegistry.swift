@@ -203,7 +203,22 @@ public actor LocalIntelligenceProviderRegistry: LocalIntelligenceManaging, Local
     }
 
     public func status() async -> LocalIntelligenceSelectionState {
-        await selectionStore.state()
+        let storedState = await selectionStore.state()
+        guard case let .selected(.external(identity, _, _)) = storedState else {
+            return storedState
+        }
+
+        do {
+            _ = try await verifiedCandidate(identity)
+            return storedState
+        } catch let error as IntelligenceError {
+            if case let .selection(failure) = error {
+                return .invalid(failure)
+            }
+            return .invalid(.providerUnavailable(identity.provider))
+        } catch {
+            return .invalid(.providerUnavailable(identity.provider))
+        }
     }
 
     public func reset() async throws {

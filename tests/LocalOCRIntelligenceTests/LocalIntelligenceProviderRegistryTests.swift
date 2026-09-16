@@ -91,6 +91,83 @@ import Testing
         #expect(changedDescriptor?.selected == false)
     }
 
+    @Test func statusRevalidatesSelectedExternalIdentityAgainstLiveDiscovery() async {
+        let storedSelection = task6ExternalSelection()
+        let store = Task6SelectionStore(.selected(storedSelection))
+        let transport = Task6Transport { request in
+            #expect(request.action == .discover)
+            #expect(request.provider == .ollama)
+            #expect(request.prompt == nil)
+            return task6DiscoveryResponse(request: request, candidates: [task6Candidate()])
+        }
+        let registry = LocalIntelligenceProviderRegistry(
+            transport: transport,
+            selectionStore: store,
+            qualificationService: task6QualificationService(provider: Task6FixtureProvider()),
+            appleProviderFactory: { Task6FixtureProvider(identity: .appleSystemDefault) },
+            now: { task6Now }
+        )
+
+        #expect(await registry.status() == .selected(storedSelection))
+        #expect(await transport.requests.count == 1)
+    }
+
+    @Test func statusInvalidatesSelectedExternalIdentityWhenLiveIdentityChanged() async {
+        let changed = LocalModelIdentity(
+            provider: .ollama,
+            model: task6OllamaIdentity.model,
+            fingerprint: "sha256:changed",
+            harnessVersion: task6OllamaIdentity.harnessVersion
+        )
+        let transport = Task6Transport { request in
+            task6DiscoveryResponse(request: request, candidates: [task6Candidate(identity: changed)])
+        }
+        let registry = LocalIntelligenceProviderRegistry(
+            transport: transport,
+            selectionStore: Task6SelectionStore(.selected(task6ExternalSelection())),
+            qualificationService: task6QualificationService(provider: Task6FixtureProvider()),
+            appleProviderFactory: { Task6FixtureProvider(identity: .appleSystemDefault) },
+            now: { task6Now }
+        )
+
+        #expect(await registry.status() == .invalid(.identityChanged(
+            expected: task6OllamaIdentity,
+            actual: changed
+        )))
+    }
+
+    @Test func statusInvalidatesSelectedExternalIdentityWhenProviderCannotBeReached() async {
+        let transport = Task6Transport { _ in
+            throw ModelBridgeClientError.helperLaunchFailed
+        }
+        let registry = LocalIntelligenceProviderRegistry(
+            transport: transport,
+            selectionStore: Task6SelectionStore(.selected(task6ExternalSelection())),
+            qualificationService: task6QualificationService(provider: Task6FixtureProvider()),
+            appleProviderFactory: { Task6FixtureProvider(identity: .appleSystemDefault) },
+            now: { task6Now }
+        )
+
+        #expect(await registry.status() == .invalid(.providerUnavailable(.ollama)))
+    }
+
+    @Test func statusDoesNotProbeBridgeForAppleSelection() async {
+        let transport = Task6Transport { _ in
+            Issue.record("Apple status must not probe the external model bridge")
+            throw ModelBridgeClientError.helperLaunchFailed
+        }
+        let registry = LocalIntelligenceProviderRegistry(
+            transport: transport,
+            selectionStore: Task6SelectionStore(.selected(.appleSystemDefault)),
+            qualificationService: task6QualificationService(provider: Task6FixtureProvider()),
+            appleProviderFactory: { Task6FixtureProvider(identity: .appleSystemDefault) },
+            now: { task6Now }
+        )
+
+        #expect(await registry.status() == .selected(.appleSystemDefault))
+        #expect(await transport.requests.isEmpty)
+    }
+
     @Test(arguments: [LocalModelProviderID.ollama, .lmStudio, .llamaCpp])
     func freshQualificationAfterIdentityChangeIsDiscoverableWithoutReset(provider: LocalModelProviderID) async throws {
         func identity(processID: Int32) -> LocalModelIdentity {
