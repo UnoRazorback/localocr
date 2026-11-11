@@ -278,7 +278,7 @@ test_home_identity="$(/usr/bin/stat -f '%d:%i' "$test_home_root")"
 test_home_parent_identity="$(/usr/bin/stat -f '%d:%i' "$test_home_parent")"
 
 inspection="$("$cli" inspect "$fixture" --json)"
-if ! printf '%s\n' "$inspection" | grep -q '"pages":2'; then
+if ! grep -q '"pages":2' <<<"$inspection"; then
     echo "native CLI inspection did not return the fixture page count" >&2
     exit 1
 fi
@@ -309,11 +309,11 @@ require_json_lines "$initialize_response"
 require_single_response "$initialize_response" 1
 require_single_response "$initialize_response" 2
 require_single_response "$initialize_response" 3
-if ! printf '%s\n' "$initialize_response" | grep -q '"serverInfo"'; then
+if ! grep -q '"serverInfo"' <<<"$initialize_response"; then
     echo "native MCP server did not complete initialization" >&2
     exit 1
 fi
-if ! printf '%s\n' "$initialize_response" | grep -q '"version":"0.3.2"'; then
+if ! grep -q '"version":"0.3.2"' <<<"$initialize_response"; then
     echo "native MCP server did not negotiate version 0.3.2" >&2
     exit 1
 fi
@@ -328,7 +328,7 @@ for tool_name in \
     ocr_pdf_batch \
     organize_document \
     summarize_document; do
-    if ! printf '%s\n' "$tools_response" | grep -q "\"name\":\"$tool_name\""; then
+    if ! grep -q "\"name\":\"$tool_name\"" <<<"$tools_response"; then
         echo "native MCP tools/list omitted $tool_name" >&2
         exit 1
     fi
@@ -421,7 +421,7 @@ if ! printf '%s\n' "$compatibility_response" | grep '"id":12' | grep -Fq '\"page
     echo "native MCP inspection compatibility call failed with current acknowledgment" >&2
     exit 1
 fi
-if printf '%s\n' "$compatibility_response" | grep -q 'external_data_acknowledgment_required'; then
+if grep -q 'external_data_acknowledgment_required' <<<"$compatibility_response"; then
     echo "native MCP rejected the isolated current acknowledgment" >&2
     exit 1
 fi
