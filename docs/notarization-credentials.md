@@ -10,7 +10,7 @@ The release operator is Scott's MacBook Air (user `scott`). Credentials belong i
 Before a release, check access without retrieving or displaying the password:
 
 ```bash
-DEVELOPER_DIR=/Applications/Xcode-27-RC.app/Contents/Developer \
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   xcrun notarytool history \
   --keychain-profile localocr-notary \
   --keychain /Users/scott/Library/Keychains/login.keychain-db \

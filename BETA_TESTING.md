@@ -1,20 +1,42 @@
-# LocalOCR Studio Beta 2.1 Tester Guide
+# LocalOCR Studio Beta 2.2 Tester Guide
 
-The Beta 2.1 release candidate is version `0.3.1`, build `8`, with planned tag
-`v0.3.1-beta.1`. It includes the simple one-document desktop flow, an opt-in
+The Beta 2.2 release candidate is version `0.3.2`, build `9`, with planned tag
+`v0.3.2-beta.1`. It includes the simple one-document desktop flow, an opt-in
 reviewed desktop batch, offline Help, Local Intelligence, guided Codex and
 Claude connection, and all three native helpers. Do not distribute or install
-it as a Beta 2.1 release until signing, notarization, downloaded-package, and
+it as a Beta 2.2 release until signing, notarization, downloaded-package, and
 target-Mac acceptance evidence is complete.
+
+## What changed since Beta 2.1
+
+Recognized page text now keeps each table row on one line. Apple Vision
+reports table cells one at a time and usually reads a table column by column,
+so earlier builds returned a column of labels followed by a column of amounts.
+Build 9 joins the cells of a row with ` | `, left to right, and leaves
+paragraphs and multi-column pages in their previous reading order. The change
+applies to the text shown and saved by the desktop app, to `localocr ocr`, and
+to the MCP `ocr_pdf`, `ocr_pdf_batch`, and `ocr_image` results. Searchable PDF
+output is unchanged.
+
+On 112 pages from 16 real construction documents, the share of amounts that
+sit on the same text line as their row label rose from 8.0% to 94.3%. Method,
+limits, and the remaining amount-recognition misses are in
+[the benchmark notes](benchmarks/README.md). OCR and model output can still contain errors;
+check amounts against the source page.
+
+The previous prerelease, `v0.3.1-beta.1` (build 8), was published on
+September 21, 2026. Local Intelligence, provider selection, the offline Help
+Center, guided agent connection, the nine MCP tools, and Local AI Activity
+sharing carry forward from it unchanged.
 
 ## Download and install
 
-After publication, download `LocalOCR-Studio-0.3.1-8.zip` and
-`LocalOCR-Studio-0.3.1-8.sha256` from the `v0.3.1-beta.1` prerelease into the
+After publication, download `LocalOCR-Studio-0.3.2-9.zip` and
+`LocalOCR-Studio-0.3.2-9.sha256` from the `v0.3.2-beta.1` prerelease into the
 same directory. Verify the download before expanding it:
 
 ```bash
-shasum -a 256 -c "LocalOCR-Studio-0.3.1-8.sha256"
+shasum -a 256 -c "LocalOCR-Studio-0.3.2-9.sha256"
 ```
 
 The command must report `OK`. Expand the verified ZIP, move `LocalOCR Studio.app` to `/Applications`, then open it normally. Do not bypass Gatekeeper, remove quarantine attributes, or use an unverified build or staging copy.
@@ -42,7 +64,7 @@ single-document flow.
 
 ## Local Intelligence and agent connection
 
-Beta 2.1 adds three optional Local Intelligence actions to
+Beta 2.2 includes three optional Local Intelligence actions to
 the single-document result: summarize, suggest a name/category/tags, and
 extract `date`, `total`, and `reference_number`. Results are temporary and
 non-destructive, while Batch remains OCR-only.
@@ -62,8 +84,8 @@ confirmation before updating that client's local MCP configuration. Generic
 MCP clients receive copy-only stdio instructions; LocalOCR does not guess at or
 edit an unknown client's configuration.
 
-Build 8 source compilation and automated verification use Xcode 27.0
-(`27A266a`), Swift 6.4, and the macOS 27.0 SDK while keeping
+Build 9 source compilation and automated verification use Xcode 27.2
+(`27B52`), Swift 6.4, and the macOS 27.2 SDK while keeping
 the package/app deployment target at macOS 14. This does not replace physical
 provider, downloaded-package, or target-Mac acceptance; those release gates
 remain open until dated evidence is recorded.
@@ -87,20 +109,19 @@ Recognition uses Apple Vision and PDFKit locally. LocalOCR does not upload docum
 
 ## Compatibility and candidate provenance
 
-The Build 8 source-verification and pinned release toolchain is Xcode 27.0
-(`27A266a`) at `/Applications/Xcode-27-RC.app`, Swift 6.4, arm64, and
-deployment target macOS 14.0. The application name is historical; the exact
-verified build identity is the public Xcode 27 release build. The controlled
+The Build 9 source-verification and pinned release toolchain is Xcode 27.2
+(`27B52`) at `/Applications/Xcode.app`, Swift 6.4, arm64, and
+deployment target macOS 14.0. The controlled
 macOS 27 GR target run remains pending. Final Developer ID,
 Hardened Runtime,
 notarization, staple, Gatekeeper, download, and exact-build target-Mac facts
 will be added only from completed release evidence.
 
-Candidate provenance: version `0.3.1`, build `8`, planned tag
-`v0.3.1-beta.1`. The exact release commit and verified ZIP SHA-256 are pending
+Candidate provenance: version `0.3.2`, build `9`, planned tag
+`v0.3.2-beta.1`. The exact release commit and verified ZIP SHA-256 are pending
 the immutable release build.
 
-The [Build 8 acceptance record](docs/localocr-build8-acceptance-2026-09-14.md)
+The [Build 9 acceptance record](docs/localocr-build9-acceptance-2026-11-11.md)
 distinguishes in-process synthetic tests from Gemma/GPT acceptance, the real
 ten-minute idle, and the two consecutive six-operation target harnesses.
 
@@ -126,7 +147,7 @@ Use the repository [beta feedback form](https://github.com/UnoRazorback/localocr
 ## Advanced: MCP setup
 
 This optional advanced path is separate from the desktop flow. Start with the
-desktop app unless you need agent automation. Beta 2.1 has nine local stdio
+desktop app unless you need agent automation. Beta 2.2 has nine local stdio
 tools and requires explicit external-data consent. Follow the
 [canonical MCP FAQ](docs/mcp.md#advanced-setup)
 for the complete disclosure, consent flow, tool parameters, source-build path,
@@ -172,7 +193,7 @@ Use your client's current documentation to configure this generic stdio server; 
 }
 ```
 
-The nine Beta 2.1 tools are `get_pdf_page_count`, `inspect_pdf`, `ocr_pdf`,
+The nine Beta 2.2 tools are `get_pdf_page_count`, `inspect_pdf`, `ocr_pdf`,
 `ocr_pdf_batch`, `ocr_image`, `make_searchable_pdf`, `summarize_document`,
 `organize_document`, and `extract_document_fields`. The last three require an
 available, explicitly selected, qualified Apple Foundation Models, Ollama, or

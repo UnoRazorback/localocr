@@ -4,9 +4,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOYMENT_TARGET = "deployment target macOS 14.0"
-VERSION = "0.3.1"
-BUILD = "8"
-TAG = "v0.3.1-beta.1"
+VERSION = "0.3.2"
+BUILD = "9"
+TAG = "v0.3.2-beta.1"
 FILES = {
     "readme": ROOT / "README.md",
     "studio": ROOT / "docs/studio.md",
@@ -32,7 +32,7 @@ def test_repository_docs_link_to_beta_guide():
     assert "../BETA_TESTING.md" in FILES["mcp"].read_text()
 
 
-def test_readme_and_studio_describe_beta_2_1_candidate_and_reset():
+def test_readme_and_studio_describe_beta_2_2_candidate_and_reset():
     for key in ("readme", "studio"):
         text = FILES[key].read_text()
         prose = " ".join(text.split())
@@ -40,9 +40,9 @@ def test_readme_and_studio_describe_beta_2_1_candidate_and_reset():
         assert f"build `{BUILD}`" in prose
         assert TAG in text
         assert "release candidate" in text.lower()
-        assert "no published Beta 2.1 download is claimed" in prose or "no Beta 2.1 download is being claimed" in prose
+        assert "no published Beta 2.2 download is claimed" in prose or "no Beta 2.2 download is being claimed" in prose
         assert "Process Another Document" in text
-        assert "Xcode 27.0 (`27A266a`)" in prose
+        assert "Xcode 27.2 (`27B52`)" in prose
         assert DEPLOYMENT_TARGET in prose
         assert "Future Apple beta compatibility is not guaranteed" in prose
 
@@ -58,7 +58,7 @@ def test_mcp_guide_has_installed_helper_and_verified_client_commands():
     assert "Generic clients remain" in text and "copy-only" in text
 
 
-def test_current_docs_align_on_beta_2_1_providers_help_and_helpers():
+def test_current_docs_align_on_beta_2_2_providers_help_and_helpers():
     for path in (*FILES.values(), ROOT / "BETA_TESTING.md"):
         text = path.read_text()
         prose = " ".join(text.split())
@@ -125,11 +125,11 @@ def test_local_ai_activity_entitlement_gate_records_authorized_configuration_and
     assert "blocked pending the approvals below" not in gate
 
 
-def test_private_build_8_candidate_identity_and_suite_boundary():
+def test_private_build_9_candidate_identity_and_suite_boundary():
     for name in ("README.md", "docs/studio.md", "BETA_TESTING.md"):
         text = (ROOT / name).read_text()
         assert f"LocalOCR-Studio-{VERSION}-{BUILD}.zip" in text
-        assert "LocalOCR-Studio-0.3.1-4" not in text
+        assert "LocalOCR-Studio-0.3.2-4" not in text
     readme = FILES["readme"].read_text()
     assert "private integration release candidate" in readme
     assert "not a published download" in readme
@@ -138,4 +138,4 @@ def test_private_build_8_candidate_identity_and_suite_boundary():
         assert requirement in readme
     for name in ("README.md", "docs/studio.md", "docs/mcp.md", "BETA_TESTING.md"):
         text = (ROOT / name).read_text()
-        assert "27A266a" in text
+        assert "27B52" in text

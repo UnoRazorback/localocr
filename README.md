@@ -9,10 +9,10 @@ stored locally.
 LocalOCR is an open-core project for **macOS 14 or later**. The open-source
 core includes the Swift OCR engine, the `localocr` command-line tool, and the
 `localocr-mcp` stdio server. The repository also contains the release pipeline
-for a directly distributed LocalOCR Studio Mac app. The Beta 2.1 release
-candidate is version `0.3.1`, build `8`, with planned tag
-`v0.3.1-beta.1`. Signing, notarization, target-Mac acceptance, and publication
-remain separate gates; no Beta 2.1 download is being claimed before those
+for a directly distributed LocalOCR Studio Mac app. The Beta 2.2 release
+candidate is version `0.3.2`, build `9`, with planned tag
+`v0.3.2-beta.1`. Signing, notarization, target-Mac acceptance, and publication
+remain separate gates; no Beta 2.2 download is being claimed before those
 gates pass. See the [Beta Tester Guide](BETA_TESTING.md) for the desktop-first
 test, privacy boundary, Local Intelligence providers, and optional MCP setup.
 
@@ -52,9 +52,31 @@ local-use interfaces.
 Start with the desktop app; configure an agent only if you need automation, and
 then follow the canonical [advanced MCP setup and FAQ](docs/mcp.md#advanced-setup).
 
-### Beta 2.1 Local Intelligence
+### New in Beta 2.2: table rows in OCR text
 
-For a single processed document, Beta 2.1 adds three
+Recognized page text now keeps each table row on one line. Apple Vision
+reports table cells one at a time and usually reads a table column by column,
+so earlier builds returned a column of labels followed by a column of amounts.
+Build 9 joins the cells of a row with ` | `, left to right, and leaves
+paragraphs and multi-column pages in their previous reading order. The change
+applies to the text shown and saved by the desktop app, to `localocr ocr`, and
+to the MCP `ocr_pdf`, `ocr_pdf_batch`, and `ocr_image` results. Searchable PDF
+output is unchanged.
+
+On 112 pages from 16 real construction documents, the share of amounts that
+sit on the same text line as their row label rose from 8.0% to 94.3%. Method,
+limits, and the remaining amount-recognition misses are in
+[the benchmark notes](benchmarks/README.md). OCR and model output can still contain errors;
+check amounts against the source page.
+
+The previous prerelease, `v0.3.1-beta.1` (build 8), was published on
+September 21, 2026. Local Intelligence, provider selection, the offline Help
+Center, guided agent connection, the nine MCP tools, and Local AI Activity
+sharing carry forward from it unchanged.
+
+### Beta 2.2 Local Intelligence
+
+For a single processed document, Beta 2.2 includes three
 optional actions: summarize, suggest a name/category/tags, and extract `date`,
 `total`, and `reference_number`. The results are temporary and non-destructive;
 they clear when the document/workspace/window changes and never rename or move
@@ -62,7 +84,7 @@ the source. Desktop batch remains OCR-only.
 
 Apple Foundation Models requires macOS 26 or later, an eligible Mac, Apple
 Intelligence enabled, its on-device model ready, and a supported Apple
-Intelligence language. Beta 2.1 can also detect verified loopback Ollama and
+Intelligence language. Beta 2.2 can also detect verified loopback Ollama and
 LM Studio installations and offer their local models. It never silently
 switches providers, refuses remote or locality-ambiguous endpoints, and
 requires explicit acknowledgment before document text is sent to an external
@@ -132,37 +154,35 @@ The resulting executables are `dist/native-tools/localocr`,
 `dist/native-tools/localocr-model-bridge`. The build script creates local development
 artifacts only; it does not sign, notarize, install, or publish them.
 
-## Beta 2.1 release candidate
+## Beta 2.2 release candidate
 
-Build 8 is a **private integration release candidate**, not a published download.
-It adds the named `llama_cpp` provider (llama.cpp), grounded one-shot
+Build 9 is a **private integration release candidate**, not a published download.
+It keeps the named `llama_cpp` provider (llama.cpp), grounded one-shot
 `summarize`, `organize`, and `extract-fields` JSON CLI commands, and signed
 content-free Local AI Activity sharing with AI Neural Gauge. Each machine's
 signature, container access, provider qualification, and real document acceptance
 must be verified separately. Ordinary OCR works without a model server. There
 is no automatic provider fallback and no model download or server-launch control.
 
-The candidate identity is version `0.3.1`, build `8`, planned tag
-`v0.3.1-beta.1`, and planned assets `LocalOCR-Studio-0.3.1-8.zip` and
-`LocalOCR-Studio-0.3.1-8.sha256`. The exact release commit, ZIP SHA-256,
+The candidate identity is version `0.3.2`, build `9`, planned tag
+`v0.3.2-beta.1`, and planned assets `LocalOCR-Studio-0.3.2-9.zip` and
+`LocalOCR-Studio-0.3.2-9.sha256`. The exact release commit, ZIP SHA-256,
 notarization submission, downloaded-package verification, and target-Mac
-results must be filled from evidence after those gates pass. Build 8 source
-verification and release scripts pin Xcode 27.0 (`27A266a`) at
-`/Applications/Xcode-27-RC.app`, Swift 6.4, arm64, and deployment target macOS 14.0.
-The application name is historical; its verified build identity is the public
-Xcode 27 release build.
+results must be filled from evidence after those gates pass. Build 9 source
+verification and release scripts pin Xcode 27.2 (`27B52`) at
+`/Applications/Xcode.app`, Swift 6.4, arm64, and deployment target macOS 14.0.
 The controlled macOS 27 GR target run remains a separate acceptance gate.
 Future Apple beta compatibility is not guaranteed.
 
-See the [Build 8 acceptance record](docs/localocr-build8-acceptance-2026-09-14.md)
+See the [Build 9 acceptance record](docs/localocr-build9-acceptance-2026-11-11.md)
 for synthetic endurance evidence and the remaining real-model requirements.
 
-After the release is published, download `LocalOCR-Studio-0.3.1-8.zip` and
-`LocalOCR-Studio-0.3.1-8.sha256` into the same directory and verify them before
+After the release is published, download `LocalOCR-Studio-0.3.2-9.zip` and
+`LocalOCR-Studio-0.3.2-9.sha256` into the same directory and verify them before
 expanding the ZIP:
 
 ```bash
-shasum -a 256 -c "LocalOCR-Studio-0.3.1-8.sha256"
+shasum -a 256 -c "LocalOCR-Studio-0.3.2-9.sha256"
 ```
 
 Continue only if the command reports `OK`. Move the expanded `LocalOCR
@@ -197,7 +217,7 @@ corresponding facts for the available build.
 - LocalOCR's OCR, cache, Foundation Models, and stdio-server processing remain
   local; there is no cloud OCR, cloud storage, or network MCP transport. A
   connected client/provider may separately transmit MCP arguments and results.
-- The MCP server uses local stdio. Beta 2.1 provides guided setup for detected
+- The MCP server uses local stdio. Beta 2.2 provides guided setup for detected
   Codex and Claude installations; other clients receive copy-only instructions.
 - All nine MCP document tools require the external-provider acknowledgment.
 - Windows, Linux, and Intel Macs are not supported.
@@ -220,7 +240,7 @@ program will consume the result. See [the full CLI reference](docs/cli.md).
 
 ## MCP server
 
-Beta 2.1 `localocr-mcp` exposes the following local tools after the current
+Beta 2.2 `localocr-mcp` exposes the following local tools after the current
 external-data acknowledgment is accepted:
 
 | Tool | Purpose |
@@ -261,7 +281,7 @@ PyMuPDF, Homebrew, or a network service at runtime.
 
 LocalOCR targets local, on-device PDF and image OCR. It does not provide cloud
 OCR, cloud document storage, remote MCP transport, or cross-platform support.
-Beta 2.1 combines the default single-document desktop flow, reviewed sequential
+Beta 2.2 combines the default single-document desktop flow, reviewed sequential
 desktop batches, offline Help, guided Codex/Claude connection, nine local stdio
 tools, and explicitly selected local-model providers. Release verification and
 publication remain evidence-backed gates.

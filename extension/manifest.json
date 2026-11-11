@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "ocr-service",
   "display_name": "OCR Service (Apple Vision)",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Process PDFs and images locally with Apple Vision, then optionally use verified on-device Local Intelligence. Provides nine purpose-limited tools over local stdio after explicit external-provider acknowledgment. The localocr-mcp executable must be available on PATH; this extension does not bundle it.",
   "author": {
     "name": "Scott Ray"

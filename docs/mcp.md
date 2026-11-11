@@ -5,8 +5,8 @@ agent to automate LocalOCR. The desktop app requires no MCP setup. This page is
 the canonical advanced-use guide for connecting the `localocr-mcp` helper to an
 MCP client.
 
-Beta 2.1 is version `0.3.1`, build `6`, with nine tools and an external-data
-acknowledgment. Its planned tag is `v0.3.1-beta.1`. This guide describes the
+Beta 2.2 is version `0.3.2`, build `9`, with nine tools and an external-data
+acknowledgment. Its planned tag is `v0.3.2-beta.1`. This guide describes the
 candidate behavior but does not claim signing, notarization, installation, or
 release acceptance before those evidence gates pass.
 
@@ -343,7 +343,7 @@ exact IPv4 or IPv6 loopback routes. Detection is not selection. A model must
 pass locality, identity, and grounded-task qualification, and the user must
 select it and accept the displayed third-party harness acknowledgment. Remote,
 relayed, wildcard, and locality-ambiguous endpoints are refused. Generic
-OpenAI-compatible endpoints are not accepted in Beta 2.1.
+OpenAI-compatible endpoints are not accepted in Beta 2.2.
 
 Local Intelligence sends only required recognized text and page markers to the
 selected provider. It does not pass the source PDF or image bytes to the model.
@@ -459,10 +459,9 @@ OCR/PDF tools; LocalOCR has no cloud fallback.
 ## Compatibility and release boundary
 
 The package and app keep a macOS 14 deployment target; Foundation Models code
-is availability-guarded for macOS 26 or later. Build 8 source verification and
-release scripts pin Xcode 27.0 (`27A266a`), Swift 6.4, and the macOS 27.0 SDK at
-`/Applications/Xcode-27-RC.app`. The application name is historical; the exact
-verified build identity is the public Xcode 27 release build. Toolchain
+is availability-guarded for macOS 26 or later. Build 9 source verification and
+release scripts pin Xcode 27.2 (`27B52`), Swift 6.4, and the macOS 27.2 SDK at
+`/Applications/Xcode.app`. Toolchain
 provenance is not a live provider or release acceptance claim.
 Signature, notarization, download, and target-Mac acceptance
 remain separate gates documented in the [Beta Tester Guide](../BETA_TESTING.md).

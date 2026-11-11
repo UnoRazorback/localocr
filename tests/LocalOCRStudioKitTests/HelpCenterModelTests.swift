@@ -5,7 +5,7 @@ import Testing
 struct HelpCenterModelTests {
     @Test("ships the twelve approved offline help topics in navigation order")
     func approvedTopicInventory() {
-        let model = HelpCenterModel(marketingVersion: "0.3.1", buildNumber: "4")
+        let model = HelpCenterModel(marketingVersion: "0.3.2", buildNumber: "4")
 
         #expect(model.topics.map(\.id) == [
             .gettingStarted,
@@ -39,7 +39,7 @@ struct HelpCenterModelTests {
 
     @Test("search matches titles body text and keywords without using a network index")
     func searchMatchesBundledContent() {
-        let model = HelpCenterModel(marketingVersion: "0.3.1", buildNumber: "4")
+        let model = HelpCenterModel(marketingVersion: "0.3.2", buildNumber: "4")
 
         #expect(model.filteredTopics(matching: "numbered filename").map(\.id) == [.desktopBatch])
         #expect(model.filteredTopics(matching: "SystemLanguageModel.default").map(\.id) == [
@@ -51,7 +51,7 @@ struct HelpCenterModelTests {
 
     @Test("privacy help distinguishes LocalOCR processing from an external agent")
     func privacyBoundaryIsExplicit() throws {
-        let model = HelpCenterModel(marketingVersion: "0.3.1", buildNumber: "4")
+        let model = HelpCenterModel(marketingVersion: "0.3.2", buildNumber: "4")
         let privacy = try #require(model.topic(id: .privacy))
 
         #expect(privacy.body.contains("Vision OCR stays on this Mac"))
@@ -62,10 +62,10 @@ struct HelpCenterModelTests {
 
     @Test("version help renders the app supplied version and build")
     func versionAndBuildAreInjected() throws {
-        let model = HelpCenterModel(marketingVersion: "0.3.1", buildNumber: "4")
+        let model = HelpCenterModel(marketingVersion: "0.3.2", buildNumber: "4")
         let version = try #require(model.topic(id: .version))
 
-        #expect(version.body.contains("LocalOCR Studio 0.3.1 (4)"))
+        #expect(version.body.contains("LocalOCR Studio 0.3.2 (4)"))
         #expect(version.body.contains("macOS 14 or later"))
         #expect(version.body.contains("Local Intelligence requires macOS 26 or later"))
     }

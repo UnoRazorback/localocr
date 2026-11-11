@@ -1,7 +1,7 @@
 import Foundation
 
 public enum LocalOCRRuntime {
-    public static let version = "0.3.1"
+    public static let version = "0.3.2"
 
     public static func cacheURL(
         environment: [String: String] = ProcessInfo.processInfo.environment,

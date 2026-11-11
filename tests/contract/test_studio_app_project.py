@@ -55,8 +55,8 @@ RELEASE_PATH_GUARD = ROOT / "scripts" / "release-path-guard.swift"
 EXPECTED_SETTINGS = {
     "PRODUCT_BUNDLE_IDENTIFIER": "com.rayconsulting.localocr",
     "PRODUCT_NAME": "LocalOCR Studio",
-    "MARKETING_VERSION": "0.3.1",
-    "CURRENT_PROJECT_VERSION": "8",
+    "MARKETING_VERSION": "0.3.2",
+    "CURRENT_PROJECT_VERSION": "9",
     "MACOSX_DEPLOYMENT_TARGET": "14.0",
     "ARCHS": "arm64",
     "SWIFT_VERSION": "6.0",
@@ -1076,8 +1076,8 @@ def _write_staged_app(
             {
                 "CFBundleIdentifier": bundle_identifier,
                 "CFBundleIconName": "AppIcon",
-                "CFBundleShortVersionString": "0.3.1",
-                "CFBundleVersion": "8",
+                "CFBundleShortVersionString": "0.3.2",
+                "CFBundleVersion": "9",
                 "LSMinimumSystemVersion": minimum_os,
             },
             plist,

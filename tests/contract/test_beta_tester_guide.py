@@ -3,7 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 GUIDE = ROOT / "BETA_TESTING.md"
-RELEASE_NOTES = ROOT / "docs/release/v0.3.1-beta.1-notes.md"
+RELEASE_NOTES = ROOT / "docs/release/v0.3.2-beta.1-notes.md"
 DEPLOYMENT_TARGET = "deployment target macOS 14.0"
 LATER_BETA_WARNING = "Future Apple beta compatibility is not guaranteed."
 
@@ -11,9 +11,9 @@ LATER_BETA_WARNING = "Future Apple beta compatibility is not guaranteed."
 def test_beta_guide_contains_install_desktop_batch_and_privacy_contracts():
     text = GUIDE.read_text()
     required = (
-        "LocalOCR-Studio-0.3.1-8.zip",
-        "LocalOCR-Studio-0.3.1-8.sha256",
-        'shasum -a 256 -c "LocalOCR-Studio-0.3.1-8.sha256"',
+        "LocalOCR-Studio-0.3.2-9.zip",
+        "LocalOCR-Studio-0.3.2-9.sha256",
+        'shasum -a 256 -c "LocalOCR-Studio-0.3.2-9.sha256"',
         "Process Another Document",
         "Create Searchable PDF",
         "New Batch",
@@ -61,11 +61,11 @@ def test_beta_guide_keeps_desktop_first_and_links_to_the_canonical_mcp_faq():
 def test_guide_and_release_notes_use_exact_candidate_identity_without_false_release_claims():
     for path in (GUIDE, RELEASE_NOTES):
         text = path.read_text()
-        assert "0.3.1" in text
-        assert "build `8`" in text
-        assert "v0.3.1-beta.1" in text
-        assert "Xcode 27.0" in text
-        assert "27A266a" in text
+        assert "0.3.2" in text
+        assert "build `9`" in text
+        assert "v0.3.2-beta.1" in text
+        assert "Xcode 27.2" in text
+        assert "27B52" in text
         assert DEPLOYMENT_TARGET in text
         assert LATER_BETA_WARNING in text
         assert "pending" in text.lower() or "remain" in text.lower()
