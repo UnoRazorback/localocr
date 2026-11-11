@@ -16,6 +16,11 @@ remain separate gates; no Beta 2.2 download is being claimed before those
 gates pass. See the [Beta Tester Guide](BETA_TESTING.md) for the desktop-first
 test, privacy boundary, Local Intelligence providers, and optional MCP setup.
 
+> **Published.** Build 10 was published on November 11, 2026 as prerelease
+> [`v0.3.2-beta.1`](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.1). The candidate wording in this document describes
+> the gates the build passed before publication. Local-model provider
+> acceptance was not rerun for this build and remains open.
+
 ## What it does
 
 - Inspect a PDF's existing text layer before OCR.

@@ -152,6 +152,11 @@ external-provider risk, consent, and current client-configuration examples.
 The adjacent `Contents/Helpers/localocr` executable provides the command-line
 interface.
 
+> **Published.** Build 10 was published on November 11, 2026 as prerelease
+> [`v0.3.2-beta.1`](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.1). The candidate wording in this document describes
+> the gates the build passed before publication. Local-model provider
+> acceptance was not rerun for this build and remains open.
+
 ## What changed since Beta 2.1
 
 Recognized page text now keeps each table row on one line. Apple Vision
