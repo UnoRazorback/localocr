@@ -372,7 +372,7 @@ def _install_stable_swift_fixture(repo: Path, swift_fixture: Path) -> Path:
         "set -euo pipefail\n"
         'tool="${1:-}"\n'
         "shift\n"
-        'export DEVELOPER_DIR="/Applications/Xcode-27-RC.app/Contents/Developer"\n'
+        'export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"\n'
         'exec /usr/bin/xcrun "$tool" "$@"\n'
     )
     xcrun_fixture.chmod(0o755)
@@ -380,13 +380,13 @@ def _install_stable_swift_fixture(repo: Path, swift_fixture: Path) -> Path:
     xcodebuild_fixture.write_text(
         "#!/bin/bash\n"
         "set -euo pipefail\n"
-        'export DEVELOPER_DIR="/Applications/Xcode-27-RC.app/Contents/Developer"\n'
-        'exec /Applications/Xcode-27-RC.app/Contents/Developer/usr/bin/xcodebuild "$@"\n'
+        'export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"\n'
+        'exec /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild "$@"\n'
     )
     xcodebuild_fixture.chmod(0o755)
     toolchain = repo / "scripts" / "release-toolchain.sh"
     source = toolchain.read_text()
-    original = 'release_developer_dir="/Applications/Xcode-27-RC.app/Contents/Developer"'
+    original = 'release_developer_dir="/Applications/Xcode.app/Contents/Developer"'
     replacement = f'release_developer_dir={shlex.quote(str(developer_dir))}'
     assert original in source
     toolchain.write_text(source.replace(original, replacement, 1))
@@ -1301,10 +1301,10 @@ def test_signer_rejects_arbitrary_symlink_directly(tmp_path: Path) -> None:
 
 def test_toolchain_accepts_only_pinned_xcode_27_release_build_path() -> None:
     _assert_script_test_accepts(
-        "toolchain", "--test-developer-dir", "/Applications/Xcode-27-RC.app/Contents/Developer"
+        "toolchain", "--test-developer-dir", "/Applications/Xcode.app/Contents/Developer"
     )
     for developer_dir in (
-        "/Applications/Xcode.app/Contents/Developer",
+        "/Applications/Xcode-27-RC.app/Contents/Developer",
         "/Applications/Xcode-beta.app/Contents/Developer",
         "/Applications/Xcode-RC.app/Contents/Developer",
         "/Applications/Xcode Preview.app/Contents/Developer",
@@ -1319,8 +1319,9 @@ def test_toolchain_accepts_only_pinned_xcode_27_release_build_path() -> None:
     [
         ("Xcode 26.6\nBuild version 17F113", False),
         ("Xcode 26.6\nBuild version 17G100", False),
-        ("Xcode 27.0\nBuild version 27A266a", True),
-        ("Xcode 27.0\nBuild version 27A266b", False),
+        ("Xcode 27.0\nBuild version 27A266a", False),
+        ("Xcode 27.2\nBuild version 27B52", True),
+        ("Xcode 27.2\nBuild version 27B53", False),
     ],
 )
 def test_release_xcode_version_requires_exact_build(tmp_path: Path, version: str, accepted: bool) -> None:
@@ -4556,7 +4557,7 @@ def test_verifier_allows_only_the_system_swift_rpath() -> None:
         "/usr/lib/swift/",
         "/usr/lib",
         "/System/Library",
-        "/Applications/Xcode-27-RC.app/Contents/Developer/usr/lib/swift/macosx",
+        "/Applications/Xcode.app/Contents/Developer/usr/lib/swift/macosx",
         "/opt/homebrew/lib",
         "/usr/local/lib",
         "@loader_path/../Frameworks",

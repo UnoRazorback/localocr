@@ -4,7 +4,7 @@ set -euo pipefail
 
 release_toolchain_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 release_repo_root="$(cd "$release_toolchain_script_dir/.." && pwd)"
-release_developer_dir="/Applications/Xcode-27-RC.app/Contents/Developer"
+release_developer_dir="/Applications/Xcode.app/Contents/Developer"
 release_xcode_toolchain_dir="$release_developer_dir/Toolchains/XcodeDefault.xctoolchain"
 release_xcode_swift_path="$release_xcode_toolchain_dir/usr/bin/swift"
 release_signing_identity="Developer ID Application: John Scott Ray (DZ8B5454ZN)"
@@ -990,7 +990,7 @@ release_evidence_dir() {
 validate_release_developer_dir() {
     local candidate="${1:-}"
     [[ "$candidate" == "$release_developer_dir" ]] || {
-        echo "release builds require the pinned Xcode 27 build 27A266a developer directory" >&2
+        echo "release builds require the pinned Xcode 27.2 build 27B52 developer directory" >&2
         return 1
     }
 
@@ -1005,8 +1005,8 @@ validate_release_xcode_version() {
         return 1
     }
     version="$("$release_developer_dir/usr/bin/xcodebuild" -version)" || return 1
-    [[ "$version" == $'Xcode 27.0\nBuild version 27A266a' ]] || {
-        echo "release requires Xcode 27.0 build 27A266a" >&2
+    [[ "$version" == $'Xcode 27.2\nBuild version 27B52' ]] || {
+        echo "release requires Xcode 27.2 build 27B52" >&2
         return 1
     }
 }
@@ -1021,34 +1021,34 @@ select_release_swift_toolchain() {
     unset SDKROOT
     validate_release_developer_dir "$DEVELOPER_DIR" || return 1
     [[ -d "$release_developer_dir" && ! -L "$release_developer_dir" ]] || {
-        echo "pinned Xcode 27 build 27A266a developer directory is missing or symlinked: $release_developer_dir" >&2
+        echo "pinned Xcode 27.2 build 27B52 developer directory is missing or symlinked: $release_developer_dir" >&2
         return 1
     }
     physical_developer_dir="$(cd "$release_developer_dir" && pwd -P)" || return 1
     validate_release_developer_dir "$physical_developer_dir" || return 1
     [[ -d "$release_xcode_toolchain_dir" && ! -L "$release_xcode_toolchain_dir" ]] || {
-        echo "pinned Xcode 27 build 27A266a default toolchain is missing or symlinked: $release_xcode_toolchain_dir" >&2
+        echo "pinned Xcode 27.2 build 27B52 default toolchain is missing or symlinked: $release_xcode_toolchain_dir" >&2
         return 1
     }
     physical_toolchain="$(cd "$release_xcode_toolchain_dir" && pwd -P)" || return 1
     [[ "$physical_toolchain" == "$release_xcode_toolchain_dir" ]] || {
-        echo "pinned Xcode 27 build 27A266a default toolchain resolved unexpectedly" >&2
+        echo "pinned Xcode 27.2 build 27B52 default toolchain resolved unexpectedly" >&2
         return 1
     }
     [[ -x "$release_xcode_swift_path" ]] || {
-        echo "pinned Xcode 27 build 27A266a Swift executable is unavailable: $release_xcode_swift_path" >&2
+        echo "pinned Xcode 27.2 build 27B52 Swift executable is unavailable: $release_xcode_swift_path" >&2
         return 1
     }
     physical_swift="$(/bin/realpath "$release_xcode_swift_path")" || return 1
     case "$physical_swift" in
         "$physical_toolchain/usr/bin/"*) ;;
         *)
-            echo "pinned Xcode 27 build 27A266a Swift executable escaped the default toolchain" >&2
+            echo "pinned Xcode 27.2 build 27B52 Swift executable escaped the default toolchain" >&2
             return 1
             ;;
     esac
     [[ -f "$physical_swift" && ! -L "$physical_swift" && -x "$physical_swift" ]] || {
-        echo "pinned Xcode 27 build 27A266a Swift executable did not resolve to a physical executable" >&2
+        echo "pinned Xcode 27.2 build 27B52 Swift executable did not resolve to a physical executable" >&2
         return 1
     }
     validate_release_xcode_version
@@ -1062,7 +1062,7 @@ select_release_developer_dir() {
     validate_release_developer_dir "$DEVELOPER_DIR"
 
     [[ -d "$DEVELOPER_DIR" && ! -L "$DEVELOPER_DIR" ]] || {
-        echo "pinned Xcode 27 build 27A266a developer directory is missing or symlinked: $DEVELOPER_DIR" >&2
+        echo "pinned Xcode 27.2 build 27B52 developer directory is missing or symlinked: $DEVELOPER_DIR" >&2
         return 1
     }
     resolved_developer_dir="$(cd "$DEVELOPER_DIR" && pwd -P)"
@@ -1165,7 +1165,7 @@ record_release_toolchain_evidence() {
     local version_file_partial
 
     [[ -n "$release_xcodebuild_path" ]] || {
-        echo "pinned Xcode 27 build 27A266a must be selected before recording evidence" >&2
+        echo "pinned Xcode 27.2 build 27B52 must be selected before recording evidence" >&2
         return 1
     }
     evidence_dir="$(
