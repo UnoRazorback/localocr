@@ -115,6 +115,28 @@ cause is not known. Because the sparse-text check keeps embedded text when
 recognition returns little, a transient low read shows up as a short page
 rather than an error. Treat an unexpectedly short page as a reason to rerun.
 
+## Installation on the target Mac and a first-run effect
+
+Build 10 was installed at `~/Applications/LocalOCR Studio.app` on the MacBook
+Pro (build 9 kept as a backup); the installed app passes strict signature,
+Gatekeeper, and stapled-ticket checks and reports 0.3.2 (10).
+
+The first `localocr ocr` calls from the newly installed app took 38 and 49
+seconds, with almost no CPU use, instead of about 0.4 seconds. One of them
+read 251 words on a certified cover page; the second call read 282. Later
+calls were fast and stable, and the first calls through `localocr-mcp` after
+that were normal. macOS keeps a compiled Vision model cache per program
+(`com.apple.e5rt.e5bundlecache`), so the likely explanation is that the
+first recognition by a new binary runs while that cache is being built. This
+probably also explains the transient low read above. It is an inference from
+timing, not a confirmed cause.
+
+Consequences handled now: the two OCR cache entries written since the build
+10 code first ran were deleted, so no first-run result is being served from
+cache, and the cache compatibility change in build 10 means no entry from
+earlier builds is reused. Open: warm the recognizer after installation and
+before results are trusted or cached.
+
 ## Not run
 
 - Local-model provider acceptance, endurance, real idle, and AI Neural Gauge
