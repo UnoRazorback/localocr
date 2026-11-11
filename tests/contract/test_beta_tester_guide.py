@@ -11,9 +11,9 @@ LATER_BETA_WARNING = "Future Apple beta compatibility is not guaranteed."
 def test_beta_guide_contains_install_desktop_batch_and_privacy_contracts():
     text = GUIDE.read_text()
     required = (
-        "LocalOCR-Studio-0.3.2-9.zip",
-        "LocalOCR-Studio-0.3.2-9.sha256",
-        'shasum -a 256 -c "LocalOCR-Studio-0.3.2-9.sha256"',
+        "LocalOCR-Studio-0.3.2-10.zip",
+        "LocalOCR-Studio-0.3.2-10.sha256",
+        'shasum -a 256 -c "LocalOCR-Studio-0.3.2-10.sha256"',
         "Process Another Document",
         "Create Searchable PDF",
         "New Batch",
@@ -62,7 +62,7 @@ def test_guide_and_release_notes_use_exact_candidate_identity_without_false_rele
     for path in (GUIDE, RELEASE_NOTES):
         text = path.read_text()
         assert "0.3.2" in text
-        assert "build `9`" in text
+        assert "build `10`" in text
         assert "v0.3.2-beta.1" in text
         assert "Xcode 27.2" in text
         assert "27B52" in text

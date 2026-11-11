@@ -10,7 +10,7 @@ LocalOCR is an open-core project for **macOS 14 or later**. The open-source
 core includes the Swift OCR engine, the `localocr` command-line tool, and the
 `localocr-mcp` stdio server. The repository also contains the release pipeline
 for a directly distributed LocalOCR Studio Mac app. The Beta 2.2 release
-candidate is version `0.3.2`, build `9`, with planned tag
+candidate is version `0.3.2`, build `10`, with planned tag
 `v0.3.2-beta.1`. Signing, notarization, target-Mac acceptance, and publication
 remain separate gates; no Beta 2.2 download is being claimed before those
 gates pass. See the [Beta Tester Guide](BETA_TESTING.md) for the desktop-first
@@ -57,7 +57,7 @@ then follow the canonical [advanced MCP setup and FAQ](docs/mcp.md#advanced-setu
 Recognized page text now keeps each table row on one line. Apple Vision
 reports table cells one at a time and usually reads a table column by column,
 so earlier builds returned a column of labels followed by a column of amounts.
-Build 9 joins the cells of a row with ` | `, left to right, and leaves
+Build 10 joins the cells of a row with ` | `, left to right, and leaves
 paragraphs and multi-column pages in their previous reading order. The change
 applies to the text shown and saved by the desktop app, to `localocr ocr`, and
 to the MCP `ocr_pdf`, `ocr_pdf_batch`, and `ocr_image` results. Searchable PDF
@@ -68,6 +68,24 @@ sit on the same text line as their row label rose from 8.0% to 94.3%. Method,
 limits, and the remaining amount-recognition misses are in
 [the benchmark notes](benchmarks/README.md). OCR and model output can still contain errors;
 check amounts against the source page.
+
+Build 10 also reads scanned pages that carry a little embedded text. Earlier
+builds treated any page with 20 embedded characters as already readable, so a
+scanned page carrying only a signing-envelope ID or a stamp was returned as
+those few words. When embedded text is under 400 characters the page is now
+recognized as well, and recognition is used when it reads at least twice as
+much and at least 100 more characters. On real pay applications a certified
+cover page went from 5 words to about 280.
+
+Recognized amounts are more reliable. Apple Vision sometimes reads a thousands
+comma as a period (`25.740.00`); Build 10 restores the comma for that exact
+shape and never changes a digit. On the same 112 pages, amounts read exactly
+rose from 83.3% to 91.9%. Picture input (`localocr image`, `ocr_image`, and
+image files in the desktop app) now gets the same row-joined text as PDF
+pages.
+
+Build 9 was signed and accepted on November 11, 2026 but not published; Build
+10 replaces it.
 
 The previous prerelease, `v0.3.1-beta.1` (build 8), was published on
 September 21, 2026. Local Intelligence, provider selection, the offline Help
@@ -156,7 +174,7 @@ artifacts only; it does not sign, notarize, install, or publish them.
 
 ## Beta 2.2 release candidate
 
-Build 9 is a **private integration release candidate**, not a published download.
+Build 10 is a **private integration release candidate**, not a published download.
 It keeps the named `llama_cpp` provider (llama.cpp), grounded one-shot
 `summarize`, `organize`, and `extract-fields` JSON CLI commands, and signed
 content-free Local AI Activity sharing with AI Neural Gauge. Each machine's
@@ -164,25 +182,25 @@ signature, container access, provider qualification, and real document acceptanc
 must be verified separately. Ordinary OCR works without a model server. There
 is no automatic provider fallback and no model download or server-launch control.
 
-The candidate identity is version `0.3.2`, build `9`, planned tag
-`v0.3.2-beta.1`, and planned assets `LocalOCR-Studio-0.3.2-9.zip` and
-`LocalOCR-Studio-0.3.2-9.sha256`. The exact release commit, ZIP SHA-256,
+The candidate identity is version `0.3.2`, build `10`, planned tag
+`v0.3.2-beta.1`, and planned assets `LocalOCR-Studio-0.3.2-10.zip` and
+`LocalOCR-Studio-0.3.2-10.sha256`. The exact release commit, ZIP SHA-256,
 notarization submission, downloaded-package verification, and target-Mac
-results must be filled from evidence after those gates pass. Build 9 source
+results must be filled from evidence after those gates pass. Build 10 source
 verification and release scripts pin Xcode 27.2 (`27B52`) at
 `/Applications/Xcode.app`, Swift 6.4, arm64, and deployment target macOS 14.0.
 The controlled macOS 27 GR target run remains a separate acceptance gate.
 Future Apple beta compatibility is not guaranteed.
 
-See the [Build 9 acceptance record](docs/localocr-build9-acceptance-2026-11-11.md)
+See the [Build 10 acceptance record](docs/localocr-build10-acceptance-2026-11-11.md)
 for synthetic endurance evidence and the remaining real-model requirements.
 
-After the release is published, download `LocalOCR-Studio-0.3.2-9.zip` and
-`LocalOCR-Studio-0.3.2-9.sha256` into the same directory and verify them before
+After the release is published, download `LocalOCR-Studio-0.3.2-10.zip` and
+`LocalOCR-Studio-0.3.2-10.sha256` into the same directory and verify them before
 expanding the ZIP:
 
 ```bash
-shasum -a 256 -c "LocalOCR-Studio-0.3.2-9.sha256"
+shasum -a 256 -c "LocalOCR-Studio-0.3.2-10.sha256"
 ```
 
 Continue only if the command reports `OK`. Move the expanded `LocalOCR

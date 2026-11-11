@@ -5,7 +5,7 @@ agent to automate LocalOCR. The desktop app requires no MCP setup. This page is
 the canonical advanced-use guide for connecting the `localocr-mcp` helper to an
 MCP client.
 
-Beta 2.2 is version `0.3.2`, build `9`, with nine tools and an external-data
+Beta 2.2 is version `0.3.2`, build `10`, with nine tools and an external-data
 acknowledgment. Its planned tag is `v0.3.2-beta.1`. This guide describes the
 candidate behavior but does not claim signing, notarization, installation, or
 release acceptance before those evidence gates pass.
@@ -459,7 +459,7 @@ OCR/PDF tools; LocalOCR has no cloud fallback.
 ## Compatibility and release boundary
 
 The package and app keep a macOS 14 deployment target; Foundation Models code
-is availability-guarded for macOS 26 or later. Build 9 source verification and
+is availability-guarded for macOS 26 or later. Build 10 source verification and
 release scripts pin Xcode 27.2 (`27B52`), Swift 6.4, and the macOS 27.2 SDK at
 `/Applications/Xcode.app`. Toolchain
 provenance is not a live provider or release acceptance claim.

@@ -157,7 +157,7 @@ interface.
 Recognized page text now keeps each table row on one line. Apple Vision
 reports table cells one at a time and usually reads a table column by column,
 so earlier builds returned a column of labels followed by a column of amounts.
-Build 9 joins the cells of a row with ` | `, left to right, and leaves
+Build 10 joins the cells of a row with ` | `, left to right, and leaves
 paragraphs and multi-column pages in their previous reading order. The change
 applies to the text shown and saved by the desktop app, to `localocr ocr`, and
 to the MCP `ocr_pdf`, `ocr_pdf_batch`, and `ocr_image` results. Searchable PDF
@@ -169,6 +169,24 @@ limits, and the remaining amount-recognition misses are in
 [the benchmark notes](../benchmarks/README.md). OCR and model output can still contain errors;
 check amounts against the source page.
 
+Build 10 also reads scanned pages that carry a little embedded text. Earlier
+builds treated any page with 20 embedded characters as already readable, so a
+scanned page carrying only a signing-envelope ID or a stamp was returned as
+those few words. When embedded text is under 400 characters the page is now
+recognized as well, and recognition is used when it reads at least twice as
+much and at least 100 more characters. On real pay applications a certified
+cover page went from 5 words to about 280.
+
+Recognized amounts are more reliable. Apple Vision sometimes reads a thousands
+comma as a period (`25.740.00`); Build 10 restores the comma for that exact
+shape and never changes a digit. On the same 112 pages, amounts read exactly
+rose from 83.3% to 91.9%. Picture input (`localocr image`, `ocr_image`, and
+image files in the desktop app) now gets the same row-joined text as PDF
+pages.
+
+Build 9 was signed and accepted on November 11, 2026 but not published; Build
+10 replaces it.
+
 The previous prerelease, `v0.3.1-beta.1` (build 8), was published on
 September 21, 2026. Local Intelligence, provider selection, the offline Help
 Center, guided agent connection, the nine MCP tools, and Local AI Activity
@@ -176,17 +194,17 @@ sharing carry forward from it unchanged.
 
 ## Beta 2.2 status
 
-The release candidate is version `0.3.2`, build `9`, with planned tag
+The release candidate is version `0.3.2`, build `10`, with planned tag
 `v0.3.2-beta.1`. Follow the [Beta Tester Guide](../BETA_TESTING.md) for the
 desktop-first acceptance path. The planned assets are
-`LocalOCR-Studio-0.3.2-9.zip` and its matching `.sha256` file. Do not use a
+`LocalOCR-Studio-0.3.2-10.zip` and its matching `.sha256` file. Do not use a
 staging copy or bypass Gatekeeper. Signing, notarization, downloaded-package,
 and target-Mac acceptance remain separate gates, so no published Beta 2.2
 download is claimed before their evidence exists.
 
 ## Compatibility and build provenance
 
-Build 9 source verification and release scripts pin Xcode 27.2 (`27B52`) at
+Build 10 source verification and release scripts pin Xcode 27.2 (`27B52`) at
 `/Applications/Xcode.app`, Swift 6.4, arm64, and deployment target
 macOS 14.0. The controlled macOS 27 GR target run remains
 pending. Final signing, notarization,
@@ -195,6 +213,6 @@ target-Mac facts will be added from completed evidence. Future Apple beta
 compatibility is not guaranteed; include the exact macOS version and build
 number in feedback.
 
-See the [Build 9 acceptance record](localocr-build9-acceptance-2026-11-11.md)
+See the [Build 10 acceptance record](localocr-build10-acceptance-2026-11-11.md)
 for the synthetic twenty-generation/ten-minute-clock checks and remaining
 real-model, real-idle, and target-machine gates.
