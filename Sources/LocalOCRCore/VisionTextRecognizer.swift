@@ -14,7 +14,7 @@ public struct RecognitionCandidate: Sendable, Equatable {
     }
 
     public var text: String {
-        lines.map(\.text).joined(separator: "\n")
+        TableRowTextAssembler.text(for: lines)
     }
 }
 
