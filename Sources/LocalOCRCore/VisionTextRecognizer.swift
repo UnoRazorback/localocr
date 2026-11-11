@@ -160,7 +160,7 @@ public struct VisionTextRecognizer: TextRecognizing {
                             return nil
                         }
                         return TextLine(
-                            text: candidate.string,
+                            text: AmountPunctuation.normalized(candidate.string),
                             confidence: candidate.confidence,
                             boundingBox: observation.boundingBox
                         )

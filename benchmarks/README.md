@@ -43,3 +43,53 @@ requests, a geotechnical report), 300 DPI.
 Amount recall on the 110 born-digital pages alone is 91.6. On the 27 weakest
 of those, misses split as: 40% amount present but broken by spaces or commas,
 26% not found, 20% decimal point lost or moved, 14% one or two digits off.
+
+## Other tools
+
+| Script | Question it answers |
+| --- | --- |
+| `realdoc_benchmark.py --renderer pymupdf` | Same scores with pages rendered independently and recognized as pictures, which takes LocalOCR's PDF renderer out of the measurement. |
+| `repeatability.py` | Does the same page give the same result every time? |
+| `render_vs_vision.py` | For one page: LocalOCR render + Vision, independent render + Vision, and the embedded text, plus the page's fonts. |
+| `hybrid_scan.py` | Which scanned pages carry a little embedded text (stamp, envelope ID, header) and what OCR finds on them. |
+| `amount_miss_diagnose.py`, `split_shapes.py` | Why amounts were counted as missed, with digits masked. |
+
+## Findings after build 9 (2026-11-11)
+
+**Scanned pages with a little embedded text were skipped.** A page counted as
+searchable with 20 embedded characters, so a scanned page carrying only a
+signing-envelope ID or stamp returned those few words and was never read. In
+22 documents, 318 pages are full-page scans and 20 of them were at risk; on
+build 9 the certified cover pages of two pay applications returned 5 words
+where OCR reads about 280 words and 19 amounts. The engine now checks the
+pixels whenever embedded text is under 400 characters and uses recognition
+when it reads at least twice as much and at least 100 more characters. All
+sampled at-risk pages now come back through OCR.
+
+**Thousands commas read as periods.** Vision returned amounts such as
+`99.999.99` for `99,999.99`. Recognized lines now restore grouping commas for
+that exact shape; no digit is changed and references, versions and addresses
+are left alone.
+
+| Build | amount | word | row:text | amounts found and on the right row |
+| --- | --- | --- | --- | --- |
+| 0.3.2 build 9 | 83.3 | 97.4 | 94.3 | 81.5 |
+| after these changes | 91.9 | 98.2 | 90.5 | 84.5 |
+
+`row:text` is measured only over amounts that were found, so recovering 304
+more amounts changed its population; the last column counts every label and
+amount pair in the truth, found or not.
+
+**Forced OCR on born-digital pages can lose text, and it varies.** Word
+recall moved between runs on a few pages. Back-to-back runs are identical;
+the change follows the state of the Mac, not the build. The same pictures
+rendered independently are read in full, and CoreGraphics logs glyph-mapping
+errors for those pages, whose fonts are standard and not embedded. This
+affects `--force-ocr` on pages that already have text, which is what this
+benchmark does and what clients normally do not. Leave `force_ocr` off unless
+a page's embedded text is known to be wrong.
+
+**Still open.** About 8% of amounts on these pages are still not matched:
+repeated amounts recognized fewer times than they appear, and amounts whose
+digits are missing or misread. Rendering independently gives the same amount
+score, so these are recognition misses, not rendering.

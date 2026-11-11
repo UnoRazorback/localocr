@@ -100,7 +100,7 @@ import Testing
             )
         )
 
-        #expect(pdf.pages.first?.text == visionPrivacyCanary)
+        #expect(pdf.pages.first?.text == denseVisionPrivacyPage)
         #expect(image.text == visionPrivacyCanary)
         #expect(batch.succeeded == 1)
         #expect(searchable.outputPath.hasSuffix("searchable.pdf"))
@@ -486,7 +486,10 @@ private struct FixturePDFSource: PDFDocumentReading {
     }
 
     func nativeText(in url: URL, pageIndex: Int) throws -> String { "fixture text" }
-    func rasterize(_ url: URL, pageIndex: Int, dpi: Int) throws -> CGImage { fatalError("Not used") }
+    // Sparse embedded text makes the engine look at the page pixels; with none available it keeps the text.
+    func rasterize(_ url: URL, pageIndex: Int, dpi: Int) throws -> CGImage {
+        throw LocalOCRError.rasterizationFailed(page: pageIndex + 1)
+    }
 }
 
 private struct FixtureRecognizer: TextRecognizing {
@@ -611,6 +614,8 @@ private struct CancellingImageSource: ImageDocumentRecognizing {
 }
 
 private let visionPrivacyCanary = "SECRET OCR TEXT /Users/scott/private.pdf invoice.pdf prompt-canary response-canary total $9,999.00 https://example.invalid model-error-canary"
+// Dense enough that the engine trusts the embedded text without checking the page pixels.
+private let denseVisionPrivacyPage = Array(repeating: visionPrivacyCanary, count: 8).joined(separator: "\n")
 
 private struct PrivacyVisionImageSource: ImageDocumentRecognizing {
     func recognize(
@@ -630,11 +635,11 @@ private struct PrivacyVisionPDFSource: PDFDocumentReading {
             pages: 1,
             searchablePages: [1],
             ocrNeededPages: [],
-            characters: visionPrivacyCanary.count,
+            characters: denseVisionPrivacyPage.count,
             fullySearchable: true,
             pageDetails: [.init(
                 page: 1,
-                characters: visionPrivacyCanary.count,
+                characters: denseVisionPrivacyPage.count,
                 searchable: true
             )]
         )
@@ -643,7 +648,7 @@ private struct PrivacyVisionPDFSource: PDFDocumentReading {
     func nativeText(in url: URL, pageIndex: Int) throws -> String {
         _ = url
         _ = pageIndex
-        return visionPrivacyCanary
+        return denseVisionPrivacyPage
     }
 
     func rasterize(_ url: URL, pageIndex: Int, dpi: Int) throws -> CGImage {

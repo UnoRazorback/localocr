@@ -2,7 +2,8 @@ import Foundation
 import ImageIO
 
 public actor OCRProcessor {
-    private static let cacheCompatibilityVersion = "ocr-processor-v2"
+    // v3: recognized lines carry repaired amount punctuation.
+    private static let cacheCompatibilityVersion = "ocr-processor-v3"
 
     private let pdfSource: any PDFDocumentReading
     private let recognizer: any TextRecognizing
@@ -43,6 +44,7 @@ public actor OCRProcessor {
                 progress(.recognizing(page: page, total: selectedPages.count))
 
                 do {
+                    var recognized: RecognitionCandidate?
                     if !request.settings.forceOCR,
                        inspection.searchablePages.contains(page)
                     {
@@ -50,38 +52,43 @@ public actor OCRProcessor {
                             in: request.sourceURL,
                             pageIndex: pageIndex
                         )
-                        pages.append(
-                            PageResult(
-                                page: page,
-                                text: text,
-                                method: .existingText,
-                                lines: [],
-                                orientation: .up
+                        // A stamp, header, or envelope ID on a scanned page passes the
+                        // searchable test by itself. When embedded text is sparse, read
+                        // the pixels too and keep whichever source carries the page.
+                        if Self.isSparse(text) {
+                            recognized = try await recognitionRicher(
+                                than: text,
+                                sourceURL: request.sourceURL,
+                                sourceSHA256: sourceSHA256,
+                                pageIndex: pageIndex,
+                                settings: request.settings
                             )
-                        )
-                        continue
-                    }
-
-                    let key = OCRCacheKey(
-                        sourceSHA256: sourceSHA256,
-                        page: page,
-                        settings: request.settings,
-                        compatibilityVersion: Self.cacheCompatibilityVersion
-                    )
-                    let candidate: RecognitionCandidate
-                    if let cache, let cached = try await cache.value(for: key) {
-                        candidate = cached
-                    } else {
-                        candidate = try await recognize(
-                            request.sourceURL,
-                            pageIndex: pageIndex,
-                            settings: request.settings
-                        )
-                        if let cache {
-                            try await cache.store(candidate, for: key)
+                        }
+                        if recognized == nil {
+                            pages.append(
+                                PageResult(
+                                    page: page,
+                                    text: text,
+                                    method: .existingText,
+                                    lines: [],
+                                    orientation: .up
+                                )
+                            )
+                            continue
                         }
                     }
 
+                    let candidate: RecognitionCandidate
+                    if let recognized {
+                        candidate = recognized
+                    } else {
+                        candidate = try await cachedRecognition(
+                            sourceURL: request.sourceURL,
+                            sourceSHA256: sourceSHA256,
+                            pageIndex: pageIndex,
+                            settings: request.settings
+                        )
+                    }
                     pages.append(
                         PageResult(
                             page: page,
@@ -120,6 +127,82 @@ public actor OCRProcessor {
         } catch {
             throw EngineErrorMapper.map(error, at: .source)
         }
+    }
+
+    /// Embedded text shorter than this is checked against the page's pixels.
+    static let sparseNativeCharacterLimit = 400
+
+    static func isSparse(_ nativeText: String) -> Bool {
+        nonWhitespaceCount(nativeText) < sparseNativeCharacterLimit
+    }
+
+    /// Recognition replaces sparse embedded text only when it reads at least
+    /// twice as much and at least 100 more characters, so a born-digital page
+    /// with a short title keeps its exact embedded text.
+    static func recognition(_ recognizedText: String, isRicherThan nativeText: String) -> Bool {
+        let recognized = nonWhitespaceCount(recognizedText)
+        let native = nonWhitespaceCount(nativeText)
+        return recognized >= native * 2 && recognized - native >= 100
+    }
+
+    private static func nonWhitespaceCount(_ text: String) -> Int {
+        text.unicodeScalars.reduce(into: 0) { count, scalar in
+            if !scalar.properties.isWhitespace {
+                count += 1
+            }
+        }
+    }
+
+    private func recognitionRicher(
+        than nativeText: String,
+        sourceURL: URL,
+        sourceSHA256: String,
+        pageIndex: Int,
+        settings: RecognitionSettings
+    ) async throws -> RecognitionCandidate? {
+        let candidate: RecognitionCandidate
+        do {
+            candidate = try await cachedRecognition(
+                sourceURL: sourceURL,
+                sourceSHA256: sourceSHA256,
+                pageIndex: pageIndex,
+                settings: settings
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as LocalOCRError where error == .cancelled {
+            throw error
+        } catch {
+            // The embedded text is still a valid answer for this page.
+            return nil
+        }
+        return Self.recognition(candidate.text, isRicherThan: nativeText) ? candidate : nil
+    }
+
+    private func cachedRecognition(
+        sourceURL: URL,
+        sourceSHA256: String,
+        pageIndex: Int,
+        settings: RecognitionSettings
+    ) async throws -> RecognitionCandidate {
+        let key = OCRCacheKey(
+            sourceSHA256: sourceSHA256,
+            page: pageIndex + 1,
+            settings: settings,
+            compatibilityVersion: Self.cacheCompatibilityVersion
+        )
+        if let cache, let cached = try await cache.value(for: key) {
+            return cached
+        }
+        let candidate = try await recognize(
+            sourceURL,
+            pageIndex: pageIndex,
+            settings: settings
+        )
+        if let cache {
+            try await cache.store(candidate, for: key)
+        }
+        return candidate
     }
 
     func recognize(

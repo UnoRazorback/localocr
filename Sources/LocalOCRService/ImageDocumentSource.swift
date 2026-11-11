@@ -35,9 +35,12 @@ public struct ImageDocumentSource: ImageDocumentRecognizing {
             settings: settings
         )
         try Task.checkCancellation()
-        return Self.linesInReadingOrder(candidate.lines)
-            .map(\.text)
-            .joined(separator: "\n")
+        // Same row-preserving text as PDF pages, so a photographed table keeps
+        // each label beside its amount.
+        return RecognitionCandidate(
+            orientation: candidate.orientation,
+            lines: Self.linesInReadingOrder(candidate.lines)
+        ).text
     }
 
     static func decodeImage(at fileURL: URL) throws -> CGImage {

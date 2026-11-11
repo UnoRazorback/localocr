@@ -63,7 +63,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: sourceURL) }
         let pdf = FakePDFSource(
             inspection: inspection(pageCount: 1, searchablePages: [1]),
-            nativeTexts: [0: "Already searchable"]
+            nativeTexts: [0: denseNativeText]
         )
         let recognizer = FakeTextRecognizer()
         let processor = OCRProcessor(pdfSource: pdf, recognizer: recognizer, cache: nil)
@@ -73,7 +73,7 @@ import Testing
         #expect(result.pages == [
             PageResult(
                 page: 1,
-                text: "Already searchable",
+                text: denseNativeText,
                 method: .existingText,
                 lines: [],
                 orientation: .up
@@ -88,7 +88,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: sourceURL) }
         let pdf = FakePDFSource(
             inspection: inspection(pageCount: 1, searchablePages: [1]),
-            nativeTexts: [0: "Already searchable"]
+            nativeTexts: [0: denseNativeText]
         )
         let expected = candidate(.up, lines: ["Fresh OCR text"])
         let recognizer = FakeTextRecognizer(responses: [responseKey(page: 1, orientation: .up): .success(expected)])
@@ -120,7 +120,7 @@ import Testing
         #expect(result.pages.map(\.page) == [2, 4])
         #expect(result.pages.map(\.text) == ["two", "four"])
         #expect(pdf.nativeTextPages == [2, 4])
-        #expect(pdf.rasterizedPages == [])
+        #expect(pdf.rasterizedPages == [2, 4])
     }
 
     @Test func cacheHitSkipsRasterizationAndRecognition() async throws {
@@ -336,7 +336,88 @@ import Testing
         #expect(lifetime.maximumLiveImages == 1)
         #expect(lifetime.liveImages == 0)
     }
+    // Catches a scanned page being answered with only its stamp or envelope ID.
+    @Test func sparseEmbeddedTextYieldsToMuchRicherRecognition() async throws {
+        let sourceURL = try temporarySourceFile()
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let pdf = FakePDFSource(
+            inspection: inspection(pageCount: 1, searchablePages: [1]),
+            nativeTexts: [0: "Envelope ID: 4F1C2B7A-9D3E-4A61"]
+        )
+        let scanned = candidate(
+            .up,
+            lines: [String(repeating: "Application and certificate for payment ", count: 6)]
+        )
+        let recognizer = FakeTextRecognizer(responses: [responseKey(page: 1, orientation: .up): .success(scanned)])
+        let processor = OCRProcessor(pdfSource: pdf, recognizer: recognizer, cache: nil)
+
+        let result = try await processor.process(request(sourceURL: sourceURL)) { _ in }
+
+        #expect(result.pages.map(\.method) == [.visionOCR])
+        #expect(result.pages.map(\.text) == [scanned.text])
+        #expect(result.failedPages == [])
+        #expect(pdf.rasterizedPages == [1])
+    }
+
+    // Catches a born-digital page with a short title losing its exact embedded text.
+    @Test func sparseEmbeddedTextIsKeptWhenRecognitionAddsLittle() async throws {
+        let sourceURL = try temporarySourceFile()
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let pdf = FakePDFSource(
+            inspection: inspection(pageCount: 1, searchablePages: [1]),
+            nativeTexts: [0: "Exhibit B - Schedule of Values"]
+        )
+        let recognizer = FakeTextRecognizer(responses: [
+            responseKey(page: 1, orientation: .up): .success(candidate(.up, lines: ["Exhibit B - Schedule of Va1ues"])),
+        ])
+        let processor = OCRProcessor(pdfSource: pdf, recognizer: recognizer, cache: nil)
+
+        let result = try await processor.process(request(sourceURL: sourceURL)) { _ in }
+
+        #expect(result.pages == [
+            PageResult(
+                page: 1,
+                text: "Exhibit B - Schedule of Values",
+                method: .existingText,
+                lines: [],
+                orientation: .up
+            ),
+        ])
+    }
+
+    // Catches a recognition failure turning a page with readable embedded text into a failed page.
+    @Test func sparseEmbeddedTextSurvivesRecognitionFailure() async throws {
+        let sourceURL = try temporarySourceFile()
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let pdf = FakePDFSource(
+            inspection: inspection(pageCount: 1, searchablePages: [1]),
+            nativeTexts: [0: "Exhibit B - Schedule of Values"]
+        )
+        let recognizer = FakeTextRecognizer(responses: [
+            responseKey(page: 1, orientation: .up): .failure(.recognitionFailed),
+        ])
+        let processor = OCRProcessor(pdfSource: pdf, recognizer: recognizer, cache: nil)
+
+        let result = try await processor.process(request(sourceURL: sourceURL)) { _ in }
+
+        #expect(result.pages.map(\.method) == [.existingText])
+        #expect(result.pages.map(\.text) == ["Exhibit B - Schedule of Values"])
+        #expect(result.failedPages == [])
+    }
+
+    // Catches the thresholds drifting: twice as much text and at least 100 more characters.
+    @Test func recognitionMustAtLeastDoubleAndAddOneHundredCharacters() {
+        let native = String(repeating: "n", count: 120)
+        #expect(OCRProcessor.recognition(String(repeating: "r", count: 240), isRicherThan: native))
+        #expect(!OCRProcessor.recognition(String(repeating: "r", count: 239), isRicherThan: native))
+        #expect(!OCRProcessor.recognition(String(repeating: "r", count: 99), isRicherThan: ""))
+        #expect(OCRProcessor.recognition(String(repeating: "r", count: 100), isRicherThan: " \n "))
+        #expect(OCRProcessor.isSparse(String(repeating: "n ", count: 399)))
+        #expect(!OCRProcessor.isSparse(String(repeating: "n ", count: 400)))
+    }
 }
+
+private let denseNativeText = String(repeating: "Already searchable. ", count: 30)
 
 private func request(
     sourceURL: URL,

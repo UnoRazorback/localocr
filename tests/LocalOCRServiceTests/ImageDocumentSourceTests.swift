@@ -35,7 +35,8 @@ import Testing
         settings: RecognitionSettings()
     )
 
-    #expect(text == "TOP LEFT\nTOP RIGHT\nBOTTOM LEFT\nBOTTOM RIGHT")
+    // Cells that share a row are joined left to right, as for PDF pages.
+    #expect(text == "TOP LEFT | TOP RIGHT\nBOTTOM LEFT | BOTTOM RIGHT")
 }
 
 private struct UnorderedMultilineRecognizer: TextRecognizing {

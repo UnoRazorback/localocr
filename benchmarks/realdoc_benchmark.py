@@ -30,6 +30,7 @@ import re
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 
 import fitz  # PyMuPDF
@@ -137,6 +138,25 @@ def run_cli(cli: str, path: str, pages: list[int], dpi: int, timeout: int) -> tu
     return json.loads(proc.stdout), elapsed
 
 
+def run_images(cli: str, doc, pages: list[int], dpi: int, timeout: int) -> tuple[dict, float]:
+    """Render each page with PyMuPDF and recognize the picture with `localocr image`.
+
+    This takes LocalOCR's own PDF renderer out of the measurement, so the score
+    reflects Vision on a clean picture of the page, as with a true scan."""
+    started = time.time()
+    results = []
+    with tempfile.TemporaryDirectory() as folder:
+        for number in pages:
+            png = os.path.join(folder, f"page-{number}.png")
+            doc[number - 1].get_pixmap(dpi=dpi, alpha=False).save(png)
+            proc = subprocess.run([cli, "image", png, "--json"], capture_output=True, timeout=timeout)
+            if proc.returncode != 0:
+                continue
+            data = json.loads(proc.stdout)
+            results.append({"page": number, "text": data.get("text") or "", "lines": data.get("lines") or []})
+    return {"pages": results, "failed_pages": [n for n in pages if n not in {r["page"] for r in results}]}, time.time() - started
+
+
 def pct(pair) -> float | None:
     return round(100 * pair[0] / pair[1], 1) if pair[1] else None
 
@@ -149,9 +169,16 @@ def main() -> int:
     parser.add_argument("--max-pages", type=int, default=12, help="pages sampled per document")
     parser.add_argument("--dpi", type=int, default=300)
     parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument(
+        "--renderer",
+        choices=("localocr", "pymupdf"),
+        default="localocr",
+        help="localocr: the engine renders the PDF page itself (the real pipeline). "
+        "pymupdf: pages are rendered independently and recognized as pictures.",
+    )
     args = parser.parse_args()
 
-    report = {"cli": args.cli, "dpi": args.dpi, "documents": []}
+    report = {"cli": args.cli, "dpi": args.dpi, "renderer": args.renderer, "documents": []}
     totals = collections.defaultdict(lambda: [0, 0])
     missing_total = 0
     for path in args.pdfs:
@@ -172,7 +199,10 @@ def main() -> int:
             eligible = sorted(truths)
             step = max(1, len(eligible) // args.max_pages)
             sample = eligible[::step][: args.max_pages]
-            result, elapsed = run_cli(args.cli, path, sample, args.dpi, args.timeout)
+            if args.renderer == "pymupdf":
+                result, elapsed = run_images(args.cli, doc, sample, args.dpi, args.timeout)
+            else:
+                result, elapsed = run_cli(args.cli, path, sample, args.dpi, args.timeout)
             entry["seconds_per_page"] = round(elapsed / len(sample), 2)
             entry["failed_pages"] = result.get("failed_pages", [])
             by_page = {p["page"]: p for p in result["pages"]}

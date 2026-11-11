@@ -96,6 +96,19 @@ runs every word in the returned lines is present in the page text; Apple
 Vision itself returned fewer label words. Cause not yet known. Sampled pages
 are mostly born-digital, so treat all scores as an upper bound for true scans.
 
+## Corrections found after acceptance
+
+- In the build 9 artifact, row-joined text applies to PDF pages
+  (`localocr ocr`, `ocr_pdf`, `ocr_pdf_batch`, desktop PDF results). Picture
+  input (`localocr image`, `ocr_image`, desktop image results) still returns
+  one Vision line per text line. The build 9 documents say pictures are
+  covered; that is true only from the next build.
+- The run-to-run word variation above was traced to the PDF renderer on
+  forced OCR of born-digital pages with non-embedded fonts, not to Vision and
+  not to build 9. See `benchmarks/README.md`.
+- Build 9 skips OCR on scanned pages that carry 20 or more characters of
+  embedded text, such as a signing-envelope ID. Fixed after build 9.
+
 ## Not run
 
 - Local-model provider acceptance (Apple Foundation Models, Gemma, GPT-OSS,
