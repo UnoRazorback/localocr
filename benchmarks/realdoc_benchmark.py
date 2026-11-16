@@ -8,7 +8,11 @@ sampled page is re-recognized with Apple Vision through the `localocr` CLI
 * amount recall  - share of dollar-style amounts in the truth found in the OCR
 * word recall    - share of label words (3+ letters) found in the OCR
 * row integrity  - share of (label row, amount) pairs whose amount lands on an
-                   OCR text line together with most of that row's label words
+                   OCR text line together with most of that row's label words,
+                   counted over the amounts that were found
+* row:all        - the same pairs counted over every pair in the truth, found
+                   or not: the share of amounts that are both read and on the
+                   right row
 
 Row integrity is reported twice: for the plain `text` the engine returns, and
 for the same Vision lines re-assembled into rows from their geometry.
@@ -138,7 +142,7 @@ def run_cli(cli: str, path: str, pages: list[int], dpi: int, timeout: int) -> tu
     return json.loads(proc.stdout), elapsed
 
 
-def run_images(cli: str, doc, pages: list[int], dpi: int, timeout: int) -> tuple[dict, float]:
+def run_images(cli: str, doc, pages: list[int], dpi: int, timeout: int, flags=()) -> tuple[dict, float]:
     """Render each page with PyMuPDF and recognize the picture with `localocr image`.
 
     This takes LocalOCR's own PDF renderer out of the measurement, so the score
@@ -149,7 +153,7 @@ def run_images(cli: str, doc, pages: list[int], dpi: int, timeout: int) -> tuple
         for number in pages:
             png = os.path.join(folder, f"page-{number}.png")
             doc[number - 1].get_pixmap(dpi=dpi, alpha=False).save(png)
-            proc = subprocess.run([cli, "image", png, "--json"], capture_output=True, timeout=timeout)
+            proc = subprocess.run([cli, "image", png, *flags, "--json"], capture_output=True, timeout=timeout)
             if proc.returncode != 0:
                 continue
             data = json.loads(proc.stdout)
@@ -176,9 +180,16 @@ def main() -> int:
         help="localocr: the engine renders the PDF page itself (the real pipeline). "
         "pymupdf: pages are rendered independently and recognized as pictures.",
     )
+    parser.add_argument(
+        "--image-flag",
+        action="append",
+        default=[],
+        help="extra flag passed to `localocr image` with --renderer pymupdf, "
+        "for example --image-flag=--no-language-correction; repeatable",
+    )
     args = parser.parse_args()
 
-    report = {"cli": args.cli, "dpi": args.dpi, "renderer": args.renderer, "documents": []}
+    report = {"cli": args.cli, "dpi": args.dpi, "renderer": args.renderer, "image_flags": args.image_flag, "documents": []}
     totals = collections.defaultdict(lambda: [0, 0])
     missing_total = 0
     for path in args.pdfs:
@@ -200,7 +211,7 @@ def main() -> int:
             step = max(1, len(eligible) // args.max_pages)
             sample = eligible[::step][: args.max_pages]
             if args.renderer == "pymupdf":
-                result, elapsed = run_images(args.cli, doc, sample, args.dpi, args.timeout)
+                result, elapsed = run_images(args.cli, doc, sample, args.dpi, args.timeout, args.image_flag)
             else:
                 result, elapsed = run_cli(args.cli, path, sample, args.dpi, args.timeout)
             entry["seconds_per_page"] = round(elapsed / len(sample), 2)
@@ -231,7 +242,13 @@ def main() -> int:
                         "amounts": am[1],
                     }
                 )
-                for key, pair in (("amount", am), ("word", wd), ("row_text", (rk, rs)), ("row_rows", (ak, as_))):
+                for key, pair in (
+                    ("amount", am),
+                    ("word", wd),
+                    ("row_text", (rk, rs)),
+                    ("row_rows", (ak, as_)),
+                    ("row_all", (rk, rs + rm)),
+                ):
                     for bucket in (totals, doc_totals):
                         bucket[key][0] += pair[0]
                         bucket[key][1] += pair[1]
@@ -257,7 +274,7 @@ def main() -> int:
     with open(args.out, "w") as handle:
         json.dump(report, handle, indent=2)
 
-    print(f"{'document':<58}{'pages':>6}{'amount':>8}{'word':>7}{'row:text':>10}{'row:rows':>10}{'s/pg':>6}")
+    print(f"{'document':<58}{'pages':>6}{'amount':>8}{'word':>7}{'row:text':>10}{'row:rows':>10}{'row:all':>9}{'s/pg':>6}")
     for d in report["documents"]:
         s = d.get("summary")
         if not s:
@@ -265,11 +282,11 @@ def main() -> int:
             continue
         print(
             f"{d['file'][:56]:<58}{len(d['pages']):>6}{s.get('amount')!s:>8}{s.get('word')!s:>7}"
-            f"{s.get('row_text')!s:>10}{s.get('row_rows')!s:>10}{d.get('seconds_per_page')!s:>6}"
+            f"{s.get('row_text')!s:>10}{s.get('row_rows')!s:>10}{s.get('row_all')!s:>9}{d.get('seconds_per_page')!s:>6}"
         )
     o = report["overall"]
     print(f"{'OVERALL':<58}{report['pages_scored']:>6}{o.get('amount')!s:>8}{o.get('word')!s:>7}"
-          f"{o.get('row_text')!s:>10}{o.get('row_rows')!s:>10}")
+          f"{o.get('row_text')!s:>10}{o.get('row_rows')!s:>10}{o.get('row_all')!s:>9}")
     return 0
 
 
