@@ -184,7 +184,7 @@
       "openWorldHint" : false,
       "readOnlyHint" : true
     },
-    "description" : "Check whether a PDF already has searchable text, without running any OCR.",
+    "description" : "Report which pages of a PDF have embedded text, without running OCR. A scanned page that carries only a stamp, header, or signing ID in real text is still listed as searchable; ocr_pdf reads such pages anyway, so use this to plan, not to decide that a page can be skipped.",
     "inputSchema" : {
       "additionalProperties" : false,
       "properties" : {
@@ -284,7 +284,7 @@
         },
         "force_ocr" : {
           "default" : false,
-          "description" : "OCR pages even when they already have native text.",
+          "description" : "OCR pages even when they already have native text. Leave false unless a page's native text is known to be wrong; re-rendering some born-digital pages can lose text.",
           "type" : "boolean"
         },
         "output_path" : {
@@ -325,7 +325,7 @@
       "openWorldHint" : false,
       "readOnlyHint" : true
     },
-    "description" : "OCR a single image file directly via Vision, without PDF rendering.",
+    "description" : "OCR a single image file directly via Vision, without PDF rendering. The cells of a table row are returned on one line separated by ' | '.",
     "inputSchema" : {
       "additionalProperties" : false,
       "properties" : {
@@ -348,7 +348,7 @@
       "openWorldHint" : false,
       "readOnlyHint" : true
     },
-    "description" : "OCR a scanned/image-only PDF and return recognized text per page.",
+    "description" : "Return the text of a PDF per page: embedded text where a page has it, Apple Vision OCR where it does not or where the embedded text is sparse. In recognized text the cells of a table row are on one line separated by ' | '. Check failed_pages and empty_ocr_pages in the result.",
     "inputSchema" : {
       "additionalProperties" : false,
       "properties" : {
@@ -365,7 +365,7 @@
         },
         "force_ocr" : {
           "default" : false,
-          "description" : "OCR pages even when they already have native text.",
+          "description" : "OCR pages even when they already have native text. Leave false unless a page's native text is known to be wrong; re-rendering some born-digital pages can lose text.",
           "type" : "boolean"
         },
         "include_lines" : {
@@ -527,7 +527,7 @@
         },
         "force_ocr" : {
           "default" : false,
-          "description" : "OCR pages even when they already have native text.",
+          "description" : "OCR pages even when they already have native text. Leave false unless a page's native text is known to be wrong; re-rendering some born-digital pages can lose text.",
           "type" : "boolean"
         },
         "include_lines" : {

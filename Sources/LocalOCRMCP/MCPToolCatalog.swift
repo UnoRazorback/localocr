@@ -10,14 +10,14 @@ public enum MCPToolCatalog {
         ),
         Tool(
             name: "inspect_pdf",
-            description: "Check whether a PDF already has searchable text, without running any OCR.",
+            description: "Report which pages of a PDF have embedded text, without running OCR. A scanned page that carries only a stamp, header, or signing ID in real text is still listed as searchable; ocr_pdf reads such pages anyway, so use this to plan, not to decide that a page can be skipped.",
             inputSchema: fileInputSchema(),
             annotations: readOnlyAnnotations,
             outputSchema: inspectOutputSchema
         ),
         Tool(
             name: "ocr_pdf",
-            description: "OCR a scanned/image-only PDF and return recognized text per page.",
+            description: "Return the text of a PDF per page: embedded text where a page has it, Apple Vision OCR where it does not or where the embedded text is sparse. In recognized text the cells of a table row are on one line separated by ' | '. Check failed_pages and empty_ocr_pages in the result.",
             inputSchema: pdfInputSchema(fileKey: "file_path"),
             annotations: readOnlyAnnotations,
             outputSchema: pdfOCROutputSchema
@@ -31,7 +31,7 @@ public enum MCPToolCatalog {
         ),
         Tool(
             name: "ocr_image",
-            description: "OCR a single image file directly via Vision, without PDF rendering.",
+            description: "OCR a single image file directly via Vision, without PDF rendering. The cells of a table row are returned on one line separated by ' | '.",
             inputSchema: fileInputSchema(),
             annotations: readOnlyAnnotations
         ),
@@ -113,7 +113,7 @@ public enum MCPToolCatalog {
                 "force_ocr": .object([
                     "type": "boolean",
                     "default": false,
-                    "description": "OCR pages even when they already have native text."
+                    "description": "OCR pages even when they already have native text. Leave false unless a page's native text is known to be wrong; re-rendering some born-digital pages can lose text."
                 ]),
                 "include_lines": .object([
                     "type": "boolean",
@@ -142,7 +142,7 @@ public enum MCPToolCatalog {
             "force_ocr": .object([
                 "type": "boolean",
                 "default": false,
-                "description": "OCR pages even when they already have native text."
+                "description": "OCR pages even when they already have native text. Leave false unless a page's native text is known to be wrong; re-rendering some born-digital pages can lose text."
             ])
         ],
         required: ["file_path"]
