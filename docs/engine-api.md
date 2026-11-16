@@ -320,7 +320,37 @@ After trimming leading and trailing whitespace/newlines, a PDF page is
 searchable at **20 Unicode scalar values (code points) or more**, matching
 Python's `len` behavior for native text. Unless `forceOCR` is `true`, such a
 page is returned as `.existingText` with an empty `lines` array and `.up`
-orientation; Vision and rasterization are skipped.
+orientation.
+
+A scanned page can pass that test with nothing but a stamp, a header, or a
+signing-envelope ID in real text. When a searchable page has fewer than
+**400 non-whitespace characters** of native text
+(`OCRProcessor.sparseNativeCharacterLimit`), the processor also rasterizes
+and recognizes it. Recognition replaces the native text, and the page is
+returned as `.visionOCR`, only when it reads at least twice as many
+non-whitespace characters and at least 100 more. If recognition fails, the
+native text is returned and the page is not counted as failed. Pages with 400
+or more native characters skip Vision and rasterization as before.
+`PDFDocumentSource.inspect` is unchanged: it still reports such a page as
+searchable, so use the processor's result, not inspection alone, to decide
+whether a page has been read.
+
+## Recognized text
+
+`RecognitionCandidate.text` is built from the Vision lines by
+`TableRowTextAssembler`. Vision's reading order is kept. Lines that sit side
+by side on one row are joined left to right with ` | ` when the row carries a
+short value cell (an amount, quantity, percentage, or lone symbol) or when
+every cell is four words or fewer; two long lines side by side are treated as
+columns of prose and left as separate lines. `lines` always holds the
+individual Vision lines with their geometry.
+
+Each recognized line passes through `AmountPunctuation.normalized` before it
+is stored. A number shaped like `25.740.00`, where a period stands in for a
+thousands comma, becomes `25,740.00`. Digits are never changed, and a number
+with letters or further digits alongside it is left as recognized.
+
+`ImageDocumentSource` returns the same row-joined text for pictures.
 
 ## Progress and cancellation
 

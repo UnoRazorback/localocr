@@ -55,7 +55,11 @@ the native-text character count. JSON includes `source_path`,
 
 OCR one local PDF. Pages with usable native text are returned as
 `existing_text` unless `--force-ocr` is given; newly recognized pages use
-`vision_ocr`.
+`vision_ocr`. A page whose native text is sparse (under 400 characters) is
+also recognized from its image and returned as `vision_ocr` when recognition
+reads substantially more, so scanned pages that carry only a stamp or
+envelope ID are read. Recognized text joins the cells of a table row with
+` | ` and restores a thousands comma that was read as a period.
 
 ```bash
 localocr ocr /path/to/document.pdf --pages 1-3 --dpi 300 --json

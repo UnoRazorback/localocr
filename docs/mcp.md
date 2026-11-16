@@ -225,6 +225,12 @@ Inspects the native text layer without running OCR. Its structured result has
 `ocr_needed_pages`, `characters`, `fully_searchable`, and per-page
 `page_details`.
 
+A page counts as searchable at 20 characters of native text, so a scanned page
+that carries only a stamp, header, or signing-envelope ID is listed in
+`searchable_pages`. `ocr_pdf` still reads such pages. Do not use
+`searchable_pages` alone to decide that a page needs no OCR; check the
+per-page `characters` in `page_details`, or simply call `ocr_pdf`.
+
 ### `ocr_pdf`
 
 Parameters:
@@ -241,6 +247,15 @@ Returns `source_path`, `source_sha256`, page records, `failed_pages`,
 `empty_ocr_pages`, and `rotated_ocr_pages`. Pages with usable native text are
 returned as `existing_text` unless forced; newly recognized pages are
 `vision_ocr`. Page failures are reported without discarding successful pages.
+
+When a page's native text is sparse (under 400 characters), LocalOCR also
+recognizes the page image and returns it as `vision_ocr` if recognition reads
+substantially more, so a scanned page with only a stamp or envelope ID in real
+text is read in full. In recognized text the cells of a table row are joined
+on one line with ` | `, and an amount whose thousands comma was read as a
+period (`25.740.00`) is returned with the comma restored. Leave `force_ocr`
+off for pages that already have text: re-rendering some born-digital pages can
+lose text that the native layer has.
 
 ### `ocr_pdf_batch`
 
@@ -269,7 +284,8 @@ Parameters:
 Returns recognized text directly. ImageIO-decoded inputs include common PNG,
 JPEG, TIFF, and HEIC/HEIF images, with the exact supported set determined by
 the installed macOS ImageIO support. The MCP surface does not expose language
-or cache options for image OCR.
+or cache options for image OCR. Table rows are joined with ` | ` as for PDF
+pages.
 
 ### `make_searchable_pdf`
 
