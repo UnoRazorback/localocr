@@ -6,9 +6,9 @@ the canonical advanced-use guide for connecting the `localocr-mcp` helper to an
 MCP client.
 
 Beta 2.2 is version `0.3.2`, build `10`, with nine tools and an external-data
-acknowledgment. Its planned tag is `v0.3.2-beta.1`. This guide describes the
-candidate behavior but does not claim signing, notarization, installation, or
-release acceptance before those evidence gates pass.
+acknowledgment. It was published on November 11, 2026 as the prerelease
+`v0.3.2-beta.1`. Local-model provider acceptance was not rerun for this build
+and remains open.
 
 ## What does local stdio MCP mean?
 

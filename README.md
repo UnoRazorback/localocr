@@ -9,17 +9,12 @@ stored locally.
 LocalOCR is an open-core project for **macOS 14 or later**. The open-source
 core includes the Swift OCR engine, the `localocr` command-line tool, and the
 `localocr-mcp` stdio server. The repository also contains the release pipeline
-for a directly distributed LocalOCR Studio Mac app. The Beta 2.2 release
-candidate is version `0.3.2`, build `10`, with planned tag
-`v0.3.2-beta.1`. Signing, notarization, target-Mac acceptance, and publication
-remain separate gates; no Beta 2.2 download is being claimed before those
-gates pass. See the [Beta Tester Guide](BETA_TESTING.md) for the desktop-first
-test, privacy boundary, Local Intelligence providers, and optional MCP setup.
-
-> **Published.** Build 10 was published on November 11, 2026 as prerelease
-> [`v0.3.2-beta.1`](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.1). The candidate wording in this document describes
-> the gates the build passed before publication. Local-model provider
-> acceptance was not rerun for this build and remains open.
+for a directly distributed LocalOCR Studio Mac app. Beta 2.2 is version
+`0.3.2`, build `10`, published on November 11, 2026 as the GitHub prerelease
+[`v0.3.2-beta.1`](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.1).
+It is a beta prerelease, not a stable release. See the
+[Beta Tester Guide](BETA_TESTING.md) for the desktop-first test, privacy
+boundary, Local Intelligence providers, and optional MCP setup.
 
 ## What it does
 
@@ -177,9 +172,10 @@ The resulting executables are `dist/native-tools/localocr`,
 `dist/native-tools/localocr-model-bridge`. The build script creates local development
 artifacts only; it does not sign, notarize, install, or publish them.
 
-## Beta 2.2 release candidate
+## Beta 2.2 prerelease
 
-Build 10 is a **private integration release candidate**, not a published download.
+Build 10 is published as the prerelease
+[`v0.3.2-beta.1`](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.1).
 It keeps the named `llama_cpp` provider (llama.cpp), grounded one-shot
 `summarize`, `organize`, and `extract-fields` JSON CLI commands, and signed
 content-free Local AI Activity sharing with AI Neural Gauge. Each machine's
@@ -187,22 +183,30 @@ signature, container access, provider qualification, and real document acceptanc
 must be verified separately. Ordinary OCR works without a model server. There
 is no automatic provider fallback and no model download or server-launch control.
 
-The candidate identity is version `0.3.2`, build `10`, planned tag
-`v0.3.2-beta.1`, and planned assets `LocalOCR-Studio-0.3.2-10.zip` and
-`LocalOCR-Studio-0.3.2-10.sha256`. The exact release commit, ZIP SHA-256,
-notarization submission, downloaded-package verification, and target-Mac
-results must be filled from evidence after those gates pass. Build 10 source
-verification and release scripts pin Xcode 27.2 (`27B52`) at
-`/Applications/Xcode.app`, Swift 6.4, arm64, and deployment target macOS 14.0.
-The controlled macOS 27 GR target run remains a separate acceptance gate.
-Future Apple beta compatibility is not guaranteed.
+The release is version `0.3.2`, build `10`, tag `v0.3.2-beta.1`, with assets
+`LocalOCR-Studio-0.3.2-10.zip` and `LocalOCR-Studio-0.3.2-10.sha256`. The
+release commit is `6c3ae1390889aba3847a38eb3882dd1a6e1821ad` and the ZIP
+SHA-256 is `3db38fb48c72776fb2d5bc4881aebc58b6f1fd41c8c685fc126191a0a01dc7ad`.
+The app is Developer ID signed with Hardened Runtime, notarized (submission
+`7f6997c7-c962-4d15-b3d4-abb89df3aee6`, Accepted), stapled, and accepted by
+Gatekeeper. It was built with Xcode 27.2 (`27B52`) at
+`/Applications/Xcode.app`, Swift 6.4, the macOS 27.2 SDK, arm64, and deployment
+target macOS 14.0. Future Apple beta compatibility is not guaranteed.
 
-See the [Build 10 acceptance record](docs/localocr-build10-acceptance-2026-11-11.md)
-for synthetic endurance evidence and the remaining real-model requirements.
+Before publication the build passed 945 Swift tests, 501 Python contract tests
+with one opt-in skip, downloaded-package verification, and OCR acceptance on the
+signed build. Local-model provider acceptance (Apple Foundation Models, Ollama,
+LM Studio, llama.cpp), endurance, real idle, and AI Neural Gauge acceptance were
+not rerun for this build and remain open. They stand as accepted for the
+previous prerelease `v0.3.1-beta.1`, plus three later llama.cpp output-limit
+changes that have automated coverage only. The controlled macOS 27 GR target run
+also remains open. See the
+[Build 10 acceptance record](docs/localocr-build10-acceptance-2026-11-11.md)
+for the evidence.
 
-After the release is published, download `LocalOCR-Studio-0.3.2-10.zip` and
-`LocalOCR-Studio-0.3.2-10.sha256` into the same directory and verify them before
-expanding the ZIP:
+Download `LocalOCR-Studio-0.3.2-10.zip` and
+`LocalOCR-Studio-0.3.2-10.sha256` from the prerelease into the same directory
+and verify them before expanding the ZIP:
 
 ```bash
 shasum -a 256 -c "LocalOCR-Studio-0.3.2-10.sha256"
@@ -210,14 +214,17 @@ shasum -a 256 -c "LocalOCR-Studio-0.3.2-10.sha256"
 
 Continue only if the command reports `OK`. Move the expanded `LocalOCR
 Studio.app` to `/Applications` and open it normally. Do not bypass Gatekeeper
-or use an unverified build or staging copy. The [Beta Tester Guide](BETA_TESTING.md)
-contains the complete install, five-minute desktop test, compatibility, and
-feedback instructions.
+or use an unverified build or staging copy. The first recognition from a newly
+installed build can take up to a minute and in one observed case read fewer
+words than the next run, so process one document and discard the result before
+relying on output. The [Beta Tester Guide](BETA_TESTING.md) contains the
+complete install, five-minute desktop test, compatibility, and feedback
+instructions.
 
 Release operators and second-Mac testers must use a clean checkout at the
 exact approved release commit. From that checkout's repository root, run the
-downloaded-copy verifier with absolute paths to both downloaded assets before
-an unpublished candidate is released or a published prerelease is promoted:
+downloaded-copy verifier with absolute paths to both downloaded assets before a
+build is released or a published prerelease is promoted:
 
 ```bash
 cd /path/to/localocr
@@ -229,10 +236,10 @@ scripts/test-downloaded-release.sh \
   "/absolute/path/to/LocalOCR-Studio-<version>-<build>.sha256"
 ```
 
-The private release workflow identifies the approved version, exact release
+The release workflow identifies the approved version, exact release
 commit, installation steps, known limitations, and owner-approved feedback
-URL before publication. The published prerelease notes identify the
-corresponding facts for the available build.
+URL. The [published prerelease notes](docs/release/v0.3.2-beta.1-notes.md)
+identify the corresponding facts for this build.
 
 ### Beta limitations
 

@@ -5,6 +5,8 @@ ROOT = Path(__file__).resolve().parents[2]
 GUIDE = ROOT / "BETA_TESTING.md"
 RELEASE_NOTES = ROOT / "docs/release/v0.3.2-beta.1-notes.md"
 DEPLOYMENT_TARGET = "deployment target macOS 14.0"
+RELEASE_URL = "https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.1"
+ZIP_SHA256 = "3db38fb48c72776fb2d5bc4881aebc58b6f1fd41c8c685fc126191a0a01dc7ad"
 LATER_BETA_WARNING = "Future Apple beta compatibility is not guaranteed."
 
 
@@ -54,11 +56,11 @@ def test_beta_guide_keeps_desktop_first_and_links_to_the_canonical_mcp_faq():
     text = GUIDE.read_text()
     assert text.index("## What the desktop app does") < text.index("## Advanced: MCP setup")
     assert "[canonical MCP FAQ](docs/mcp.md#advanced-setup)" in text
-    assert "release candidate" in text
-    assert "Do not distribute" in text
+    assert "release candidate" not in text.lower()
+    assert "Do not distribute" not in text
 
 
-def test_guide_and_release_notes_use_exact_candidate_identity_without_false_release_claims():
+def test_guide_and_release_notes_use_exact_published_identity_and_open_acceptance():
     for path in (GUIDE, RELEASE_NOTES):
         text = path.read_text()
         assert "0.3.2" in text
@@ -68,7 +70,16 @@ def test_guide_and_release_notes_use_exact_candidate_identity_without_false_rele
         assert "27B52" in text
         assert DEPLOYMENT_TARGET in text
         assert LATER_BETA_WARNING in text
-        assert "pending" in text.lower() or "remain" in text.lower()
+        prose = " ".join(text.split())
+        assert RELEASE_URL in text or "published on November 11, 2026" in prose
+        assert "prerelease" in text
+        assert "remain open" in prose or "remains open" in prose
+    assert ZIP_SHA256 in GUIDE.read_text()
+    assert ZIP_SHA256 in RELEASE_NOTES.read_text()
+    assert RELEASE_URL in RELEASE_NOTES.read_text()
+    notes_prose = " ".join(RELEASE_NOTES.read_text().split())
+    assert "not a published download" not in notes_prose
+    assert "Not rerun for this build" in notes_prose
 
 
 def test_beta_guide_documents_help_guided_clients_and_local_model_choices():

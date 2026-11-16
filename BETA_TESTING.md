@@ -1,16 +1,12 @@
 # LocalOCR Studio Beta 2.2 Tester Guide
 
-The Beta 2.2 release candidate is version `0.3.2`, build `10`, with planned tag
-`v0.3.2-beta.1`. It includes the simple one-document desktop flow, an opt-in
-reviewed desktop batch, offline Help, Local Intelligence, guided Codex and
-Claude connection, and all three native helpers. Do not distribute or install
-it as a Beta 2.2 release until signing, notarization, downloaded-package, and
-target-Mac acceptance evidence is complete.
-
-> **Published.** Build 10 was published on November 11, 2026 as prerelease
-> [`v0.3.2-beta.1`](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.1). The candidate wording in this document describes
-> the gates the build passed before publication. Local-model provider
-> acceptance was not rerun for this build and remains open.
+Beta 2.2 is version `0.3.2`, build `10`, published on November 11, 2026 as the
+GitHub prerelease
+[`v0.3.2-beta.1`](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.1).
+It is a beta prerelease, not a stable release. It includes the simple
+one-document desktop flow, an opt-in reviewed desktop batch, offline Help,
+Local Intelligence, guided Codex and Claude connection, and all three native
+helpers.
 
 ## What changed since Beta 2.1
 
@@ -54,7 +50,7 @@ sharing carry forward from it unchanged.
 
 ## Download and install
 
-After publication, download `LocalOCR-Studio-0.3.2-10.zip` and
+Download `LocalOCR-Studio-0.3.2-10.zip` and
 `LocalOCR-Studio-0.3.2-10.sha256` from the `v0.3.2-beta.1` prerelease into the
 same directory. Verify the download before expanding it:
 
@@ -63,6 +59,8 @@ shasum -a 256 -c "LocalOCR-Studio-0.3.2-10.sha256"
 ```
 
 The command must report `OK`. Expand the verified ZIP, move `LocalOCR Studio.app` to `/Applications`, then open it normally. Do not bypass Gatekeeper, remove quarantine attributes, or use an unverified build or staging copy.
+
+The first recognition from a newly installed build can take up to a minute and, in one observed case, read fewer words than the next run. Process one document and discard the result before relying on output.
 
 ## What the desktop app does
 
@@ -109,9 +107,10 @@ edit an unknown client's configuration.
 
 Build 10 source compilation and automated verification use Xcode 27.2
 (`27B52`), Swift 6.4, and the macOS 27.2 SDK while keeping
-the package/app deployment target at macOS 14. This does not replace physical
-provider, downloaded-package, or target-Mac acceptance; those release gates
-remain open until dated evidence is recorded.
+the package/app deployment target at macOS 14. Downloaded-package verification
+and OCR acceptance on the signed build passed. Physical provider acceptance
+and the controlled macOS 27 GR target run were not repeated for this build and
+remain open.
 
 ## Five-minute desktop test
 
@@ -130,19 +129,27 @@ Use non-sensitive sample documents and complete these eight steps:
 
 Recognition uses Apple Vision and PDFKit locally. LocalOCR does not upload documents, recognized text, filenames, paths, thumbnails, hashes, cache entries, or outputs. It provides no cloud OCR, cloud storage, HTTP MCP listener, or network MCP service. Local cache entries may be written at `~/Library/Caches/com.rayconsulting.localocr/ocr-v1`; there is no history of documents or results. If you separately connect an MCP client, that client or its AI provider may transmit paths, text, and tool results outside your Mac; local stdio is not a provider privacy guarantee.
 
-## Compatibility and candidate provenance
+## Compatibility and release provenance
 
-The Build 10 source-verification and pinned release toolchain is Xcode 27.2
-(`27B52`) at `/Applications/Xcode.app`, Swift 6.4, arm64, and
-deployment target macOS 14.0. The controlled
-macOS 27 GR target run remains pending. Final Developer ID,
-Hardened Runtime,
-notarization, staple, Gatekeeper, download, and exact-build target-Mac facts
-will be added only from completed release evidence.
+Build 10 was built with Xcode 27.2 (`27B52`) at `/Applications/Xcode.app`,
+Swift 6.4, the macOS 27.2 SDK, arm64, and deployment target macOS 14.0. It is
+Developer ID signed (John Scott Ray, team `DZ8B5454ZN`) with Hardened Runtime,
+notarized (submission `7f6997c7-c962-4d15-b3d4-abb89df3aee6`, Accepted),
+stapled, and accepted by Gatekeeper.
 
-Candidate provenance: version `0.3.2`, build `10`, planned tag
-`v0.3.2-beta.1`. The exact release commit and verified ZIP SHA-256 are pending
-the immutable release build.
+Release provenance: version `0.3.2`, build `10`, tag `v0.3.2-beta.1`, release
+commit `6c3ae1390889aba3847a38eb3882dd1a6e1821ad`. The ZIP SHA-256 is
+`3db38fb48c72776fb2d5bc4881aebc58b6f1fd41c8c685fc126191a0a01dc7ad`.
+
+Before publication the build passed 945 Swift tests, 501 Python contract tests
+with one opt-in skip, downloaded-package verification, and OCR acceptance on the
+signed build. Local-model provider acceptance (Apple Foundation Models, Ollama,
+LM Studio, llama.cpp), endurance, real idle, and AI Neural Gauge acceptance
+were not rerun for this build and remain open. They stand as accepted for the
+previous prerelease `v0.3.1-beta.1`, plus three later llama.cpp output-limit
+changes that have automated coverage only. The controlled macOS 27 GR target run
+also remains open. Build 9 was signed and accepted on November 11, 2026 but
+never published; Build 10 replaced it.
 
 The [Build 10 acceptance record](docs/localocr-build10-acceptance-2026-11-11.md)
 distinguishes in-process synthetic tests from Gemma/GPT acceptance, the real

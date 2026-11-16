@@ -152,11 +152,6 @@ external-provider risk, consent, and current client-configuration examples.
 The adjacent `Contents/Helpers/localocr` executable provides the command-line
 interface.
 
-> **Published.** Build 10 was published on November 11, 2026 as prerelease
-> [`v0.3.2-beta.1`](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.1). The candidate wording in this document describes
-> the gates the build passed before publication. Local-model provider
-> acceptance was not rerun for this build and remains open.
-
 ## What changed since Beta 2.1
 
 Recognized page text now keeps each table row on one line. Apple Vision
@@ -199,25 +194,31 @@ sharing carry forward from it unchanged.
 
 ## Beta 2.2 status
 
-The release candidate is version `0.3.2`, build `10`, with planned tag
-`v0.3.2-beta.1`. Follow the [Beta Tester Guide](../BETA_TESTING.md) for the
-desktop-first acceptance path. The planned assets are
-`LocalOCR-Studio-0.3.2-10.zip` and its matching `.sha256` file. Do not use a
-staging copy or bypass Gatekeeper. Signing, notarization, downloaded-package,
-and target-Mac acceptance remain separate gates, so no published Beta 2.2
-download is claimed before their evidence exists.
+Beta 2.2 is version `0.3.2`, build `10`, published on November 11, 2026 as the
+GitHub prerelease
+[`v0.3.2-beta.1`](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.1).
+Follow the [Beta Tester Guide](../BETA_TESTING.md) for the desktop-first
+acceptance path. The assets are `LocalOCR-Studio-0.3.2-10.zip` and its matching
+`.sha256` file. Do not use a staging copy or bypass Gatekeeper. The first
+recognition from a newly installed build can take up to a minute and in one
+observed case read fewer words than the next run, so process one document and
+discard the result before relying on output.
 
 ## Compatibility and build provenance
 
 Build 10 source verification and release scripts pin Xcode 27.2 (`27B52`) at
 `/Applications/Xcode.app`, Swift 6.4, arm64, and deployment target
-macOS 14.0. The controlled macOS 27 GR target run remains
-pending. Final signing, notarization,
-Gatekeeper, download, and
-target-Mac facts will be added from completed evidence. Future Apple beta
-compatibility is not guaranteed; include the exact macOS version and build
-number in feedback.
+macOS 14.0. The ZIP SHA-256 is
+`3db38fb48c72776fb2d5bc4881aebc58b6f1fd41c8c685fc126191a0a01dc7ad` and the
+release commit is `6c3ae1390889aba3847a38eb3882dd1a6e1821ad`. The app is
+Developer ID signed with Hardened Runtime, notarized (submission
+`7f6997c7-c962-4d15-b3d4-abb89df3aee6`, Accepted), stapled, and accepted by
+Gatekeeper, and the downloaded package was verified. Local-model provider,
+endurance, real idle, and AI Neural Gauge acceptance were not rerun for this
+build and remain open, as does the controlled macOS 27 GR target run. Future
+Apple beta compatibility is not guaranteed; include the exact macOS version and
+build number in feedback.
 
 See the [Build 10 acceptance record](localocr-build10-acceptance-2026-11-11.md)
-for the synthetic twenty-generation/ten-minute-clock checks and remaining
-real-model, real-idle, and target-machine gates.
+for the synthetic twenty-generation/ten-minute-clock checks and the remaining
+real-model, real-idle, and target-machine requirements.

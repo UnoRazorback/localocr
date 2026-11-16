@@ -13,6 +13,16 @@ FILES = {
     "mcp": ROOT / "docs/mcp.md",
     "cli": ROOT / "docs/cli.md",
 }
+RELEASE_URL = "https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.1"
+ZIP_SHA256 = "3db38fb48c72776fb2d5bc4881aebc58b6f1fd41c8c685fc126191a0a01dc7ad"
+CANDIDATE_ONLY_PHRASES = (
+    "release candidate",
+    "no published Beta 2.2 download is claimed",
+    "no Beta 2.2 download is being claimed",
+    "private integration release candidate",
+    "not a published download",
+    "Do not distribute",
+)
 LOCAL_AI_ACTIVITY_GATE = ROOT / "docs/release/local-ai-activity-entitlement-gate.md"
 LOCAL_AI_ACTIVITY_TRUTHS = (
     "App reported",
@@ -32,15 +42,17 @@ def test_repository_docs_link_to_beta_guide():
     assert "../BETA_TESTING.md" in FILES["mcp"].read_text()
 
 
-def test_readme_and_studio_describe_beta_2_2_candidate_and_reset():
+def test_readme_and_studio_describe_published_beta_2_2_and_reset():
     for key in ("readme", "studio"):
         text = FILES[key].read_text()
         prose = " ".join(text.split())
         assert VERSION in text
         assert f"build `{BUILD}`" in prose
         assert TAG in text
-        assert "release candidate" in text.lower()
-        assert "no published Beta 2.2 download is claimed" in prose or "no Beta 2.2 download is being claimed" in prose
+        assert RELEASE_URL in text
+        assert ZIP_SHA256 in text
+        assert "remain open" in prose
+        assert "published on November 11, 2026" in prose
         assert "Process Another Document" in text
         assert "Xcode 27.2 (`27B52`)" in prose
         assert DEPLOYMENT_TARGET in prose
@@ -125,14 +137,17 @@ def test_local_ai_activity_entitlement_gate_records_authorized_configuration_and
     assert "blocked pending the approvals below" not in gate
 
 
-def test_private_build_10_candidate_identity_and_suite_boundary():
+def test_published_build_10_identity_and_suite_boundary():
     for name in ("README.md", "docs/studio.md", "BETA_TESTING.md"):
         text = (ROOT / name).read_text()
         assert f"LocalOCR-Studio-{VERSION}-{BUILD}.zip" in text
         assert "LocalOCR-Studio-0.3.2-4" not in text
+    for name in ("README.md", "BETA_TESTING.md", "docs/studio.md"):
+        lowered = " ".join((ROOT / name).read_text().split()).lower()
+        for phrase in CANDIDATE_ONLY_PHRASES:
+            assert phrase.lower() not in lowered, (name, phrase)
     readme = FILES["readme"].read_text()
-    assert "private integration release candidate" in readme
-    assert "not a published download" in readme
+    assert RELEASE_URL in readme
     for requirement in ("llama_cpp", "summarize", "organize", "extract-fields",
                         "Local AI Activity", "Ordinary OCR works without a model server"):
         assert requirement in readme
