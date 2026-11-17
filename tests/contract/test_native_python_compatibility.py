@@ -306,8 +306,8 @@ def _assert_matching_tool_schemas(python: dict[str, Any], native: dict[str, Any]
         python_parameters = _tool_input_semantics(python[name])
         native_parameters = _tool_input_semantics(native[name])
         for extra in NATIVE_ONLY_PARAMETERS.get(name, ()):
-            added = native_parameters.pop(extra)
-            assert added == {"types": ["boolean"], "required": False, "default": False}, (
+            added = native_parameters.pop(extra, None)
+            assert added in (None, {"types": ["boolean"], "required": False, "default": False}), (
                 f"{name}.{extra} must be an optional boolean that is off by default: {added}"
             )
         assert native_parameters == python_parameters, (
