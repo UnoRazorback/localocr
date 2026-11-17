@@ -254,42 +254,45 @@ recognizes the page image and returns it as `vision_ocr` if recognition reads
 substantially more, so a scanned page with only a stamp or envelope ID in real
 text is read in full. In recognized text the cells of a table row are joined
 on one line with ` | `, and an amount whose thousands comma was read as a
-period (`25.740.00`) is returned with the comma restored. Leave `force_ocr`
+period (`25.740.00`) is returned with the comma restored. An amount whose
+last digits came out as stray accented letters (`25,740.0ął`) is finished by
+looking again at that one line, enlarged; the digits already read are kept
+and the line is left as recognized if the second look disagrees with them. Leave `force_ocr`
 off for pages that already have text: re-rendering some born-digital pages can
 lose text that the native layer has.
 
 #### Checking amounts
 
-Vision reports full confidence for an amount it has misread. Its commonest
-misreading on financial documents is an amount whose last digits come out as
-stray accented letters, such as `25,740.0ął` for `25,740.00`. With
+Vision reports full confidence for an amount it has misread, so nothing in a
+normal result tells a wrong amount from a right one. With
 `verify_amounts: true`, every recognized page that carries an amount is read
 a second time at another resolution (350 DPI for requests under 300,
-otherwise 200) and the two reads are compared line by line. A garbled amount
-is given the second read's clean reading, and any other amount the second
-read does not repeat is marked, right after the amount in the page text:
+otherwise 200) and the two reads are compared line by line. An amount the
+second read does not repeat is marked, right after the amount in the page
+text:
 
 ```text
-Total Labor | 25,740.0ął [second read: 25,740.00]
 Retainage | 6,435.00 [not confirmed by second read]
+Total Labor | 25,740.0ął [second read: 25,740.00]
 ```
 
 A mark means "check this amount against the page", not "this amount is
-wrong". On the project's benchmark documents (2,828 clean amounts and 94
-garbled ones):
+wrong". Measured on the project's benchmark documents (2,856 clean amounts):
 
-- 63 of the 94 garbled amounts received a second reading, and all 63 were
-  right; the other 31 were marked as not confirmed.
 - 1.9% of correctly read amounts were marked.
-- The 10 amounts misread as a different clean amount were not marked: the
-  second read made the same mistake. An unmarked amount is therefore not
+- The 10 amounts misread as a different clean amount were **not** marked:
+  the second read made the same mistake. An unmarked amount is therefore not
   proven right.
+- Of the 6 amounts still garbled after the automatic repair above, 4
+  received a second reading (all right) and 1 was marked as not confirmed.
 
-Pages returned as `existing_text` are exact and are not checked. The result
-gains `amount_check` with `second_read_dpi`, `flagged_amounts`, and
-`unchecked_pages` (recognized pages with amounts whose second read failed or
-settled on a different rotation). Line details from `include_lines` stay the
-first read, unmarked. Recognition takes up to twice as long.
+The check is a second opinion for the few amounts the automatic repair could
+not finish, not a guarantee. Pages returned as `existing_text` are exact and
+are not checked. The result gains `amount_check` with `second_read_dpi`,
+`flagged_amounts`, and `unchecked_pages` (recognized pages with amounts whose
+second read failed or settled on a different rotation). Line details from
+`include_lines` stay the first read, unmarked. Recognition takes about twice
+as long.
 
 ### `ocr_pdf_batch`
 
@@ -506,6 +509,15 @@ complete, and a supported language. For Ollama or LM Studio, start the existing
 local harness, run detection again, review qualification, and reselect the exact
 model if its identity changed. When no provider is available, use the six
 OCR/PDF tools; LocalOCR has no cloud fallback.
+
+### Pages listed in `failed_pages` after a long wait
+
+On some near-blank scanned pages Apple Vision occasionally stops answering.
+LocalOCR waits 90 seconds, lists that page and the rest of that call's
+recognized pages in `failed_pages`, and from then on fails recognition in
+that server process immediately with "Apple Vision stopped answering in this
+process". Nothing is wrong with the file. Restart the MCP client (which
+restarts the helper) and run the call again; it normally succeeds.
 
 ## Compatibility and release boundary
 

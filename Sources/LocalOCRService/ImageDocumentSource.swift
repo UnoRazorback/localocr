@@ -29,10 +29,17 @@ public struct ImageDocumentSource: ImageDocumentRecognizing {
         image: CGImage,
         settings: RecognitionSettings
     ) async throws -> String {
-        let candidate = try await recognizer.recognize(
+        let recognized = try await recognizer.recognize(
             image: image,
             orientation: .up,
             settings: settings
+        )
+        try Task.checkCancellation()
+        let candidate = try await GarbledAmountRepair.repaired(
+            recognized,
+            image: image,
+            settings: settings,
+            recognizer: recognizer
         )
         try Task.checkCancellation()
         // Same row-preserving text as PDF pages, so a photographed table keeps

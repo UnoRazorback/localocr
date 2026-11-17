@@ -183,3 +183,58 @@ in a quarter of the files. On scans the second read rescues far fewer of them
 both resolutions. A second read is therefore not enough to make this a
 default repair. The next thing to try is reading the amount's own region
 again, enlarged, rather than the whole page at another resolution.
+
+## Finishing garbled amounts from a second look at the line (2026-11-17)
+
+**Experiment.** `region_probe.py` reads each line that holds a garbled amount
+again, several ways. Cutting the line out with a little room around it and
+enlarging it three times worked best:
+
+| | Whole page read again (amount check) | Line cut out and enlarged |
+| --- | --- | --- |
+| Benchmark pages (answer key) | 63 of 94 garbled amounts given the right reading | 136 of 140 clean and right, 2 still garbled, 2 clean but not in the answer key |
+| True scans (no answer key) | 40 of 183 given a clean reading | 157 of 196 given a clean reading that begins the same |
+
+**Built in as `GarbledAmountRepair`, on by default.** The first reading's
+characters are kept; only the missing digits are taken, and only when the
+second look is a clean amount that begins with exactly the digits already
+read. Same 112 benchmark pages at 300 DPI:
+
+| | before | after |
+| --- | --- | --- |
+| amount | 91.9 | 95.1 |
+| word | 97.5 | 98.3 |
+| row:all | 84.5 | 86.8 |
+| garbled amounts left | 134 | 6 |
+| clean amounts with a wrong digit | 10 | 10 |
+
+On the 80 scanned files (`scan_survey.py`): garbled amounts 183 before, 18
+after; clean amounts 3,577 before, 3,706 after; no failed pages.
+
+**The amount check after the repair.** With little left to rescue it is a
+second opinion only: 53 of 2,846 right amounts marked (1.9%), none of the 10
+wrong ones marked, 4 of the 6 remaining garbled amounts given the right
+reading. On scans it marked 141 of 3,706 clean amounts and gave 10 of the 18
+remaining garbled amounts a second reading.
+
+## Vision sometimes stops answering (2026-11-17)
+
+Found while surveying scans: a read of one scanned agreement never returned
+and used no processor time.
+
+- Installed build 10 froze on 4 of 25 reads of six near-blank pages of that
+  file, so this predates the branch.
+- A standalone program with none of LocalOCR's code (`VNRecognizeTextRequest`
+  on the rendered pages) froze on about 6% of launches, every time on the
+  picture of that file's first page, at any orientation, usually on the first
+  request of the process. Asking again in the same process froze too.
+- Controls: 1,800 requests in one process on a blank page and a text picture,
+  and 120 launches on six ordinary text pages, never froze.
+- Some slow requests do finish: one guarded read took 72 seconds and
+  completed.
+
+`VisionTextRecognizer` now gives up on a request after 90 seconds, reports
+the page as failed, and fails later requests in that process at once. With
+the guard, 60 of 60 reads of the file finished (none froze during that run,
+so the guard's rescue of a live freeze is covered by unit tests only). The
+cause inside Vision is unknown.

@@ -123,7 +123,7 @@ public enum MCPToolCatalog {
                 "verify_amounts": .object([
                     "type": "boolean",
                     "default": false,
-                    "description": "Read each recognized page that has amounts a second time at another resolution and mark, in the page text, every amount the second read does not repeat: '[second read: <other amount>]' or '[not confirmed by second read]' right after the amount. Mainly repairs amounts whose last digits came out as stray accented letters. A mark means check that amount against the page; an unmarked amount is not proven right. Use for financial documents; recognition takes up to twice as long. amount_check in the result gives the count."
+                    "description": "Read each recognized page that has amounts a second time at another resolution and mark, in the page text, every amount the second read does not repeat: '[second read: <other amount>]' or '[not confirmed by second read]' right after the amount. A mark means check that amount against the page; an unmarked amount is not proven right, because a digit misread the same way twice passes. A second opinion for financial documents; recognition takes about twice as long. amount_check in the result gives the count."
                 ])
             ],
             required: [fileKey]

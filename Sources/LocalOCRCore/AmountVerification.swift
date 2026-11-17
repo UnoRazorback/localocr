@@ -4,12 +4,11 @@ import Foundation
 /// Marks recognized amounts that a second read of the same page does not confirm.
 ///
 /// Vision reports full confidence for amounts it has misread, so confidence
-/// cannot single them out. Its commonest misreading is an amount whose last
-/// digits run into accented letters it made up ("25,740.0ął"). Reading the page
-/// again at another resolution usually returns that amount cleanly. The two
-/// reads are paired by position on the page; a garbled amount is given the
-/// second read's clean reading, and a clean amount the second read does not
-/// repeat is marked.
+/// cannot single them out. Reading the page again at another resolution gives
+/// a second opinion: the two reads are paired by position on the page, and an
+/// amount the second read does not repeat is marked. An amount still garbled
+/// after `GarbledAmountRepair` is given the second read's clean reading when
+/// there is one.
 ///
 /// A mark means "check this against the page", not "this is wrong", and an
 /// unmarked amount is not proven right: a digit misread the same way twice
@@ -111,10 +110,10 @@ public enum AmountVerification {
         pattern: #"(?<![A-Za-z0-9.,])(?:\d{1,3}(?:,\d{3})+(?:\.\d{2})?|\d+\.\d{2})(?![.,]?\d)(?![A-Za-z])"#
     )
 
-    // An amount cut short by non-ASCII letters, which is how Vision returns some
-    // amounts. No real amount in an English-language document is written this way.
+    // An amount cut short by accented Latin letters, which is how Vision returns
+    // some amounts. No real amount in an English-language document is written this way.
     private static let garbledPattern = try? NSRegularExpression(
-        pattern: #"(?<![A-Za-z0-9.,])(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{0,2}[\p{L}&&[^\x00-\x7F]]+"#
+        pattern: #"(?<![A-Za-z0-9.,])(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{0,2}[À-ɏḀ-ỿ]+"#
     )
 
     static func amounts(in text: String) -> [Amount] {

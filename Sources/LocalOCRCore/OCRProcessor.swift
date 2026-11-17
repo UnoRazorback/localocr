@@ -2,8 +2,8 @@ import Foundation
 import ImageIO
 
 public actor OCRProcessor {
-    // v3: recognized lines carry repaired amount punctuation.
-    private static let cacheCompatibilityVersion = "ocr-processor-v3"
+    // v4: amounts that ran into made-up letters are finished from a second look at the line.
+    private static let cacheCompatibilityVersion = "ocr-processor-v4"
 
     private let pdfSource: any PDFDocumentReading
     private let recognizer: any TextRecognizing
@@ -216,7 +216,13 @@ public actor OCRProcessor {
             dpi: settings.dpi
         )
         do {
-            return try await OrientationSelector().best(
+            let candidate = try await OrientationSelector().best(
+                image: image,
+                settings: settings,
+                recognizer: recognizer
+            )
+            return try await GarbledAmountRepair.repaired(
+                candidate,
                 image: image,
                 settings: settings,
                 recognizer: recognizer

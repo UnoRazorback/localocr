@@ -350,7 +350,17 @@ is stored. A number shaped like `25.740.00`, where a period stands in for a
 thousands comma, becomes `25,740.00`. Digits are never changed, and a number
 with letters or further digits alongside it is left as recognized.
 
-`ImageDocumentSource` returns the same row-joined text for pictures.
+After a page is recognized, `GarbledAmountRepair.repaired` finishes amounts
+whose last digits Vision returned as accented Latin letters (`25,740.0ął`).
+Each affected line is cut out of the page picture with a little room around
+it, enlarged three times on a white margin, and recognized again. A garbled
+amount is completed only when that second look holds a clean amount that
+begins with exactly the digits already read; the first reading's characters
+are kept and only the missing digits are taken. Otherwise the line is left as
+recognized. Rotated readings are not repaired. `OCRProcessor` runs the repair
+before a page is cached (cache version `ocr-processor-v4`).
+
+`ImageDocumentSource` returns the same row-joined, repaired text for pictures.
 
 ### Amount check
 
@@ -424,6 +434,14 @@ pages are omitted from `pages`. A successful Vision request with no text is
 returned in `pages` and separately listed in `emptyOCRPages`. A successful
 non-upright result is listed in `rotatedOCRPages`. Result and failure arrays
 follow ascending source-page order.
+
+Apple Vision has been seen to stop answering a request altogether, using no
+processor time, on some near-blank scanned pages (a few launches in a
+hundred on an affected page). A request that never returns also blocks every
+later request in that process. `VisionTextRecognizer` therefore gives up on a
+request after `stallLimit` (90 seconds), reports the page as failed, and
+fails every later request in the same process at once rather than letting
+each wait out the limit. A new process reads normally.
 
 Source-level failures (missing/unreadable input, hashing or inspection
 failure, or invalid selection) throw and return no `OCRResult`. Cancellation

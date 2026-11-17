@@ -34,6 +34,29 @@ struct VisionRecognitionError: Error, LocalizedError, Sendable, Equatable {
     }
 }
 
+/// Vision did not answer a request within `VisionTextRecognizer.stallLimit`.
+struct VisionStallError: Error, Sendable, Equatable {}
+
+/// Whether Vision has stopped answering in this process.
+final class VisionStallFlag: @unchecked Sendable {
+    static let shared = VisionStallFlag()
+
+    private let lock = NSLock()
+    private var value = false
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func set() {
+        lock.lock()
+        value = true
+        lock.unlock()
+    }
+}
+
 /// Coordinates Vision's callback API with Swift concurrency. Vision can report
 /// the same failure both through the request completion handler and by throwing
 /// from `perform(_:)`; only the first terminal result may resume the continuation.
@@ -95,6 +118,22 @@ final class VisionRecognitionOperation: @unchecked Sendable {
         return true
     }
 
+    /// Gives up on a request Vision has not answered and asks Vision to drop
+    /// it. Returns false when the request had already finished.
+    @discardableResult
+    func stall() -> Bool {
+        let request: VNRequest?
+        lock.lock()
+        request = self.request
+        lock.unlock()
+        // Finish first, so the cancellation Vision may report next does not replace the reason.
+        guard finish(.failure(VisionStallError())) else {
+            return false
+        }
+        request?.cancel()
+        return true
+    }
+
     func cancel() {
         let request: VNRequest?
         lock.lock()
@@ -113,11 +152,13 @@ public struct VisionTextRecognizer: TextRecognizing {
         orientation: CGImagePropertyOrientation,
         settings: RecognitionSettings
     ) async throws -> RecognitionCandidate {
-        let candidate = try await Self.performRecognition(
-            image: image,
-            orientation: orientation,
-            settings: settings
-        )
+        let candidate = try await Self.failingFastAfterStall {
+            try await Self.performRecognition(
+                image: image,
+                orientation: orientation,
+                settings: settings
+            )
+        }
         guard candidate.lines.isEmpty else {
             return candidate
         }
@@ -126,11 +167,13 @@ public struct VisionTextRecognizer: TextRecognizing {
         // request with zero observations for every image instead of reporting
         // an error. A known-text probe distinguishes that condition from a
         // genuinely blank page so callers fail closed rather than accept it.
-        let probe = try await Self.performRecognition(
-            image: Self.makeAvailabilityProbeImage(),
-            orientation: .up,
-            settings: settings
-        )
+        let probe = try await Self.failingFastAfterStall {
+            try await Self.performRecognition(
+                image: Self.makeAvailabilityProbeImage(),
+                orientation: .up,
+                settings: settings
+            )
+        }
         guard probe.text.contains("LOCAL OCR READY 123") else {
             throw VisionRecognitionError(
                 message: "Apple Vision OCR is unavailable in the current execution environment. Run LocalOCR outside the restricted sandbox and retry."
@@ -139,10 +182,39 @@ public struct VisionTextRecognizer: TextRecognizing {
         return candidate
     }
 
+    /// How long one Vision request may go unanswered. Vision has been seen to
+    /// wait forever, using no processor time, on a request for a near-blank
+    /// page; a page normally takes about a second and the slowest first
+    /// request measured after installing a new build took 49 seconds.
+    static let stallLimit: TimeInterval = 90
+
+    static let stalledMessage = "Apple Vision stopped answering in this process, so the page was not read. Run the operation again; if LocalOCR Studio or an MCP client is open, quit and reopen it first."
+
+    /// Runs `work` unless Vision has already stalled in this process. A
+    /// stalled request never returns and blocks every later one behind it,
+    /// so asking again cannot help: the first stall is reported as a
+    /// recognition failure and later requests fail at once instead of each
+    /// waiting out the limit.
+    static func failingFastAfterStall<Value>(
+        _ stalled: VisionStallFlag = .shared,
+        _ work: () async throws -> Value
+    ) async throws -> Value {
+        guard !stalled.isSet else {
+            throw VisionRecognitionError(message: stalledMessage)
+        }
+        do {
+            return try await work()
+        } catch is VisionStallError {
+            stalled.set()
+            throw VisionRecognitionError(message: stalledMessage)
+        }
+    }
+
     static func performRecognition(
         image: CGImage,
         orientation: CGImagePropertyOrientation,
-        settings: RecognitionSettings
+        settings: RecognitionSettings,
+        stallLimit: TimeInterval = VisionTextRecognizer.stallLimit
     ) async throws -> RecognitionCandidate {
         let operation = VisionRecognitionOperation()
         return try await withTaskCancellationHandler {
@@ -177,6 +249,9 @@ public struct VisionTextRecognizer: TextRecognizing {
                     } catch {
                         operation.finish(.failure(Self.recognitionError(error)))
                     }
+                }
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + stallLimit) { [weak operation] in
+                    operation?.stall()
                 }
             }
         } onCancel: {

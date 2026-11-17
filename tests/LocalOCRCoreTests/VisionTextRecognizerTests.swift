@@ -110,6 +110,105 @@ import Testing
             }
         }
     }
+
+    // Catches a read waiting forever when Vision never answers a request.
+    @Test func aStalledRequestIsGivenUpAndALateAnswerIsIgnored() async {
+        let operation = VisionRecognitionOperation()
+
+        await #expect(throws: VisionStallError.self) {
+            try await withCheckedThrowingContinuation { continuation in
+                operation.install(continuation)
+                #expect(operation.stall())
+                #expect(!operation.finish(.success(.init(orientation: .up, lines: []))))
+            }
+        }
+    }
+
+    // Catches the stall timer overturning a request that already answered.
+    @Test func aRequestThatAlreadyAnsweredIsNotMarkedStalled() async throws {
+        let operation = VisionRecognitionOperation()
+        let expected = RecognitionCandidate(orientation: .up, lines: [])
+
+        let value = try await withCheckedThrowingContinuation { continuation in
+            operation.install(continuation)
+            #expect(operation.finish(.success(expected)))
+            #expect(!operation.stall())
+        }
+
+        #expect(value == expected)
+    }
+
+    // Catches a healthy request being cut off by the stall timer.
+    @Test func aPromptAnswerBeatsTheStallTimer() async throws {
+        let result = try await VisionTextRecognizer.performRecognition(
+            image: VisionTextRecognizer.makeAvailabilityProbeImage(),
+            orientation: .up,
+            settings: .init(recognitionLanguages: ["en-US"]),
+            stallLimit: 60
+        )
+
+        #expect(result.text.contains("LOCAL OCR READY 123"))
+    }
+
+    // Catches a stall surfacing as anything but a failed page with a plain message.
+    @Test func aStallFailsThePageWithAPlainMessage() async {
+        let stalled = VisionStallFlag()
+
+        await #expect(throws: VisionRecognitionError(message: VisionTextRecognizer.stalledMessage)) {
+            try await VisionTextRecognizer.failingFastAfterStall(stalled) { () async throws -> String in
+                throw VisionStallError()
+            }
+        }
+        #expect(stalled.isSet)
+    }
+
+    // Catches every later page waiting out the limit behind a request that will never return.
+    @Test func afterAStallLaterRequestsFailAtOnceWithoutAskingVision() async {
+        let stalled = VisionStallFlag()
+        stalled.set()
+        let attempts = AttemptCounter()
+
+        await #expect(throws: VisionRecognitionError(message: VisionTextRecognizer.stalledMessage)) {
+            try await VisionTextRecognizer.failingFastAfterStall(stalled) { () async throws -> String in
+                _ = attempts.next()
+                return "read"
+            }
+        }
+        #expect(attempts.count == 0)
+    }
+
+    // Catches ordinary failures or successes being treated as stalls.
+    @Test func ordinaryResultsPassThroughAndLeaveVisionAvailable() async throws {
+        let stalled = VisionStallFlag()
+
+        let value = try await VisionTextRecognizer.failingFastAfterStall(stalled) { "read" }
+        await #expect(throws: VisionFixtureError.self) {
+            try await VisionTextRecognizer.failingFastAfterStall(stalled) { () async throws -> String in
+                throw VisionFixtureError()
+            }
+        }
+
+        #expect(value == "read")
+        #expect(!stalled.isSet)
+    }
+}
+
+private final class AttemptCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        value += 1
+        return value
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
 }
 
 private struct VisionFixtureError: LocalizedError {

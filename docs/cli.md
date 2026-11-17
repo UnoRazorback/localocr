@@ -59,7 +59,9 @@ OCR one local PDF. Pages with usable native text are returned as
 also recognized from its image and returned as `vision_ocr` when recognition
 reads substantially more, so scanned pages that carry only a stamp or
 envelope ID are read. Recognized text joins the cells of a table row with
-` | ` and restores a thousands comma that was read as a period.
+` | `, restores a thousands comma that was read as a period, and finishes
+an amount whose last digits came out as stray accented letters by looking
+again at that one line.
 
 ```bash
 localocr ocr /path/to/document.pdf --pages 1-3 --dpi 300 --json
@@ -82,14 +84,20 @@ returned page. With it, the response includes `source_path`, `source_sha256`,
 `pages`, `failed_pages`, `empty_ocr_pages`, and `rotated_ocr_pages`. A page
 may be reported in `failed_pages` without discarding successful pages.
 
-`--verify-amounts` is for documents where a wrong digit matters. Vision gives
-no warning when it misreads an amount, most often by turning the last digits
-into stray accented letters. The page is read twice; a garbled amount is
-given the second read's clean reading
-(`25,740.0ął [second read: 25,740.00]`) and any other amount the two reads
-disagree on is marked (`6,435.00 [not confirmed by second read]`). A mark
-means "check this amount against the page"; an unmarked amount is not proven
-right. Recognition takes up to twice as long. JSON output gains
+If Apple Vision stops answering on a page, which has been seen occasionally
+on near-blank scans, `ocr` waits 90 seconds, reports that page and any later
+recognized pages as failed with "Apple Vision stopped answering in this
+process", and exits with status 3 instead of waiting forever. Run the command
+again; a new process normally reads the file.
+
+`--verify-amounts` is a second opinion for documents where a wrong digit
+matters. Vision gives no warning when it misreads an amount, so the page is
+read twice and an amount the two reads disagree on is marked in the text
+(`6,435.00 [not confirmed by second read]`, or
+`25,740.0ął [second read: 25,740.00]` for an amount the automatic repair
+could not finish). A mark means "check this amount against the page"; an
+unmarked amount is not proven right, because a digit misread the same way
+twice passes. Recognition takes about twice as long. JSON output gains
 `amount_check` (`second_read_dpi`, `flagged_amounts`, `unchecked_pages`);
 without `--json` a one-line summary goes to standard error. Measured results
 are in [the MCP reference](mcp.md#checking-amounts).
