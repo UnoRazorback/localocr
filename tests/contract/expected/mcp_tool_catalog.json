@@ -376,6 +376,11 @@
         "page_range" : {
           "description" : "Optional 1-indexed page spec, such as 1-5 or 3,7,12.",
           "type" : "string"
+        },
+        "verify_amounts" : {
+          "default" : false,
+          "description" : "Read each recognized page that has amounts a second time at another resolution and mark, in the page text, every amount the second read does not repeat: '[second read: <other amount>]' or '[not confirmed by second read]' right after the amount. Mainly repairs amounts whose last digits came out as stray accented letters. A mark means check that amount against the page; an unmarked amount is not proven right. Use for financial documents; recognition takes up to twice as long. amount_check in the result gives the count.",
+          "type" : "boolean"
         }
       },
       "required" : [
@@ -387,6 +392,29 @@
     "outputSchema" : {
       "additionalProperties" : false,
       "properties" : {
+        "amount_check" : {
+          "additionalProperties" : false,
+          "properties" : {
+            "flagged_amounts" : {
+              "type" : "integer"
+            },
+            "second_read_dpi" : {
+              "type" : "integer"
+            },
+            "unchecked_pages" : {
+              "items" : {
+                "type" : "integer"
+              },
+              "type" : "array"
+            }
+          },
+          "required" : [
+            "second_read_dpi",
+            "flagged_amounts",
+            "unchecked_pages"
+          ],
+          "type" : "object"
+        },
         "empty_ocr_pages" : {
           "items" : {
             "type" : "integer"
@@ -538,6 +566,11 @@
         "page_range" : {
           "description" : "Optional 1-indexed page spec, such as 1-5 or 3,7,12.",
           "type" : "string"
+        },
+        "verify_amounts" : {
+          "default" : false,
+          "description" : "Read each recognized page that has amounts a second time at another resolution and mark, in the page text, every amount the second read does not repeat: '[second read: <other amount>]' or '[not confirmed by second read]' right after the amount. Mainly repairs amounts whose last digits came out as stray accented letters. A mark means check that amount against the page; an unmarked amount is not proven right. Use for financial documents; recognition takes up to twice as long. amount_check in the result gives the count.",
+          "type" : "boolean"
         }
       },
       "required" : [
@@ -561,6 +594,29 @@
               {
                 "additionalProperties" : false,
                 "properties" : {
+                  "amount_check" : {
+                    "additionalProperties" : false,
+                    "properties" : {
+                      "flagged_amounts" : {
+                        "type" : "integer"
+                      },
+                      "second_read_dpi" : {
+                        "type" : "integer"
+                      },
+                      "unchecked_pages" : {
+                        "items" : {
+                          "type" : "integer"
+                        },
+                        "type" : "array"
+                      }
+                    },
+                    "required" : [
+                      "second_read_dpi",
+                      "flagged_amounts",
+                      "unchecked_pages"
+                    ],
+                    "type" : "object"
+                  },
                   "empty_ocr_pages" : {
                     "items" : {
                       "type" : "integer"

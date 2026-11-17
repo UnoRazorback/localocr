@@ -79,8 +79,102 @@ public actor LocalOCRService: LocalOCRServing {
         _ request: PDFOCRRequest,
         progress: @escaping @Sendable (OCRProgress) -> Void
     ) async throws -> PDFOCRResponse {
-        let result = try await process(request, progress: progress)
-        return map(result, sourceURL: request.fileURL, includeLines: request.includeLines)
+        guard request.verifyAmounts else {
+            let result = try await process(request, progress: progress)
+            return map(result, sourceURL: request.fileURL, includeLines: request.includeLines)
+        }
+        let firstRead = try await process(request, progress: { event in
+            if event != .completed {
+                progress(event)
+            }
+        })
+        let (result, amountCheck) = try await checkingAmounts(in: firstRead, request: request)
+        progress(.completed)
+        return map(
+            result,
+            sourceURL: request.fileURL,
+            includeLines: request.includeLines,
+            amountCheck: amountCheck
+        )
+    }
+
+    /// Reads every recognized page that carries an amount a second time at
+    /// another resolution and marks the amounts the second read does not repeat.
+    /// Pages with embedded text are exact and are not read again.
+    private func checkingAmounts(
+        in firstRead: OCRResult,
+        request: PDFOCRRequest
+    ) async throws -> (OCRResult, AmountCheckResponse) {
+        let secondReadDPI = AmountVerification.secondReadDPI(for: request.dpi)
+        let candidates = firstRead.pages.filter {
+            $0.method == .visionOCR && AmountVerification.containsAmount($0.lines)
+        }
+        guard !candidates.isEmpty else {
+            return (
+                firstRead,
+                AmountCheckResponse(secondReadDPI: secondReadDPI, flaggedAmounts: 0, uncheckedPages: [])
+            )
+        }
+
+        var secondRead: [Int: PageResult] = [:]
+        do {
+            let result = try await process(
+                PDFOCRRequest(
+                    fileURL: request.fileURL,
+                    pageRange: candidates.map { String($0.page) }.joined(separator: ","),
+                    dpi: secondReadDPI,
+                    forceOCR: true,
+                    includeLines: true,
+                    usesCache: request.usesCache
+                ),
+                progress: { _ in }
+            )
+            for page in result.pages {
+                secondRead[page.page] = page
+            }
+        } catch is CancellationError {
+            throw LocalOCRError.cancelled
+        } catch let error as LocalOCRError where error == .cancelled {
+            throw error
+        } catch {
+            // The first read is still a complete answer; its pages are reported as unchecked.
+        }
+
+        var flaggedAmounts = 0
+        var uncheckedPages: [Int] = []
+        let pages = firstRead.pages.map { page -> PageResult in
+            guard candidates.contains(where: { $0.page == page.page }) else {
+                return page
+            }
+            // Line positions from reads that settled on different rotations cannot be paired.
+            guard let again = secondRead[page.page], again.orientation == page.orientation else {
+                uncheckedPages.append(page.page)
+                return page
+            }
+            let outcome = AmountVerification.annotatedText(first: page.lines, second: again.lines)
+            flaggedAmounts += outcome.flaggedAmounts
+            return PageResult(
+                page: page.page,
+                text: outcome.text,
+                method: page.method,
+                lines: page.lines,
+                orientation: page.orientation
+            )
+        }
+        return (
+            OCRResult(
+                sourceSHA256: firstRead.sourceSHA256,
+                pages: pages,
+                failedPages: firstRead.failedPages,
+                emptyOCRPages: firstRead.emptyOCRPages,
+                rotatedOCRPages: firstRead.rotatedOCRPages
+            ),
+            AmountCheckResponse(
+                secondReadDPI: secondReadDPI,
+                flaggedAmounts: flaggedAmounts,
+                uncheckedPages: uncheckedPages
+            )
+        )
     }
 
     public func ocrPDFBatch(
@@ -101,6 +195,7 @@ public actor LocalOCRService: LocalOCRServing {
                         dpi: request.dpi,
                         forceOCR: request.forceOCR,
                         includeLines: request.includeLines,
+                        verifyAmounts: request.verifyAmounts,
                         usesCache: request.usesCache
                     ),
                     progress: { nested in
@@ -336,7 +431,8 @@ public actor LocalOCRService: LocalOCRServing {
     private func map(
         _ result: OCRResult,
         sourceURL: URL,
-        includeLines: Bool
+        includeLines: Bool,
+        amountCheck: AmountCheckResponse? = nil
     ) -> PDFOCRResponse {
         PDFOCRResponse(
             sourcePath: sourceURL.path,
@@ -354,7 +450,8 @@ public actor LocalOCRService: LocalOCRServing {
             rotatedOCRPages: result.rotatedOCRPages.keys.sorted().compactMap { page in
                 guard let orientation = result.rotatedOCRPages[page] else { return nil }
                 return RotatedPageResponse(page: page, orientation: map(orientation))
-            }
+            },
+            amountCheck: amountCheck
         )
     }
 

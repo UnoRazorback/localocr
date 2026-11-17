@@ -21,6 +21,31 @@ import Testing
         #expect(value.dpi == 250)
         #expect(value.forceOCR == false)
         #expect(value.includeLines == false)
+        #expect(value.verifyAmounts == false)
+    }
+
+    // Catches the amount check being unreachable from the MCP tools.
+    @Test func verifyAmountsReachesBothPDFTools() throws {
+        let decoder = MCPArgumentDecoder(currentDirectory: currentDirectory)
+
+        let single = try decoder.decode(
+            toolName: "ocr_pdf",
+            arguments: ["file_path": "payapp.pdf", "verify_amounts": true]
+        )
+        let batch = try decoder.decode(
+            toolName: "ocr_pdf_batch",
+            arguments: ["file_paths": ["payapp.pdf"], "verify_amounts": true]
+        )
+
+        guard case let .ocrPDF(singleRequest) = single, case let .ocrPDFBatch(batchRequest) = batch else {
+            Issue.record("Expected PDF OCR requests")
+            return
+        }
+        #expect(singleRequest.verifyAmounts)
+        #expect(batchRequest.verifyAmounts)
+        #expect(throws: MCPArgumentError.invalidBoolean("verify_amounts")) {
+            try decoder.decode(toolName: "ocr_pdf", arguments: ["file_path": "payapp.pdf", "verify_amounts": "yes"])
+        }
     }
 
     @Test func decoderRejectsUnknownArgumentsAndInvalidDPI() throws {

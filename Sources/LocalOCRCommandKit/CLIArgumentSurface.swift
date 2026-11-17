@@ -40,6 +40,7 @@ public struct LocalOCRCommandSurface: AsyncParsableCommand {
         @Option(name: .long) public var dpi: Int = 250
         @Flag(name: .customLong("force-ocr")) public var forceOCR = false
         @Flag(name: .long) public var detail = false
+        @Flag(name: .customLong("verify-amounts")) public var verifyAmounts = false
         @Flag(name: .customLong("no-cache")) public var noCache = false
         @Flag(name: .long) public var json = false
         public init() {}
@@ -53,6 +54,7 @@ public struct LocalOCRCommandSurface: AsyncParsableCommand {
         @Option(name: .long) public var dpi: Int = 250
         @Flag(name: .customLong("force-ocr")) public var forceOCR = false
         @Flag(name: .long) public var detail = false
+        @Flag(name: .customLong("verify-amounts")) public var verifyAmounts = false
         @Flag(name: .customLong("no-cache")) public var noCache = false
         @Flag(name: .long) public var json = false
         public init() {}

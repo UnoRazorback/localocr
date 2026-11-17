@@ -75,22 +75,24 @@ public struct MCPArgumentDecoder: Sendable {
             try validate(arguments, allowed: ["file_path"])
             return .inspectPDF(InspectPDFRequest(fileURL: try path(named: "file_path", in: arguments)))
         case "ocr_pdf":
-            try validate(arguments, allowed: ["file_path", "page_range", "dpi", "force_ocr", "include_lines"])
+            try validate(arguments, allowed: ["file_path", "page_range", "dpi", "force_ocr", "include_lines", "verify_amounts"])
             return .ocrPDF(try PDFOCRRequest(
                 fileURL: path(named: "file_path", in: arguments),
                 pageRange: try optionalPageRange(in: arguments),
                 dpi: try dpi(in: arguments),
                 forceOCR: try bool(named: "force_ocr", default: false, in: arguments),
-                includeLines: try bool(named: "include_lines", default: false, in: arguments)
+                includeLines: try bool(named: "include_lines", default: false, in: arguments),
+                verifyAmounts: try bool(named: "verify_amounts", default: false, in: arguments)
             ))
         case "ocr_pdf_batch":
-            try validate(arguments, allowed: ["file_paths", "page_range", "dpi", "force_ocr", "include_lines"])
+            try validate(arguments, allowed: ["file_paths", "page_range", "dpi", "force_ocr", "include_lines", "verify_amounts"])
             return .ocrPDFBatch(try BatchOCRRequest(
                 fileURLs: try paths(in: arguments),
                 pageRange: try optionalPageRange(in: arguments),
                 dpi: try dpi(in: arguments),
                 forceOCR: try bool(named: "force_ocr", default: false, in: arguments),
-                includeLines: try bool(named: "include_lines", default: false, in: arguments)
+                includeLines: try bool(named: "include_lines", default: false, in: arguments),
+                verifyAmounts: try bool(named: "verify_amounts", default: false, in: arguments)
             ))
         case "ocr_image":
             try validate(arguments, allowed: ["file_path"])

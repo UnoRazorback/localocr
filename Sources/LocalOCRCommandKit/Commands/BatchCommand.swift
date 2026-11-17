@@ -6,7 +6,7 @@ extension CLIApplication {
         let parsed = try ParsedCommandOptions(
             arguments: arguments,
             valueOptions: ["--pages", "--dpi"],
-            flags: ["--force-ocr", "--detail", "--no-cache", "--json"]
+            flags: ["--force-ocr", "--detail", "--verify-amounts", "--no-cache", "--json"]
         )
         guard !parsed.positional.isEmpty else {
             throw CLIArgumentError.message("batch requires at least one file")
@@ -17,6 +17,7 @@ extension CLIApplication {
             dpi: try parsed.dpi(),
             forceOCR: parsed.flags.contains("--force-ocr"),
             includeLines: parsed.flags.contains("--detail"),
+            verifyAmounts: parsed.flags.contains("--verify-amounts"),
             usesCache: !parsed.flags.contains("--no-cache")
         )
         let response = await service.ocrPDFBatch(request) { event in

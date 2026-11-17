@@ -10,9 +10,12 @@ import Foundation
 enum TableRowTextAssembler {
     static let cellSeparator = " | "
 
-    static func text(for lines: [TextLine]) -> String {
+    /// `display` replaces what is written for each line without changing how
+    /// rows are found, so text annotated after recognition keeps its layout.
+    static func text(for lines: [TextLine], display: [String]? = nil) -> String {
+        let written = display.flatMap { $0.count == lines.count ? $0 : nil } ?? lines.map(\.text)
         guard lines.count > 1, lines.allSatisfy({ isUsable($0.boundingBox) }) else {
-            return lines.map(\.text).joined(separator: "\n")
+            return written.joined(separator: "\n")
         }
 
         var rows: [[Int]] = []
@@ -40,7 +43,7 @@ enum TableRowTextAssembler {
         for index in lines.indices {
             let row = rowOfLine[index]
             guard isTableRow[row] else {
-                output.append(lines[index].text)
+                output.append(written[index])
                 continue
             }
             guard !emitted[row] else {
@@ -52,7 +55,7 @@ enum TableRowTextAssembler {
                 let right = lines[rhs].boundingBox.minX
                 return left == right ? lhs < rhs : left < right
             }
-            output.append(cells.map { lines[$0].text }.joined(separator: cellSeparator))
+            output.append(cells.map { written[$0] }.joined(separator: cellSeparator))
         }
         return output.joined(separator: "\n")
     }

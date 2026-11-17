@@ -132,6 +132,22 @@ public struct RotatedPageResponse: Sendable, Codable, Equatable {
     }
 }
 
+/// What an amount check did. Present only when one was requested.
+public struct AmountCheckResponse: Sendable, Codable, Equatable {
+    /// Resolution of the second read.
+    public let secondReadDPI: Int
+    /// Amounts marked in page text because the second read did not repeat them.
+    public let flaggedAmounts: Int
+    /// Recognized pages with amounts that could not be read a second time.
+    public let uncheckedPages: [Int]
+
+    public init(secondReadDPI: Int, flaggedAmounts: Int, uncheckedPages: [Int]) {
+        self.secondReadDPI = secondReadDPI
+        self.flaggedAmounts = flaggedAmounts
+        self.uncheckedPages = uncheckedPages
+    }
+}
+
 public struct PDFOCRResponse: Sendable, Codable, Equatable {
     public let sourcePath: String
     public let sourceSHA256: String
@@ -139,6 +155,7 @@ public struct PDFOCRResponse: Sendable, Codable, Equatable {
     public let failedPages: [Int]
     public let emptyOCRPages: [Int]
     public let rotatedOCRPages: [RotatedPageResponse]
+    public let amountCheck: AmountCheckResponse?
 
     public init(
         sourcePath: String,
@@ -146,7 +163,8 @@ public struct PDFOCRResponse: Sendable, Codable, Equatable {
         pages: [OCRPageResponse],
         failedPages: [Int],
         emptyOCRPages: [Int],
-        rotatedOCRPages: [RotatedPageResponse]
+        rotatedOCRPages: [RotatedPageResponse],
+        amountCheck: AmountCheckResponse? = nil
     ) {
         self.sourcePath = sourcePath
         self.sourceSHA256 = sourceSHA256
@@ -154,6 +172,7 @@ public struct PDFOCRResponse: Sendable, Codable, Equatable {
         self.failedPages = failedPages
         self.emptyOCRPages = emptyOCRPages
         self.rotatedOCRPages = rotatedOCRPages
+        self.amountCheck = amountCheck
     }
 }
 
@@ -169,6 +188,7 @@ public enum BatchItemResponse: Sendable, Codable, Equatable {
         case failedPages
         case emptyOCRPages
         case rotatedOCRPages
+        case amountCheck
         case error
     }
 
@@ -183,7 +203,8 @@ public enum BatchItemResponse: Sendable, Codable, Equatable {
                     pages: try container.decode([OCRPageResponse].self, forKey: .pages),
                     failedPages: try container.decode([Int].self, forKey: .failedPages),
                     emptyOCRPages: try container.decode([Int].self, forKey: .emptyOCRPages),
-                    rotatedOCRPages: try container.decode([RotatedPageResponse].self, forKey: .rotatedOCRPages)
+                    rotatedOCRPages: try container.decode([RotatedPageResponse].self, forKey: .rotatedOCRPages),
+                    amountCheck: try container.decodeIfPresent(AmountCheckResponse.self, forKey: .amountCheck)
                 )
             )
         case "error":
@@ -211,6 +232,7 @@ public enum BatchItemResponse: Sendable, Codable, Equatable {
             try container.encode(response.failedPages, forKey: .failedPages)
             try container.encode(response.emptyOCRPages, forKey: .emptyOCRPages)
             try container.encode(response.rotatedOCRPages, forKey: .rotatedOCRPages)
+            try container.encodeIfPresent(response.amountCheck, forKey: .amountCheck)
         case let .failure(sourcePath, message):
             try container.encode("error", forKey: .status)
             try container.encode(sourcePath, forKey: .sourcePath)

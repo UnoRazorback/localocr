@@ -32,7 +32,7 @@ import LocalOCRService
 
     let status = await harness.run([
         "ocr", "/tmp/input.pdf", "--pages", "2-4", "--dpi", "300",
-        "--force-ocr", "--detail", "--no-cache", "--json"
+        "--force-ocr", "--detail", "--verify-amounts", "--no-cache", "--json"
     ])
 
     #expect(status == 0)
@@ -43,6 +43,7 @@ import LocalOCRService
     #expect(request?.dpi == 300)
     #expect(request?.forceOCR == true)
     #expect(request?.includeLines == true)
+    #expect(request?.verifyAmounts == true)
     #expect(request?.usesCache == false)
 }
 
@@ -68,6 +69,17 @@ import LocalOCRService
     #expect(await harness.run(["ocr", "/tmp/input.pdf", "--json"]) == 3)
 }
 
+// Catches the amount check being switched on by default from the command line.
+@Test func ocrLeavesTheAmountCheckOffUnlessAsked() async {
+    let service = FixtureService()
+    let harness = CLIHarness(service: service)
+
+    _ = await harness.run(["ocr", "/tmp/input.pdf"])
+
+    #expect((await service.recorder.lastOCRRequest())?.verifyAmounts == false)
+    #expect(!harness.stderr.contains("amount check"))
+}
+
 @Test func batchMapsSharedPDFOptionsAndReturnsThreeForAnyFailure() async {
     let response = BatchOCRResponse(
         processed: 2, succeeded: 1, failed: 1,
@@ -78,7 +90,7 @@ import LocalOCRService
 
     let status = await harness.run([
         "batch", "/tmp/a.pdf", "/tmp/b.pdf", "--pages", "1", "--dpi", "288",
-        "--force-ocr", "--detail", "--no-cache", "--json"
+        "--force-ocr", "--detail", "--verify-amounts", "--no-cache", "--json"
     ])
 
     #expect(status == 3)
@@ -89,6 +101,7 @@ import LocalOCRService
     #expect(request?.dpi == 288)
     #expect(request?.forceOCR == true)
     #expect(request?.includeLines == true)
+    #expect(request?.verifyAmounts == true)
     #expect(request?.usesCache == false)
 }
 

@@ -73,6 +73,7 @@ Options:
 | `--dpi <72...600>` | PDF rasterization resolution; default `250`. |
 | `--force-ocr` | OCR pages even when they have usable native text. |
 | `--detail` | Include line text, confidence, and normalized `x`, `y`, `width`, and `height` in JSON. |
+| `--verify-amounts` | Read recognized pages a second time at another resolution and mark amounts the second read does not repeat. |
 | `--no-cache` | Do not read or write the OCR cache for this operation. |
 | `--json` | Emit the structured response as JSON. |
 
@@ -81,10 +82,23 @@ returned page. With it, the response includes `source_path`, `source_sha256`,
 `pages`, `failed_pages`, `empty_ocr_pages`, and `rotated_ocr_pages`. A page
 may be reported in `failed_pages` without discarding successful pages.
 
+`--verify-amounts` is for documents where a wrong digit matters. Vision gives
+no warning when it misreads an amount, most often by turning the last digits
+into stray accented letters. The page is read twice; a garbled amount is
+given the second read's clean reading
+(`25,740.0ął [second read: 25,740.00]`) and any other amount the two reads
+disagree on is marked (`6,435.00 [not confirmed by second read]`). A mark
+means "check this amount against the page"; an unmarked amount is not proven
+right. Recognition takes up to twice as long. JSON output gains
+`amount_check` (`second_read_dpi`, `flagged_amounts`, `unchecked_pages`);
+without `--json` a one-line summary goes to standard error. Measured results
+are in [the MCP reference](mcp.md#checking-amounts).
+
 ### `batch <files...> [options]`
 
 OCR one or more local PDFs. It accepts the same `--pages`, `--dpi`,
-`--force-ocr`, `--detail`, `--no-cache`, and `--json` options as `ocr`.
+`--force-ocr`, `--detail`, `--verify-amounts`, `--no-cache`, and `--json`
+options as `ocr`.
 
 ```bash
 localocr batch /path/to/one.pdf /path/to/two.pdf --pages 1-2 --json

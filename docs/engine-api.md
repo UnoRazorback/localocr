@@ -352,6 +352,29 @@ with letters or further digits alongside it is left as recognized.
 
 `ImageDocumentSource` returns the same row-joined text for pictures.
 
+### Amount check
+
+`AmountVerification.annotatedText(first:second:)` takes the lines of two
+reads of one page and returns the first read's text with every amount the
+second read does not repeat marked in place, plus the number of marks. Lines
+are paired by position: a second-read line belongs to a first-read line when
+their shared area is at least half of the smaller box, so a line the two
+reads split differently still pairs with its pieces. Amounts compare equal
+regardless of thousands commas. An amount cut short by non-ASCII letters is
+treated as garbled: it is always unconfirmed, and a garbled second reading
+confirms a clean amount only when it begins the same way and lost no more
+than its cents. When the second read offers exactly as many other clean
+amounts as there are unconfirmed ones, each mark carries that reading
+(`[second read: 25,740.00]`); otherwise the mark is
+`[not confirmed by second read]`. Marks never change how rows are joined.
+
+`LocalOCRService.ocrPDF` runs the check when `PDFOCRRequest.verifyAmounts` is
+set: it reads each recognized page that carries an amount again at
+`AmountVerification.secondReadDPI(for:)` and reports the outcome in
+`PDFOCRResponse.amountCheck`. The engine's `OCRProcessor` and its cache are
+unchanged; the second read is an ordinary cached read at the other
+resolution.
+
 ## Progress and cancellation
 
 `OCRProcessor.process` calls the supplied synchronous `@Sendable` closure in

@@ -175,6 +175,13 @@ public struct CLIApplication: Sendable {
         for page in response.pages {
             output.stdout("--- Page \(page.page) ---\n\(page.text)\n")
         }
+        if let check = response.amountCheck {
+            var summary = "amount check: \(check.flaggedAmounts) amount(s) marked, second read at \(check.secondReadDPI) DPI"
+            if !check.uncheckedPages.isEmpty {
+                summary += "; not checked: page(s) \(check.uncheckedPages.map(String.init).joined(separator: ", "))"
+            }
+            output.stderr(summary + "\n")
+        }
     }
 
     func reportOCRProgress(_ event: OCRProgress, command: String) {
@@ -198,8 +205,8 @@ public struct CLIApplication: Sendable {
         case "extract-fields": "Usage: localocr extract-fields <file> --field <name>... [--json]\n"
         case "page-count": "Usage: localocr page-count <file> [--json]\n"
         case "inspect": "Usage: localocr inspect <file> [--json]\n"
-        case "ocr": "Usage: localocr ocr <file> [--pages <spec>] [--dpi <72...600>] [--force-ocr] [--detail] [--no-cache] [--json]\n"
-        case "batch": "Usage: localocr batch <files...> [--pages <spec>] [--dpi <72...600>] [--force-ocr] [--detail] [--no-cache] [--json]\n"
+        case "ocr": "Usage: localocr ocr <file> [--pages <spec>] [--dpi <72...600>] [--force-ocr] [--detail] [--verify-amounts] [--no-cache] [--json]\n"
+        case "batch": "Usage: localocr batch <files...> [--pages <spec>] [--dpi <72...600>] [--force-ocr] [--detail] [--verify-amounts] [--no-cache] [--json]\n"
         case "image": "Usage: localocr image <file> [--language <bcp47>]... [--no-language-correction] [--json]\n"
         case "searchable": "Usage: localocr searchable <file> [--output <file>] [--dpi <72...600>] [--force-ocr] [--no-cache] [--json]\n"
         case "mcp-consent": "Usage: localocr mcp-consent <status|accept|revoke>\n"

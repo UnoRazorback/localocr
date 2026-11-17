@@ -28,6 +28,7 @@ public struct PDFOCRRequest: Sendable, Equatable {
     public let dpi: Int
     public let forceOCR: Bool
     public let includeLines: Bool
+    public let verifyAmounts: Bool
     public let usesCache: Bool
 
     public init(
@@ -36,6 +37,7 @@ public struct PDFOCRRequest: Sendable, Equatable {
         dpi: Int = 250,
         forceOCR: Bool = false,
         includeLines: Bool = false,
+        verifyAmounts: Bool = false,
         usesCache: Bool = true
     ) throws {
         try Self.validate(dpi: dpi)
@@ -44,6 +46,7 @@ public struct PDFOCRRequest: Sendable, Equatable {
         self.dpi = dpi
         self.forceOCR = forceOCR
         self.includeLines = includeLines
+        self.verifyAmounts = verifyAmounts
         self.usesCache = usesCache
     }
 
@@ -64,6 +67,7 @@ public struct BatchOCRRequest: Sendable, Equatable {
     public let dpi: Int
     public let forceOCR: Bool
     public let includeLines: Bool
+    public let verifyAmounts: Bool
     public let usesCache: Bool
 
     public init(
@@ -72,6 +76,7 @@ public struct BatchOCRRequest: Sendable, Equatable {
         dpi: Int = 250,
         forceOCR: Bool = false,
         includeLines: Bool = false,
+        verifyAmounts: Bool = false,
         usesCache: Bool = true
     ) throws {
         guard !fileURLs.isEmpty else {
@@ -83,6 +88,7 @@ public struct BatchOCRRequest: Sendable, Equatable {
         self.dpi = dpi
         self.forceOCR = forceOCR
         self.includeLines = includeLines
+        self.verifyAmounts = verifyAmounts
         self.usesCache = usesCache
     }
 

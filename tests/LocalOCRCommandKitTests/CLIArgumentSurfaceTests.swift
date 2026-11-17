@@ -12,25 +12,27 @@ import Testing
 
     let ocr = try LocalOCRCommandSurface.parseAsRoot([
         "ocr", "input.pdf", "--pages", "2-4", "--dpi", "300", "--force-ocr",
-        "--detail", "--no-cache", "--json"
+        "--detail", "--verify-amounts", "--no-cache", "--json"
     ]) as? LocalOCRCommandSurface.OCR
     #expect(ocr?.file == "input.pdf")
     #expect(ocr?.pages == "2-4")
     #expect(ocr?.dpi == 300)
     #expect(ocr?.forceOCR == true)
     #expect(ocr?.detail == true)
+    #expect(ocr?.verifyAmounts == true)
     #expect(ocr?.noCache == true)
     #expect(ocr?.json == true)
 
     let batch = try LocalOCRCommandSurface.parseAsRoot([
         "batch", "a.pdf", "b.pdf", "--pages", "1", "--dpi", "288", "--force-ocr",
-        "--detail", "--no-cache", "--json"
+        "--detail", "--verify-amounts", "--no-cache", "--json"
     ]) as? LocalOCRCommandSurface.Batch
     #expect(batch?.files == ["a.pdf", "b.pdf"])
     #expect(batch?.pages == "1")
     #expect(batch?.dpi == 288)
     #expect(batch?.forceOCR == true)
     #expect(batch?.detail == true)
+    #expect(batch?.verifyAmounts == true)
     #expect(batch?.noCache == true)
     #expect(batch?.json == true)
 

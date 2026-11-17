@@ -132,8 +132,33 @@ lines by position (`two_read_agreement.py`):
 | 250 and 350 DPI | 58.9% | 5.1% | 30.0% |
 
 A disagreement between two reads is the only signal found so far that an
-amount may be wrong. It would double recognition time. Not built yet.
+amount may be wrong. It is now built as `--verify-amounts`; see the last section.
 
 **Truth check.** Text drawn twice in one place (double-struck bold) is now
 counted once. It made no difference on these documents, so the remaining
 misses are recognition misses, not counting artifacts.
+
+## What the wrong amounts are, and the amount check (2026-11-17)
+
+**Most wrong amounts are one misreading.** The wrong-amount lines counted in
+the experiments above used the benchmark's loose amount pattern. Looked at by
+shape, 97 of 107 are the same thing: the amount is right up to its cents and
+then runs into accented letters Vision made up (`99,999.9ął` where the page
+has `99,999.90`). Only 10 are a clean amount with a wrong digit. The junk is
+not tied to bold type or to a ruled line beside the amount, pinning the
+recognition language to English does not remove it, and Vision's alternate
+candidates do not hold the clean amount (141 of 148 checked).
+
+**The amount check (`--verify-amounts`), as shipped.**
+`verify_amounts_check.py` at 250 DPI with a second read at 350:
+
+| | count | outcome |
+| --- | --- | --- |
+| Garbled amounts missing digits | 94 | 63 given a second reading, all 63 right; 31 marked unconfirmed |
+| Clean amounts read right | 2,818 | 53 marked (1.9%) |
+| Clean amounts read wrong | 10 | none marked |
+
+The check repairs the common misreading. It does not catch a digit misread
+the same way twice. Time on these pages: 19 s without it, 35 s with it.
+Because every second reading offered for a garbled amount was right, doing
+this by default for pages with garbled amounts is the next candidate.

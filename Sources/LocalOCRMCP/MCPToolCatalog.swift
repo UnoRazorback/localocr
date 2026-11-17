@@ -119,6 +119,11 @@ public enum MCPToolCatalog {
                     "type": "boolean",
                     "default": false,
                     "description": "Include per-line confidence and bounding-box details."
+                ]),
+                "verify_amounts": .object([
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Read each recognized page that has amounts a second time at another resolution and mark, in the page text, every amount the second read does not repeat: '[second read: <other amount>]' or '[not confirmed by second read]' right after the amount. Mainly repairs amounts whose last digits came out as stray accented letters. A mark means check that amount against the page; an unmarked amount is not proven right. Use for financial documents; recognition takes up to twice as long. amount_check in the result gives the count."
                 ])
             ],
             required: [fileKey]
@@ -207,8 +212,18 @@ public enum MCPToolCatalog {
         "pages": .object(["type": "array", "items": ocrPageSchema]),
         "failed_pages": .object(["type": "array", "items": integerSchema]),
         "empty_ocr_pages": .object(["type": "array", "items": integerSchema]),
-        "rotated_ocr_pages": .object(["type": "array", "items": rotatedPageSchema])
+        "rotated_ocr_pages": .object(["type": "array", "items": rotatedPageSchema]),
+        "amount_check": amountCheckSchema
     ]
+
+    private static let amountCheckSchema = objectSchema(
+        properties: [
+            "second_read_dpi": integerSchema,
+            "flagged_amounts": integerSchema,
+            "unchecked_pages": .object(["type": "array", "items": integerSchema])
+        ],
+        required: ["second_read_dpi", "flagged_amounts", "unchecked_pages"]
+    )
 
     private static let pdfOCRRequired = [
         "source_path", "source_sha256", "pages", "failed_pages", "empty_ocr_pages", "rotated_ocr_pages"
