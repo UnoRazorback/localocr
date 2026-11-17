@@ -236,7 +236,7 @@ scripts/test-downloaded-release.sh \
   "/absolute/path/to/LocalOCR-Studio-<version>-<build>.sha256"
 ```
 
-The release workflow identifies the approved version, exact release
+The private release workflow identifies the approved version, exact release
 commit, installation steps, known limitations, and owner-approved feedback
 URL. The [published prerelease notes](docs/release/v0.3.2-beta.1-notes.md)
 identify the corresponding facts for this build.
