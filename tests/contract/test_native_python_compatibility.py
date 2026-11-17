@@ -292,11 +292,24 @@ def _tool_input_semantics(tool: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {name: _schema_semantics(value, name in required) for name, value in schema.get("properties", {}).items()}
 
 
+# Parameters the native server offers beyond the retired Python reference. Each
+# is optional and off by default, so a call the reference accepted means the same.
+NATIVE_ONLY_PARAMETERS = {
+    "ocr_pdf": {"verify_amounts"},
+    "ocr_pdf_batch": {"verify_amounts"},
+}
+
+
 def _assert_matching_tool_schemas(python: dict[str, Any], native: dict[str, Any]) -> None:
     assert set(native) == set(python), f"tool names differ: {set(python) ^ set(native)}"
     for name in python:
         python_parameters = _tool_input_semantics(python[name])
         native_parameters = _tool_input_semantics(native[name])
+        for extra in NATIVE_ONLY_PARAMETERS.get(name, ()):
+            added = native_parameters.pop(extra)
+            assert added == {"types": ["boolean"], "required": False, "default": False}, (
+                f"{name}.{extra} must be an optional boolean that is off by default: {added}"
+            )
         assert native_parameters == python_parameters, (
             f"{name} input schema semantics differ:\n"
             f"Python: {json.dumps(python_parameters, sort_keys=True)}\n"

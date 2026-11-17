@@ -162,3 +162,24 @@ The check repairs the common misreading. It does not catch a digit misread
 the same way twice. Time on these pages: 19 s without it, 35 s with it.
 Because every second reading offered for a garbled amount was right, doing
 this by default for pages with garbled amounts is the next candidate.
+
+## True scans (2026-11-17)
+
+`scan_survey.py` read 291 picture-only pages from 80 scanned PDFs (no text
+layer, so no truth) with the amount check on.
+
+| | count |
+| --- | --- |
+| Clean amounts | 3,577 |
+| Clean amounts marked | 140 (3.9%) |
+| Garbled amounts | 183, on 40 of 140 pages with amounts, in 19 of 80 files |
+| Garbled amounts given a second reading | 40 |
+| Garbled amounts marked unconfirmed | 137 |
+
+**The garbled-cents misreading is real on paper scans**, not an artifact of
+forcing born-digital pages through OCR: about one amount in twenty, clustered
+in a quarter of the files. On scans the second read rescues far fewer of them
+(40 of 183) than on the benchmark pages (63 of 94); most come out garbled at
+both resolutions. A second read is therefore not enough to make this a
+default repair. The next thing to try is reading the amount's own region
+again, enlarged, rather than the whole page at another resolution.
