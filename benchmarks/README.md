@@ -93,3 +93,47 @@ a page's embedded text is known to be wrong.
 repeated amounts recognized fewer times than they appear, and amounts whose
 digits are missing or misread. Rendering independently gives the same amount
 score, so these are recognition misses, not rendering.
+
+## Findings on 0.3.2 build 10 (2026-11-16)
+
+Same 112 pages, signed build 10. `row:all` is the share of label and amount
+pairs that are both read and on the right row, over every pair in the truth.
+
+| Run | amount | word | row:all |
+| --- | --- | --- | --- |
+| 200 DPI | 92.1 | 98.0 | 86.0 |
+| 300 DPI | 91.9 | 97.4 | 84.5 |
+| 400 DPI | 90.6 | 95.0 | 85.3 |
+| Independent render, 300 DPI | 93.0 | 97.3 | 86.7 |
+| Independent render, 300 DPI, language correction off | 92.9 | 97.3 | 86.6 |
+| Independent render, 400 DPI | 92.0 | 94.6 | 86.3 |
+
+**Resolution and language correction are not levers.** More pixels does not
+help, and turning language correction off changes nothing. The 250 DPI
+default stands. LocalOCR's own PDF rendering costs about one point of amount
+recall against an independent renderer.
+
+**Stability.** `low_read_monitor.py` read one scanned page 1,265 times over
+12 hours, across 13 sleep and wake gaps, on mains and battery, with load up
+to 228. Every read was identical. Short reads have only been seen in the
+first minute after a new build is installed.
+
+**Vision is confidently wrong.** Of 2,978 recognized lines that carry an
+amount, 127 hold an amount that is not on the page, and 126 of those were
+reported at full confidence (`amount_confidence.py`). Confidence cannot be
+used to flag a doubtful amount.
+
+**A second read can.** Reading each page at two resolutions and pairing the
+lines by position (`two_read_agreement.py`):
+
+| Reads | wrong amounts caught | right amounts flagged | flagged lines that are wrong |
+| --- | --- | --- | --- |
+| 300 and 200 DPI | 63.0% | 4.6% | 37.9% |
+| 250 and 350 DPI | 58.9% | 5.1% | 30.0% |
+
+A disagreement between two reads is the only signal found so far that an
+amount may be wrong. It would double recognition time. Not built yet.
+
+**Truth check.** Text drawn twice in one place (double-struck bold) is now
+counted once. It made no difference on these documents, so the remaining
+misses are recognition misses, not counting artifacts.

@@ -69,6 +69,20 @@ def cluster_rows(boxes):
     return [" ".join(b[3] for b in sorted(row, key=lambda b: b[2])) for row in rows]
 
 
+def distinct_words(words):
+    """Drop a word drawn again at the same spot (double-struck "bold"): same
+    text with a box within one point of an earlier copy."""
+    seen: dict[str, list[tuple[float, float]]] = {}
+    kept = []
+    for word in words:
+        spots = seen.setdefault(word[4], [])
+        if any(abs(word[0] - x) <= 1 and abs(word[1] - y) <= 1 for x, y in spots):
+            continue
+        spots.append((word[0], word[1]))
+        kept.append(word)
+    return kept
+
+
 def truth_for(page) -> dict | None:
     if page.rotation != 0:
         return None
@@ -79,7 +93,7 @@ def truth_for(page) -> dict | None:
     upright = sum(1 for l in lines if abs(l["dir"][0] - 1) < 0.02 and abs(l["dir"][1]) < 0.02)
     if upright / len(lines) < 0.9:
         return None
-    wl = page.get_text("words")
+    wl = distinct_words(page.get_text("words"))
     if len(wl) < 40:
         return None
     boxes = [(w[1], w[3], w[0], w[4]) for w in wl if w[3] > w[1]]

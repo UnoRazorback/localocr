@@ -89,3 +89,22 @@ def test_report_holds_no_document_text(table_pdf, tmp_path):
     for label, _, amount in ROWS:
         assert amount not in serialized
         assert label.split()[0] not in serialized
+
+
+# Catches text drawn twice in one place (double-struck bold) being counted as two amounts.
+def test_text_drawn_twice_in_one_place_counts_once(tmp_path):
+    document = fitz.open()
+    page = document.new_page(width=612, height=792)
+    page.insert_text((72, 80), "Schedule of values summary", fontsize=11)
+    for index, (label, quantity, amount) in enumerate(ROWS):
+        y = 130 + index * 28
+        page.insert_text((72, y), label, fontsize=9)
+        page.insert_text((400, y), quantity, fontsize=9)
+        page.insert_text((480, y), amount, fontsize=9)
+        page.insert_text((480.3, y), amount, fontsize=9)
+    path = tmp_path / "double.pdf"
+    document.save(path)
+
+    report, _ = run_benchmark(path, tmp_path, "rows")
+
+    assert report["overall_counts"]["amount"] == [6, 6]
