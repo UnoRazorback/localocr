@@ -5,9 +5,9 @@ agent to automate LocalOCR. The desktop app requires no MCP setup. This page is
 the canonical advanced-use guide for connecting the `localocr-mcp` helper to an
 MCP client.
 
-Beta 2.2 is version `0.3.2`, build `10`, with nine tools and an external-data
-acknowledgment. It was published on November 11, 2026 as the prerelease
-`v0.3.2-beta.1`. Local-model provider acceptance was not rerun for this build
+Beta 2.2 is version `0.3.2`, build `11`, with nine tools and an external-data
+acknowledgment. It was published on November 18, 2026 as the prerelease
+`v0.3.2-beta.2`. Local-model provider acceptance was not rerun for this build
 and remains open.
 
 ## What does local stdio MCP mean?
@@ -522,7 +522,7 @@ restarts the helper) and run the call again; it normally succeeds.
 ## Compatibility and release boundary
 
 The package and app keep a macOS 14 deployment target; Foundation Models code
-is availability-guarded for macOS 26 or later. Build 10 source verification and
+is availability-guarded for macOS 26 or later. Build 11 source verification and
 release scripts pin Xcode 27.2 (`27B52`), Swift 6.4, and the macOS 27.2 SDK at
 `/Applications/Xcode.app`. Toolchain
 provenance is not a live provider or release acceptance claim.

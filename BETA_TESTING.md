@@ -1,8 +1,8 @@
 # LocalOCR Studio Beta 2.2 Tester Guide
 
-Beta 2.2 is version `0.3.2`, build `10`, published on November 11, 2026 as the
+Beta 2.2 is version `0.3.2`, build `11`, published on November 18, 2026 as the
 GitHub prerelease
-[`v0.3.2-beta.1`](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.1).
+[`v0.3.2-beta.2`](https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.2).
 It is a beta prerelease, not a stable release. It includes the simple
 one-document desktop flow, an opt-in reviewed desktop batch, offline Help,
 Local Intelligence, guided Codex and Claude connection, and all three native
@@ -40,8 +40,19 @@ rose from 83.3% to 91.9%. Picture input (`localocr image`, `ocr_image`, and
 image files in the desktop app) now gets the same row-joined text as PDF
 pages.
 
-Build 9 was signed and accepted on November 11, 2026 but not published; Build
-10 replaces it.
+Build 11 finishes amounts whose last digits Apple Vision returned as stray
+accented letters (`25,740.0ął` for `25,740.00`) by looking again at that one
+line, enlarged. It keeps the digits already read and takes only the missing
+ones. On the same 112 pages, amounts read exactly rose from 91.9% to 95.1% and
+garbled amounts fell from 134 to 6, with no new wrong amounts. A read also no
+longer waits forever when Apple Vision stops answering on a near-blank scan:
+after 90 seconds the page is reported as failed. An optional amount check
+(`verify_amounts`, `--verify-amounts`) reads recognized pages twice and marks
+amounts the two reads disagree on; it is a second opinion and does not catch a
+digit misread the same way twice.
+
+Build 9 was signed and accepted on November 11, 2026 but not published. Build
+10 was published that day as `v0.3.2-beta.1`; Build 11 replaces it.
 
 The previous prerelease, `v0.3.1-beta.1` (build 8), was published on
 September 21, 2026. Local Intelligence, provider selection, the offline Help
@@ -50,12 +61,12 @@ sharing carry forward from it unchanged.
 
 ## Download and install
 
-Download `LocalOCR-Studio-0.3.2-10.zip` and
-`LocalOCR-Studio-0.3.2-10.sha256` from the `v0.3.2-beta.1` prerelease into the
+Download `LocalOCR-Studio-0.3.2-11.zip` and
+`LocalOCR-Studio-0.3.2-11.sha256` from the `v0.3.2-beta.2` prerelease into the
 same directory. Verify the download before expanding it:
 
 ```bash
-shasum -a 256 -c "LocalOCR-Studio-0.3.2-10.sha256"
+shasum -a 256 -c "LocalOCR-Studio-0.3.2-11.sha256"
 ```
 
 The command must report `OK`. Expand the verified ZIP, move `LocalOCR Studio.app` to `/Applications`, then open it normally. Do not bypass Gatekeeper, remove quarantine attributes, or use an unverified build or staging copy.
@@ -105,7 +116,7 @@ confirmation before updating that client's local MCP configuration. Generic
 MCP clients receive copy-only stdio instructions; LocalOCR does not guess at or
 edit an unknown client's configuration.
 
-Build 10 source compilation and automated verification use Xcode 27.2
+Build 11 source compilation and automated verification use Xcode 27.2
 (`27B52`), Swift 6.4, and the macOS 27.2 SDK while keeping
 the package/app deployment target at macOS 14. Downloaded-package verification
 and OCR acceptance on the signed build passed. Physical provider acceptance
@@ -131,17 +142,17 @@ Recognition uses Apple Vision and PDFKit locally. LocalOCR does not upload docum
 
 ## Compatibility and release provenance
 
-Build 10 was built with Xcode 27.2 (`27B52`) at `/Applications/Xcode.app`,
+Build 11 was built with Xcode 27.2 (`27B52`) at `/Applications/Xcode.app`,
 Swift 6.4, the macOS 27.2 SDK, arm64, and deployment target macOS 14.0. It is
 Developer ID signed (John Scott Ray, team `DZ8B5454ZN`) with Hardened Runtime,
-notarized (submission `7f6997c7-c962-4d15-b3d4-abb89df3aee6`, Accepted),
+notarized (submission `585f8b40-80d3-4a8e-bc63-2753da6f8e0b`, Accepted),
 stapled, and accepted by Gatekeeper.
 
-Release provenance: version `0.3.2`, build `10`, tag `v0.3.2-beta.1`, release
-commit `6c3ae1390889aba3847a38eb3882dd1a6e1821ad`. The ZIP SHA-256 is
-`3db38fb48c72776fb2d5bc4881aebc58b6f1fd41c8c685fc126191a0a01dc7ad`.
+Release provenance: version `0.3.2`, build `11`, tag `v0.3.2-beta.2`, release
+commit `ccfcfe582a78aa9d874176d73c026ff064710012`. The ZIP SHA-256 is
+`d49128b2e5ea566d379735dfff0270c91e615de5bb42f12a54e16c392c4b10a1`.
 
-Before publication the build passed 945 Swift tests, 501 Python contract tests
+Before publication the build passed 973 Swift tests, 506 Python contract tests
 with one opt-in skip, downloaded-package verification, and OCR acceptance on the
 signed build. Local-model provider acceptance (Apple Foundation Models, Ollama,
 LM Studio, llama.cpp), endurance, real idle, and AI Neural Gauge acceptance
@@ -151,7 +162,7 @@ changes that have automated coverage only. The controlled macOS 27 GR target run
 also remains open. Build 9 was signed and accepted on November 11, 2026 but
 never published; Build 10 replaced it.
 
-The [Build 10 acceptance record](docs/localocr-build10-acceptance-2026-11-11.md)
+The [Build 11 acceptance record](docs/localocr-build11-acceptance-2026-11-17.md)
 distinguishes in-process synthetic tests from Gemma/GPT acceptance, the real
 ten-minute idle, and the two consecutive six-operation target harnesses.
 

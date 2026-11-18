@@ -3,19 +3,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 GUIDE = ROOT / "BETA_TESTING.md"
-RELEASE_NOTES = ROOT / "docs/release/v0.3.2-beta.1-notes.md"
+RELEASE_NOTES = ROOT / "docs/release/v0.3.2-beta.2-notes.md"
 DEPLOYMENT_TARGET = "deployment target macOS 14.0"
-RELEASE_URL = "https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.1"
-ZIP_SHA256 = "3db38fb48c72776fb2d5bc4881aebc58b6f1fd41c8c685fc126191a0a01dc7ad"
+RELEASE_URL = "https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.2"
+ZIP_SHA256 = "d49128b2e5ea566d379735dfff0270c91e615de5bb42f12a54e16c392c4b10a1"
 LATER_BETA_WARNING = "Future Apple beta compatibility is not guaranteed."
 
 
 def test_beta_guide_contains_install_desktop_batch_and_privacy_contracts():
     text = GUIDE.read_text()
     required = (
-        "LocalOCR-Studio-0.3.2-10.zip",
-        "LocalOCR-Studio-0.3.2-10.sha256",
-        'shasum -a 256 -c "LocalOCR-Studio-0.3.2-10.sha256"',
+        "LocalOCR-Studio-0.3.2-11.zip",
+        "LocalOCR-Studio-0.3.2-11.sha256",
+        'shasum -a 256 -c "LocalOCR-Studio-0.3.2-11.sha256"',
         "Process Another Document",
         "Create Searchable PDF",
         "New Batch",
@@ -64,14 +64,14 @@ def test_guide_and_release_notes_use_exact_published_identity_and_open_acceptanc
     for path in (GUIDE, RELEASE_NOTES):
         text = path.read_text()
         assert "0.3.2" in text
-        assert "build `10`" in text
-        assert "v0.3.2-beta.1" in text
+        assert "build `11`" in text
+        assert "v0.3.2-beta.2" in text
         assert "Xcode 27.2" in text
         assert "27B52" in text
         assert DEPLOYMENT_TARGET in text
         assert LATER_BETA_WARNING in text
         prose = " ".join(text.split())
-        assert RELEASE_URL in text or "published on November 11, 2026" in prose
+        assert RELEASE_URL in text or "published on November 18, 2026" in prose
         assert "prerelease" in text
         assert "remain open" in prose or "remains open" in prose
     assert ZIP_SHA256 in GUIDE.read_text()

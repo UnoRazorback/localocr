@@ -5,16 +5,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOYMENT_TARGET = "deployment target macOS 14.0"
 VERSION = "0.3.2"
-BUILD = "10"
-TAG = "v0.3.2-beta.1"
+BUILD = "11"
+TAG = "v0.3.2-beta.2"
 FILES = {
     "readme": ROOT / "README.md",
     "studio": ROOT / "docs/studio.md",
     "mcp": ROOT / "docs/mcp.md",
     "cli": ROOT / "docs/cli.md",
 }
-RELEASE_URL = "https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.1"
-ZIP_SHA256 = "3db38fb48c72776fb2d5bc4881aebc58b6f1fd41c8c685fc126191a0a01dc7ad"
+RELEASE_URL = "https://github.com/UnoRazorback/localocr/releases/tag/v0.3.2-beta.2"
+ZIP_SHA256 = "d49128b2e5ea566d379735dfff0270c91e615de5bb42f12a54e16c392c4b10a1"
 CANDIDATE_ONLY_PHRASES = (
     "release candidate",
     "no published Beta 2.2 download is claimed",
@@ -52,7 +52,7 @@ def test_readme_and_studio_describe_published_beta_2_2_and_reset():
         assert RELEASE_URL in text
         assert ZIP_SHA256 in text
         assert "remain open" in prose
-        assert "published on November 11, 2026" in prose
+        assert "published on November 18, 2026" in prose
         assert "Process Another Document" in text
         assert "Xcode 27.2 (`27B52`)" in prose
         assert DEPLOYMENT_TARGET in prose
