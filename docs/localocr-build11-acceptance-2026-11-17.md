@@ -96,7 +96,14 @@ App extracted from the ZIP into `/private/tmp`; log in the project's
   file; the guarded build finished 60 of 60. No live freeze occurred during
   the guarded run, so the guard's rescue is covered by unit tests only.
 
-## Not run
+## Provider and Gauge acceptance after publication
+
+Apple Foundation Models, llama.cpp (Gemma 4 26B Q4_0) and AI Neural Gauge
+were accepted on the installed build after publication; LM Studio and Ollama
+were not run. See
+[the provider acceptance record](localocr-build11-provider-acceptance-2026-11-17.md).
+
+## Not run at release time
 
 Local-model provider acceptance (Apple Foundation Models, Ollama, LM Studio,
 llama.cpp), endurance, real idle, AI Neural Gauge, and the controlled macOS 27
